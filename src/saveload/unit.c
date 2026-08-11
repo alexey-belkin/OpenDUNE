@@ -57,7 +57,7 @@ static const SaveLoadDesc s_saveUnitNewIndex[] = {
 static const SaveLoadDesc s_saveUnitNew[] = {
 	SLD_ENTRY (Unit, SLDT_UINT16, fireDelay),
 	SLD_ENTRY (Unit, SLDT_UINT8,  deviatedHouse),
-	SLD_EMPTY (      SLDT_UINT8),
+	SLD_ENTRY (Unit, SLDT_UINT8,  harvestHoldPosition),
 	SLD_ENTRY (Unit, SLDT_UINT16, guardPosition),
 	SLD_ENTRY (Unit, SLDT_UINT16, harvestCenter),
 	SLD_ENTRY (Unit, SLDT_UINT16, repairReturnPosition),

@@ -249,6 +249,19 @@ uint16 Script_Structure_Unknown0C5A(ScriptEngine *script)
 
 	u = Unit_Get_ByIndex(s->o.linkedID);
 
+	/* Repairs normally release their unit directly at the bay door.  Hold it
+	 * here until a carryall can pick it up, so the repair-return policy in the
+	 * transport script can take it back to its recorded pickup tile. */
+	if (s->o.type == STRUCTURE_REPAIR && u->o.type != UNIT_HARVESTER && u->repairReturnPosition != 0) {
+		Unit *carryall;
+
+		if (s->o.script.variables[4] != 0) return 0;
+		carryall = Unit_CallUnitByType(UNIT_CARRYALL, s->o.houseID, Tools_Index_Encode(s->o.index, IT_STRUCTURE), false);
+		if (carryall == NULL) return 0;
+		Object_Script_Variable4_Set(&s->o, Tools_Index_Encode(carryall->o.index, IT_UNIT));
+		return 0;
+	}
+
 	if (g_table_unitInfo[u->o.type].movementType == MOVEMENT_WINGER && Unit_SetPosition(u, s->o.position)) {
 		s->o.linkedID = u->o.linkedID;
 		u->o.linkedID = 0xFF;

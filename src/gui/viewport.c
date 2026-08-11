@@ -226,7 +226,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		return true;
 	}
 
-	if (w->index >= 39 && w->index <= 43 && g_selectionType == SELECTIONTYPE_UNIT) {
+	if (w->index >= 39 && w->index <= 43 && (g_selectionType == SELECTIONTYPE_UNIT || g_selectionType == SELECTIONTYPE_STRUCTURE)) {
 		if (click) {
 			s_selectionBoxStart = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
 			s_selectionBoxEnd = s_selectionBoxStart;
@@ -303,9 +303,11 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		Unit_SetAction(u, action);
 
 		if (action == ACTION_MOVE) {
+			if (u->o.type == UNIT_HARVESTER) u->harvestHoldPosition = 1;
 			Unit_SetGuardPosition(u, packed);
 			Unit_SetDestination(u, encoded);
 		} else if (action == ACTION_HARVEST) {
+			u->harvestHoldPosition = 0;
 			u->harvestCenter = packed;
 			u->targetMove = encoded;
 		} else {

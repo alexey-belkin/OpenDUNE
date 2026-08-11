@@ -748,8 +748,14 @@ static void Unit_Harvester_Update(Unit *unit)
 	uint16 target;
 	uint16 type;
 
-	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID || unit->actionID != ACTION_HARVEST || unit->amount >= 100) return;
+	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID || unit->amount >= 100) return;
 	if (unit->o.flags.s.isNotOnMap) return;
+	/* Only an explicit Move-to-wait order may leave a partially empty player
+	 * harvester parked.  All other idle states recover into Harvest. */
+	if (unit->actionID != ACTION_HARVEST) {
+		if (unit->harvestHoldPosition != 0) return;
+		Unit_SetAction(unit, ACTION_HARVEST);
+	}
 	if (s_harvesterNextCheck[unit->o.index] > g_timerGame) return;
 	s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
 
@@ -863,6 +869,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 
 	Unit_SetManualHunt(unit, false);
 	Unit_AttackPosition_SetManual(unit, false);
+	if (unit->o.type == UNIT_HARVESTER) unit->harvestHoldPosition = (action == ACTION_MOVE);
 	Object_Script_Variable4_Clear(&unit->o);
 	unit->targetAttack = 0;
 	unit->targetMove = 0;
@@ -1281,6 +1288,7 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 	u->targetMove    = 0x0000;
 	u->guardPosition = (position.x == 0xFFFF && position.y == 0xFFFF) ? 0 : Tile_PackTile(position);
 	u->harvestCenter = (typeID == UNIT_HARVESTER && position.x != 0xFFFF && position.y != 0xFFFF) ? Tile_PackTile(position) : 0;
+	u->harvestHoldPosition = 0;
 	u->repairReturnPosition = 0;
 	u->airTransitDestination = 0;
 	u->amount        = 0;
