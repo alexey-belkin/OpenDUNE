@@ -1090,6 +1090,7 @@ static void GameLoop_Main(void)
 		GFX_Screen_SetActive(SCREEN_0);
 
 		key = GUI_Widget_HandleEvents(g_widgetLinkedListHead);
+		GUI_Widget_Viewport_HandleEdgeScroll();
 
 		if (g_selectionType == SELECTIONTYPE_TARGET || g_selectionType == SELECTIONTYPE_PLACE || g_selectionType == SELECTIONTYPE_UNIT || g_selectionType == SELECTIONTYPE_STRUCTURE) {
 			if (g_unitSelected != NULL) {

@@ -52,7 +52,10 @@ static uint16 GUI_Widget_Viewport_GetPackedAt(uint16 x, uint16 y)
 static void GUI_Widget_Viewport_DrawHealthBar(int16 x, int16 y, uint16 current, uint16 max)
 {
 	int16 left = x - 7;
-	int16 top = y - 15;
+	/* Map_IsPositionInViewport() returns a position relative to the tactical
+	 * widget.  Sprites add the widget's y origin (40) themselves, while the
+	 * primitive drawing functions use absolute screen coordinates. */
+	int16 top = y + 40 - 15;
 	uint16 width;
 	uint8 colour = 4;
 
@@ -74,6 +77,44 @@ static void GUI_Widget_Viewport_DrawHealthBar(int16 x, int16 y, uint16 current, 
 	if (width != 0) GUI_DrawFilledRectangle(left, top, left + width - 1, top + 1, colour);
 }
 
+/** Scroll the tactical map while the pointer rests on one of its edges. */
+void GUI_Widget_Viewport_HandleEdgeScroll(void)
+{
+	uint16 direction = 0xFFFF;
+	bool left;
+	bool right;
+	bool top;
+	bool bottom;
+
+	/* The viewport itself is 240 by 160 pixels at (0, 40).  Keep the scroll
+	 * zones inside it so the sidebar and minimap never trigger a map move. */
+	if (g_mouseX >= 240 || g_mouseY < 40 || g_mouseY >= 200) return;
+
+	left   = g_mouseX < 8;
+	right  = g_mouseX >= 232;
+	top    = g_mouseY < 48;
+	bottom = g_mouseY >= 192;
+
+	if (top) {
+		if (left) direction = 7;
+		else if (right) direction = 1;
+		else direction = 0;
+	} else if (bottom) {
+		if (left) direction = 5;
+		else if (right) direction = 3;
+		else direction = 4;
+	} else if (left) {
+		direction = 6;
+	} else if (right) {
+		direction = 2;
+	}
+
+	if (direction == 0xFFFF || s_tickMapScroll + 10 >= g_timerGame) return;
+
+	s_tickMapScroll = g_timerGame;
+	Map_MoveDirection(direction);
+}
+
 /**
  * Handles the Click events for the Viewport widget.
  *
@@ -85,7 +126,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	uint16 x, y;
 	uint16 spriteID;
 	uint16 packed;
-	bool click, drag, release;
+	bool click, drag, release, rightClick;
 
 	spriteID = g_cursorSpriteID;
 	switch (w->index) {
@@ -116,12 +157,13 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	drag = false;
 	release = false;
 
-	if ((w->state.buttonState & 0x11) != 0) {
+	if ((w->state.buttonState & 0x01) != 0) {
 		click = true;
 		g_var_37B8 = false;
-	} else if ((w->state.buttonState & 0x22) != 0 && !g_var_37B8) {
+	} else if ((w->state.buttonState & 0x02) != 0 && !g_var_37B8) {
 		drag = true;
 	}
+	rightClick = (w->state.buttonState & 0x10) != 0;
 
 	/* A viewport widget receives left-button release as bit 0x04.  It is
 	 * distinct from the press/hold states above, so a drag must be completed
@@ -158,7 +200,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		return true;
 	}
 
-	if (click) {
+	if (click || rightClick) {
 		x = g_mouseClickX;
 		y = g_mouseClickY;
 	} else {
@@ -182,10 +224,15 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 	packed = Tile_PackXY(x, y);
 
-	/* A right click on the tactical map is a context order. It deliberately
-	 * replaces the old behaviour that recentered the viewport on the tile. */
-	if (w->index == 43 && (w->state.buttonState & 0x10) != 0 && g_selectionType == SELECTIONTYPE_UNIT) {
-		UnitSelection_IssueDefaultOrder(packed);
+	/* A right click is never a selection drag.  Apart from issuing a context
+	 * order, consume it so the old recenter-on-right-click path cannot run. */
+	if (w->index == 43 && rightClick) {
+		if (s_selectionBoxActive) {
+			s_selectionBoxActive = false;
+			g_viewport_forceRedraw = true;
+		}
+
+		if (g_selectionType == SELECTIONTYPE_UNIT) UnitSelection_IssueDefaultOrder(packed);
 		return true;
 	}
 
