@@ -61,6 +61,15 @@ static uint16 s_attackPositionTile[UNIT_INDEX_MAX];
 static uint16 s_attackPositionTarget[UNIT_INDEX_MAX];
 static uint32 s_attackPositionETA[UNIT_INDEX_MAX];
 static uint32 s_attackPositionNextCheck[UNIT_INDEX_MAX];
+static bool s_autonomousAttack[UNIT_INDEX_MAX];
+static ActionType s_autonomousReturnAction[UNIT_INDEX_MAX];
+static uint32 s_autonomyNextCheck[UNIT_INDEX_MAX];
+static uint32 s_harvesterNextCheck[UNIT_INDEX_MAX];
+static uint16 s_houseThreatTarget[HOUSE_MAX];
+static uint32 s_houseThreatUntil[HOUSE_MAX];
+
+static const int8 s_firingPositionDirectionX[16] = {4, 4, 3, 2, 0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4};
+static const int8 s_firingPositionDirectionY[16] = {0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4, 4, 4, 3, 2};
 
 static bool Unit_AttackPosition_IsEligible(Unit *unit)
 {
@@ -91,8 +100,99 @@ void Unit_AttackPosition_SetManual(Unit *unit, bool enabled)
 	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
 
 	s_attackPositionManual[unit->o.index] = enabled;
+	s_autonomousAttack[unit->o.index] = false;
+	s_autonomousReturnAction[unit->o.index] = ACTION_INVALID;
 	Unit_AttackPosition_Clear(unit);
 	if (enabled) s_attackPositionNextCheck[unit->o.index] = g_timerGame + (unit->o.index % 7) * 3;
+}
+
+static void Unit_AttackPosition_SetAutomatic(Unit *unit, ActionType returnAction)
+{
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
+
+	s_attackPositionManual[unit->o.index] = true;
+	s_autonomousAttack[unit->o.index] = true;
+	s_autonomousReturnAction[unit->o.index] = returnAction;
+	Unit_AttackPosition_Clear(unit);
+	s_attackPositionNextCheck[unit->o.index] = g_timerGame + (unit->o.index % 7) * 3;
+}
+
+/* Estimate the fastest reachable firing tile with exactly the same terrain,
+ * movement speed and route calculation used by firing-position reservations. */
+static bool Unit_AttackPosition_EstimateTravel(Unit *unit, uint16 target, uint32 *travelTicks)
+{
+	const UnitInfo *ui;
+	Structure *targetStructure;
+	uint16 packedSource;
+	uint16 packedTarget;
+	uint16 radius;
+	uint16 minRadius;
+	uint16 dir;
+	uint32 best = 0xFFFFFFFF;
+	int16 left = 0;
+	int16 right = 0;
+	int16 top = 0;
+	int16 bottom = 0;
+
+	if (unit == NULL || !Tools_Index_IsValid(target)) return false;
+	ui = &g_table_unitInfo[unit->o.type];
+	if (ui->fireDistance == 0) return false;
+	if (Object_GetDistanceToEncoded(&unit->o, target) <= (ui->fireDistance << 8)) {
+		if (travelTicks != NULL) *travelTicks = 0;
+		return true;
+	}
+
+	packedSource = Tile_PackTile(unit->o.position);
+	packedTarget = Tools_Index_GetPackedTile(target);
+	if (!Map_IsValidPosition(packedSource) || !Map_IsValidPosition(packedTarget)) return false;
+
+	targetStructure = Tools_Index_GetStructure(target);
+	if (targetStructure != NULL) {
+		const XYSize *size = &g_table_structure_layoutSize[g_table_structureInfo[targetStructure->o.type].layout];
+
+		left = Tile_GetPackedX(Tile_PackTile(targetStructure->o.position));
+		top = Tile_GetPackedY(Tile_PackTile(targetStructure->o.position));
+		right = left + size->width - 1;
+		bottom = top + size->height - 1;
+	}
+
+	minRadius = ui->fireDistance > 2 ? ui->fireDistance - 2 : 1;
+	for (radius = ui->fireDistance; radius >= minRadius; radius--) {
+		for (dir = 0; dir < lengthof(s_firingPositionDirectionX); dir++) {
+			int16 x;
+			int16 y;
+			uint16 packed;
+			uint32 ticks;
+			Object candidate;
+
+			if (targetStructure == NULL) {
+				x = Tile_GetPackedX(packedTarget) + (radius * s_firingPositionDirectionX[dir] + 2) / 4;
+				y = Tile_GetPackedY(packedTarget) + (radius * s_firingPositionDirectionY[dir] + 2) / 4;
+			} else {
+				uint16 offsetX = (radius * abs(s_firingPositionDirectionX[dir]) + 2) / 4;
+				uint16 offsetY = (radius * abs(s_firingPositionDirectionY[dir]) + 2) / 4;
+
+				x = s_firingPositionDirectionX[dir] > 0 ? right + offsetX : (s_firingPositionDirectionX[dir] < 0 ? left - offsetX : (left + right) / 2);
+				y = s_firingPositionDirectionY[dir] > 0 ? bottom + offsetY : (s_firingPositionDirectionY[dir] < 0 ? top - offsetY : (top + bottom) / 2);
+			}
+
+			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+			packed = Tile_PackXY(x, y);
+			if (!Map_IsValidPosition(packed) || Object_GetByPackedTile(packed) != NULL) continue;
+			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
+			if (!Script_Unit_HasRoute(unit, packedSource, packed, &ticks)) continue;
+
+			candidate = unit->o;
+			candidate.position = Tile_UnpackTile(packed);
+			if (Object_GetDistanceToEncoded(&candidate, target) > (ui->fireDistance << 8)) continue;
+			if (ticks < best) best = ticks;
+		}
+		if (radius == minRadius) break;
+	}
+
+	if (best == 0xFFFFFFFF) return false;
+	if (travelTicks != NULL) *travelTicks = best;
+	return true;
 }
 
 /* Returns the owner of a matching reservation, or -1 when the tile is free. */
@@ -116,8 +216,6 @@ static int16 Unit_AttackPosition_GetReservationOwner(const Unit *unit, uint16 pa
 /* Pick a reachable, unclaimed tile near the outer edge of weapon range. */
 static void Unit_AttackPosition_Update(Unit *unit)
 {
-	static const int8 directionX[16] = {4, 4, 3, 2, 0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4};
-	static const int8 directionY[16] = {0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4, 4, 4, 3, 2};
 	const UnitInfo *ui;
 	Structure *targetStructure;
 	uint16 packedSource;
@@ -184,7 +282,7 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	minRadius = ui->fireDistance > 2 ? ui->fireDistance - 2 : 1;
 
 	for (radius = ui->fireDistance; radius >= minRadius; radius--) {
-		for (dir = 0; dir < lengthof(directionX); dir++) {
+		for (dir = 0; dir < lengthof(s_firingPositionDirectionX); dir++) {
 			int16 x;
 			int16 y;
 			uint16 packed;
@@ -195,14 +293,14 @@ static void Unit_AttackPosition_Update(Unit *unit)
 			Object candidate;
 
 			if (targetStructure == NULL) {
-				x = Tile_GetPackedX(packedTarget) + (radius * directionX[dir] + 2) / 4;
-				y = Tile_GetPackedY(packedTarget) + (radius * directionY[dir] + 2) / 4;
+				x = Tile_GetPackedX(packedTarget) + (radius * s_firingPositionDirectionX[dir] + 2) / 4;
+				y = Tile_GetPackedY(packedTarget) + (radius * s_firingPositionDirectionY[dir] + 2) / 4;
 			} else {
-				uint16 offsetX = (radius * abs(directionX[dir]) + 2) / 4;
-				uint16 offsetY = (radius * abs(directionY[dir]) + 2) / 4;
+				uint16 offsetX = (radius * abs(s_firingPositionDirectionX[dir]) + 2) / 4;
+				uint16 offsetY = (radius * abs(s_firingPositionDirectionY[dir]) + 2) / 4;
 
-				x = directionX[dir] > 0 ? right + offsetX : (directionX[dir] < 0 ? left - offsetX : (left + right) / 2);
-				y = directionY[dir] > 0 ? bottom + offsetY : (directionY[dir] < 0 ? top - offsetY : (top + bottom) / 2);
+				x = s_firingPositionDirectionX[dir] > 0 ? right + offsetX : (s_firingPositionDirectionX[dir] < 0 ? left - offsetX : (left + right) / 2);
+				y = s_firingPositionDirectionY[dir] > 0 ? bottom + offsetY : (s_firingPositionDirectionY[dir] < 0 ? top - offsetY : (top + bottom) / 2);
 			}
 
 			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
@@ -271,6 +369,348 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	s_attackPositionTarget[unit->o.index] = unit->targetAttack;
 	s_attackPositionETA[unit->o.index] = bestETA;
 	Unit_SetDestination(unit, Tools_Index_Encode(bestPacked, IT_TILE));
+}
+
+static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
+{
+	const UnitInfo *ui;
+	uint8 houseID;
+
+	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
+	houseID = unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID;
+	if (houseID != g_playerHouseID) return false;
+
+	ui = &g_table_unitInfo[unit->o.type];
+	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || ui->fireDistance == 0) return false;
+	return ui->movementType == MOVEMENT_FOOT || ui->movementType == MOVEMENT_TRACKED || ui->movementType == MOVEMENT_WHEELED;
+}
+
+static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
+{
+	switch (unit->actionID) {
+		case ACTION_GUARD:      return 5;
+		case ACTION_AREA_GUARD: return 14;
+		case ACTION_HUNT:       return 63;
+		default:                return 0;
+	}
+}
+
+static bool Unit_Autonomy_TargetInArea(const Unit *unit, uint16 target)
+{
+	uint16 radius = Unit_Autonomy_GetSearchRadius(unit);
+	uint16 anchor = unit->guardPosition;
+
+	if (radius == 0 || !Tools_Index_IsValid(target)) return false;
+	if (unit->actionID == ACTION_HUNT) return true;
+	if (!Map_IsValidPosition(anchor)) anchor = Tile_PackTile(unit->o.position);
+
+	return Tile_GetDistance(Tile_UnpackTile(anchor), Tools_Index_GetTile(target)) <= (radius << 8);
+}
+
+static uint32 Unit_Autonomy_BasePriority(Unit *unit, uint16 target, uint16 *maxHitpoints, uint16 *hitpoints)
+{
+	Unit *targetUnit;
+	Structure *targetStructure;
+
+	if (maxHitpoints != NULL) *maxHitpoints = 1;
+	if (hitpoints != NULL) *hitpoints = 1;
+
+	targetUnit = Tools_Index_GetUnit(target);
+	if (targetUnit != NULL) {
+		const UnitInfo *ti = &g_table_unitInfo[targetUnit->o.type];
+
+		if (Unit_GetTargetUnitPriority(unit, targetUnit) == 0) return 0;
+		if (maxHitpoints != NULL) *maxHitpoints = ti->o.hitpoints;
+		if (hitpoints != NULL) *hitpoints = targetUnit->o.hitpoints;
+		return ti->o.priorityTarget + ti->o.priorityBuild + ti->damage * 12;
+	}
+
+	targetStructure = Tools_Index_GetStructure(target);
+	if (targetStructure != NULL) {
+		const StructureInfo *si = &g_table_structureInfo[targetStructure->o.type];
+
+		if (Unit_GetTargetStructurePriority(unit, targetStructure) == 0) return 0;
+		if (maxHitpoints != NULL) *maxHitpoints = si->o.hitpoints;
+		if (hitpoints != NULL) *hitpoints = targetStructure->o.hitpoints;
+		return si->o.priorityTarget + si->o.priorityBuild;
+	}
+
+	return 0;
+}
+
+static void Unit_Autonomy_AddCandidate(uint16 *candidates, uint32 *scores, uint16 *count, uint16 target, uint32 score)
+{
+	uint16 i;
+	uint16 insert = *count;
+
+	for (i = 0; i < *count; i++) {
+		if (score > scores[i]) {
+			insert = i;
+			break;
+		}
+	}
+	if (insert >= 8) return;
+	if (*count < 8) (*count)++;
+	for (i = *count - 1; i > insert; i--) {
+		candidates[i] = candidates[i - 1];
+		scores[i] = scores[i - 1];
+	}
+	candidates[insert] = target;
+	scores[insert] = score;
+}
+
+/* Approximate the damage already committed to a target over the next short
+ * exchange. It favours focus fire until the target is covered, then makes
+ * extra attackers look for another vulnerable threat. */
+static uint32 Unit_Autonomy_IncomingDamage(Unit *unit, uint16 target)
+{
+	PoolFindStruct find;
+	uint32 damage = 0;
+
+	find.houseID = HOUSE_INVALID;
+	find.index = 0xFFFF;
+	find.type = 0xFFFF;
+	while (true) {
+		const UnitInfo *ui;
+		Unit *other = Unit_Find(&find);
+
+		if (other == NULL) break;
+		if (other == unit || other->targetAttack != target) continue;
+		if (!House_AreAllied(Unit_GetHouseID(other), Unit_GetHouseID(unit))) continue;
+		ui = &g_table_unitInfo[other->o.type];
+		if (!ui->flags.isNormalUnit || ui->damage == 0) continue;
+
+		damage += ui->damage * 90 / max(ui->fireDelay, 15);
+	}
+
+	return damage;
+}
+
+static uint16 Unit_Autonomy_FindTarget(Unit *unit)
+{
+	uint16 candidates[8];
+	uint32 roughScores[8];
+	uint16 count = 0;
+	uint16 i;
+	uint16 best = 0;
+	uint32 bestScore = 0;
+	PoolFindStruct find;
+
+	find.houseID = HOUSE_INVALID;
+	find.index = 0xFFFF;
+	find.type = 0xFFFF;
+	while (true) {
+		Unit *target = Unit_Find(&find);
+		uint16 encoded;
+		uint16 maxHitpoints;
+		uint16 hitpoints;
+		uint32 priority;
+		uint16 distance;
+
+		if (target == NULL) break;
+		encoded = Tools_Index_Encode(target->o.index, IT_UNIT);
+		if (!Unit_Autonomy_TargetInArea(unit, encoded)) continue;
+		priority = Unit_Autonomy_BasePriority(unit, encoded, &maxHitpoints, &hitpoints);
+		if (priority == 0) continue;
+		distance = Tile_GetDistanceRoundedUp(unit->o.position, target->o.position);
+		Unit_Autonomy_AddCandidate(candidates, roughScores, &count, encoded, priority * 256 / max(distance, 1));
+	}
+
+	find.houseID = HOUSE_INVALID;
+	find.index = 0xFFFF;
+	find.type = 0xFFFF;
+	while (true) {
+		Structure *target = Structure_Find(&find);
+		uint16 encoded;
+		uint16 maxHitpoints;
+		uint16 hitpoints;
+		uint32 priority;
+		uint16 distance;
+
+		if (target == NULL) break;
+		if (target->o.type == STRUCTURE_SLAB_1x1 || target->o.type == STRUCTURE_SLAB_2x2 || target->o.type == STRUCTURE_WALL) continue;
+		encoded = Tools_Index_Encode(target->o.index, IT_STRUCTURE);
+		if (!Unit_Autonomy_TargetInArea(unit, encoded)) continue;
+		priority = Unit_Autonomy_BasePriority(unit, encoded, &maxHitpoints, &hitpoints);
+		if (priority == 0) continue;
+		distance = Tile_GetDistanceRoundedUp(unit->o.position, target->o.position);
+		Unit_Autonomy_AddCandidate(candidates, roughScores, &count, encoded, priority * 256 / max(distance, 1));
+	}
+
+	for (i = 0; i < count; i++) {
+		uint16 maxHitpoints;
+		uint16 hitpoints;
+		uint32 priority;
+		uint32 eta;
+		uint32 score;
+		uint32 coverage;
+		uint32 focus;
+
+		priority = Unit_Autonomy_BasePriority(unit, candidates[i], &maxHitpoints, &hitpoints);
+		if (priority == 0 || !Unit_AttackPosition_EstimateTravel(unit, candidates[i], &eta)) continue;
+
+		/* ETA is the pathfinder-derived time to an actual firing tile, rather
+		 * than a straight-line distance. */
+		score = priority * 1024 / (eta / 15 + 1);
+		score = score * (256 + ((maxHitpoints - min(hitpoints, maxHitpoints)) * 179 / max(maxHitpoints, 1))) / 256;
+
+		coverage = Unit_Autonomy_IncomingDamage(unit, candidates[i]) * 256 / max(hitpoints, 1);
+		if (coverage < 256) {
+			focus = 256 + min(154, coverage * 3 / 5);
+		} else {
+			focus = 410 - min(180, (coverage - 256) * 3 / 5);
+		}
+		score = score * focus / 256;
+		if (s_houseThreatUntil[g_playerHouseID] > g_timerGame && candidates[i] == s_houseThreatTarget[g_playerHouseID]) score *= 2;
+
+		if (score > bestScore) {
+			bestScore = score;
+			best = candidates[i];
+		}
+	}
+
+	return best;
+}
+
+static void Unit_Autonomy_Return(Unit *unit)
+{
+	ActionType returnAction = s_autonomousReturnAction[unit->o.index];
+	uint16 anchor = unit->guardPosition;
+
+	if (!s_autonomousAttack[unit->o.index] || returnAction == ACTION_INVALID) return;
+	Unit_AttackPosition_SetManual(unit, false);
+	unit->targetAttack = 0;
+	unit->targetMove = 0;
+	unit->route[0] = 0xFF;
+
+	if (returnAction == ACTION_HUNT || !Map_IsValidPosition(anchor) || Tile_GetDistance(unit->o.position, Tile_UnpackTile(anchor)) <= 128) {
+		Unit_SetAction(unit, returnAction);
+		return;
+	}
+
+	Unit_SetAction(unit, ACTION_MOVE);
+	Unit_SetDestination(unit, Tools_Index_Encode(anchor, IT_TILE));
+	unit->nextActionID = returnAction;
+}
+
+static void Unit_Autonomy_BeginAttack(Unit *unit, uint16 target)
+{
+	ActionType returnAction = unit->actionID;
+
+	if (!Tools_Index_IsValid(target)) return;
+	Unit_AttackPosition_SetAutomatic(unit, returnAction);
+	Unit_SetAction(unit, ACTION_ATTACK);
+	Unit_SetTarget(unit, target);
+}
+
+static void Unit_Autonomy_Update(Unit *unit)
+{
+	uint16 target;
+
+	if (!Unit_Autonomy_IsCombatUnit(unit)) return;
+	if (unit->actionID == ACTION_ATTACK && s_autonomousAttack[unit->o.index]) {
+		if (!Tools_Index_IsValid(unit->targetAttack)) Unit_Autonomy_Return(unit);
+		return;
+	}
+	if (Unit_Autonomy_GetSearchRadius(unit) == 0) return;
+
+	if (s_autonomyNextCheck[unit->o.index] == 0) {
+		s_autonomyNextCheck[unit->o.index] = g_timerGame + (unit->o.index % 8) * 20;
+		return;
+	}
+	if (s_autonomyNextCheck[unit->o.index] > g_timerGame) return;
+	s_autonomyNextCheck[unit->o.index] = g_timerGame + 120;
+
+	if (Tools_Index_IsValid(unit->targetAttack)) {
+		Unit_Autonomy_BeginAttack(unit, unit->targetAttack);
+		return;
+	}
+
+	target = Unit_Autonomy_FindTarget(unit);
+	if (target != 0) Unit_Autonomy_BeginAttack(unit, target);
+}
+
+void Unit_Autonomy_ReportThreat(uint8 houseID, uint16 attacker, uint16 packed)
+{
+	if (houseID != g_playerHouseID || !Tools_Index_IsValid(attacker) || !Map_IsValidPosition(packed)) return;
+
+	s_houseThreatTarget[houseID] = attacker;
+	s_houseThreatUntil[houseID] = g_timerGame + 180;
+}
+
+static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, uint16 *result)
+{
+	uint16 candidates[8];
+	uint32 roughScores[8];
+	uint16 count = 0;
+	uint16 x;
+	uint16 y;
+	uint16 i;
+	uint16 best = 0;
+	uint32 bestScore = 0xFFFFFFFF;
+
+	for (y = 0; y < 64; y++) {
+		for (x = 0; x < 64; x++) {
+			uint16 packed = Tile_PackXY(x, y);
+			uint16 type;
+			uint16 distance;
+			uint32 score;
+
+			if (!Map_IsValidPosition(packed)) continue;
+			if (radius != 0 && Tile_GetDistancePacked(center, packed) > radius) continue;
+			type = Map_GetLandscapeType(packed);
+			if (type != LST_SPICE && type != LST_THICK_SPICE) continue;
+			if (Object_GetByPackedTile(packed) != NULL || Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
+			distance = Tile_GetDistancePacked(Tile_PackTile(unit->o.position), packed);
+			score = distance * 16 + (type == LST_THICK_SPICE ? 0 : 8);
+			Unit_Autonomy_AddCandidate(candidates, roughScores, &count, packed, 0xFFFFFFFF - score);
+		}
+	}
+
+	for (i = 0; i < count; i++) {
+		uint32 ticks;
+		uint16 type;
+		uint32 score;
+
+		if (!Script_Unit_HasRoute(unit, Tile_PackTile(unit->o.position), candidates[i], &ticks)) continue;
+		type = Map_GetLandscapeType(candidates[i]);
+		score = ticks * 16 + (type == LST_THICK_SPICE ? 0 : 80);
+		if (score < bestScore) {
+			bestScore = score;
+			best = candidates[i];
+		}
+	}
+
+	if (best == 0) return false;
+	*result = best;
+	return true;
+}
+
+static void Unit_Harvester_Update(Unit *unit)
+{
+	uint16 packed;
+	uint16 target;
+	uint16 type;
+
+	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID || unit->actionID != ACTION_HARVEST || unit->amount >= 100) return;
+	if (unit->o.flags.s.isNotOnMap || unit->targetMove != 0 || unit->currentDestination.x != 0 || unit->currentDestination.y != 0) return;
+	if (s_harvesterNextCheck[unit->o.index] > g_timerGame) return;
+	s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
+
+	packed = Tile_PackTile(unit->o.position);
+	type = Map_GetLandscapeType(packed);
+	if (type == LST_SPICE || type == LST_THICK_SPICE) return;
+
+	if (Map_IsValidPosition(unit->harvestCenter) && Unit_Harvester_FindSpice(unit, unit->harvestCenter, 12, &target)) {
+		Unit_SetDestination(unit, Tools_Index_Encode(target, IT_TILE));
+		return;
+	}
+	if (!Unit_Harvester_FindSpice(unit, packed, 0, &target)) return;
+
+	/* The old field is exhausted; keep the newly found field as the working
+	 * area so the next refinery trip returns to useful spice. */
+	unit->harvestCenter = target;
+	Unit_SetDestination(unit, Tools_Index_Encode(target, IT_TILE));
 }
 
 /** Is this a player unit that can take part in a box selection? */
@@ -369,6 +809,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 	if (action == ACTION_MOVE) {
 		Unit_SetDestination(unit, encoded);
 	} else if (action == ACTION_HARVEST) {
+		unit->harvestCenter = packed;
 		unit->targetMove = encoded;
 	} else {
 		Unit_SetTarget(unit, encoded);
@@ -519,7 +960,11 @@ void GameLoop_Unit(void)
 
 		if (u->o.flags.s.isNotOnMap) continue;
 
-		if (tickUnknown4) Unit_AttackPosition_Update(u);
+		if (tickUnknown4) {
+			Unit_Autonomy_Update(u);
+			Unit_Harvester_Update(u);
+			Unit_AttackPosition_Update(u);
+		}
 
 		if (tickUnknown4 && u->targetAttack != 0 && ui->o.flags.hasTurret) {
 			tile32 tile;
@@ -760,6 +1205,8 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 	u->fireDelay     = 0;
 	u->distanceToDestination = 0x7FFF;
 	u->targetMove    = 0x0000;
+	u->guardPosition = (position.x == 0xFFFF && position.y == 0xFFFF) ? 0 : Tile_PackTile(position);
+	u->harvestCenter = (typeID == UNIT_HARVESTER && position.x != 0xFFFF && position.y != 0xFFFF) ? Tile_PackTile(position) : 0;
 	u->amount        = 0;
 	u->wobbleIndex   = 0;
 	u->spriteOffset  = 0;
@@ -792,7 +1239,7 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 
 	Unit_UpdateMap(1, u);
 
-	Unit_SetAction(u, (houseID == g_playerHouseID) ? ui->o.actionsPlayer[3] : ui->actionAI);
+	Unit_SetAction(u, (houseID == g_playerHouseID) ? Unit_GetDefaultAction(u) : ui->actionAI);
 
 	return u;
 }
@@ -862,6 +1309,22 @@ void Unit_SetAction(Unit *u, ActionType action)
 
 		default: return;
 	}
+}
+
+/* Player combat units default to a wider local defence. Harvesters, special
+ * units and AI retain their original table-driven default actions. */
+ActionType Unit_GetDefaultAction(const Unit *u)
+{
+	const UnitInfo *ui;
+
+	if (u == NULL) return ACTION_GUARD;
+	ui = &g_table_unitInfo[u->o.type];
+	if (u->o.houseID == g_playerHouseID && ui->flags.isNormalUnit && ui->flags.isGroundUnit && ui->fireDistance != 0 &&
+		(ui->movementType == MOVEMENT_FOOT || ui->movementType == MOVEMENT_TRACKED || ui->movementType == MOVEMENT_WHEELED)) {
+		return ACTION_AREA_GUARD;
+	}
+
+	return ui->o.actionsPlayer[3];
 }
 
 /**
@@ -1201,6 +1664,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 	u->currentDestination.y = 0;
 	u->targetMove = 0;
 	u->targetAttack = 0;
+	if (u->o.houseID == g_playerHouseID && u->o.type != UNIT_HARVESTER) u->guardPosition = Tile_PackTile(u->o.position);
 
 	if (g_map[Tile_PackTile(u->o.position)].isUnveiled) {
 		/* A new unit being delivered fresh from the factory; force a seenByHouses
@@ -1212,7 +1676,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 	if (u->o.houseID != g_playerHouseID || u->o.type == UNIT_HARVESTER || u->o.type == UNIT_SABOTEUR) {
 		Unit_SetAction(u, ui->actionAI);
 	} else {
-		Unit_SetAction(u, ui->o.actionsPlayer[3]);
+		Unit_SetAction(u, Unit_GetDefaultAction(u));
 	}
 
 	u->spriteOffset = 0;
@@ -2165,6 +2629,28 @@ void UnitSelection_IssueDefaultOrder(uint16 packed)
 	}
 }
 
+/* Hunt is intentionally a keyboard-only advanced order: it applies only to
+ * normal combat units, leaving harvesters and special units untouched. */
+void UnitSelection_OrderHunt(void)
+{
+	uint16 i;
+
+	UnitSelection_CancelPendingAction();
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+
+		if (!UnitSelection_UnitHasAction(unit, ACTION_ATTACK)) continue;
+		Unit_AttackPosition_SetManual(unit, false);
+		Object_Script_Variable4_Clear(&unit->o);
+		unit->targetAttack = 0;
+		unit->targetMove = 0;
+		unit->route[0] = 0xFF;
+		Unit_SetAction(unit, ACTION_HUNT);
+	}
+
+	GUI_Widget_ActionPanel_Draw(true);
+}
+
 /** Begin a group command. Returns true when the next map click is its target. */
 bool UnitSelection_BeginAction(ActionType action)
 {
@@ -2192,6 +2678,7 @@ bool UnitSelection_BeginAction(ActionType action)
 		unit->targetAttack = 0;
 		unit->targetMove = 0;
 		unit->route[0] = 0xFF;
+		if (unitAction == ACTION_GUARD || unitAction == ACTION_AREA_GUARD) unit->guardPosition = Tile_PackTile(unit->o.position);
 		Unit_SetAction(unit, unitAction);
 	}
 

@@ -1091,6 +1091,11 @@ static void GameLoop_Main(void)
 
 		key = GUI_Widget_HandleEvents(g_widgetLinkedListHead);
 		GUI_Widget_Viewport_HandleEdgeScroll();
+		/* T = Hunt.  H remains reserved for the Harvester command. */
+		if ((key & 0x7FFF) == 0x0014 && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
+			UnitSelection_OrderHunt();
+			key = 0;
+		}
 
 		if (g_selectionType == SELECTIONTYPE_TARGET || g_selectionType == SELECTIONTYPE_PLACE || g_selectionType == SELECTIONTYPE_UNIT || g_selectionType == SELECTIONTYPE_STRUCTURE) {
 			if (g_unitSelected != NULL) {

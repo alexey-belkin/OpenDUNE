@@ -431,7 +431,12 @@ void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 un
 				Unit_Damage(u, hitpoints >> (distance >> 2), 0);
 			}
 
-			if (u->o.houseID == g_playerHouseID) continue;
+			if (u->o.houseID == g_playerHouseID) {
+				/* Player guards share a short-lived threat signal when a nearby
+				 * ally is actually hit. This is deliberately not a map-wide alert. */
+				Unit_Autonomy_ReportThreat(Unit_GetHouseID(u), unitOriginEncoded, positionPacked);
+				continue;
+			}
 
 			us = Tools_Index_GetUnit(unitOriginEncoded);
 			if (us == NULL) continue;
@@ -498,6 +503,7 @@ void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 un
 			}
 
 			Structure_HouseUnderAttack(s->o.houseID);
+			Unit_Autonomy_ReportThreat(s->o.houseID, unitOriginEncoded, positionPacked);
 			Structure_Damage(s, hitpoints, 0);
 		}
 	}

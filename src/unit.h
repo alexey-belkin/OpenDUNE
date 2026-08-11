@@ -151,6 +151,8 @@ typedef struct Unit {
 	uint16 distanceToDestination;                           /*!< How much distance between where we are now and where currentDestination is. */
 	uint16 targetAttack;                                    /*!< Target to attack (encoded index). */
 	uint16 targetMove;                                      /*!< Target to move to (encoded index). */
+	uint16 guardPosition;                                   /*!< Tile the unit returns to after autonomous defence. */
+	uint16 harvestCenter;                                   /*!< Player-selected spice field centre for a Harvester. */
 	uint8  amount;                                          /*!< Meaning depends on type:
 	                                                         * - Sandworm : units to eat before disappearing.
 	                                                         * - Harvester : harvested spice.
@@ -249,6 +251,7 @@ extern uint8 Unit_MovementStringToType(const char *name);
 extern struct Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, int8 orientation);
 extern bool Unit_IsTypeOnMap(uint8 houseID, uint8 typeID);
 extern void Unit_SetAction(Unit *u, ActionType action);
+extern ActionType Unit_GetDefaultAction(const Unit *u);
 extern uint16 Unit_AddToTeam(Unit *u, struct Team *t);
 extern uint16 Unit_RemoveFromTeam(Unit *u);
 extern struct Team *Unit_GetTeam(Unit *u);
@@ -263,6 +266,7 @@ extern bool Unit_StartMovement(Unit *unit);
 extern void Unit_SetTarget(Unit* unit, uint16 encoded);
 extern bool Unit_Deviation_Decrease(Unit* unit, uint16 amount);
 extern void Unit_AttackPosition_SetManual(Unit *unit, bool enabled);
+extern void Unit_Autonomy_ReportThreat(uint8 houseID, uint16 attacker, uint16 packed);
 extern void Unit_RemoveFog(Unit *unit);
 extern bool Unit_Deviate(Unit *unit, uint16 probability, uint8 houseID);
 extern bool Unit_Move(Unit *unit, uint16 distance);
@@ -279,6 +283,7 @@ extern uint16 UnitSelection_GetActionCount(ActionType action);
 extern ActionType UnitSelection_GetActionForSlot(uint16 slot);
 extern ActionType UnitSelection_GetSpecialAction(void);
 extern void UnitSelection_IssueDefaultOrder(uint16 packed);
+extern void UnitSelection_OrderHunt(void);
 extern bool UnitSelection_BeginAction(ActionType action);
 extern bool UnitSelection_HasPendingAction(void);
 extern void UnitSelection_ApplyPendingAction(uint16 packed);

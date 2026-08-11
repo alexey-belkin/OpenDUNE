@@ -303,6 +303,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		if (action == ACTION_MOVE) {
 			Unit_SetDestination(u, encoded);
 		} else if (action == ACTION_HARVEST) {
+			u->harvestCenter = packed;
 			u->targetMove = encoded;
 		} else {
 			Unit *target;
