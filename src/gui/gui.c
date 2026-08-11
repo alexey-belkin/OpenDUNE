@@ -2890,6 +2890,7 @@ FactoryResult GUI_DisplayFactoryWindow(bool isConstructionYard, bool isStarPort,
 	g_factoryWindowOrdered = 0;
 
 	GUI_FactoryWindow_Init();
+	GUI_Production_List_ResetDoubleClick();
 
 	GUI_FactoryWindow_UpdateSelection(true);
 

@@ -34,6 +34,7 @@
 
 static uint32 s_tickCursor;                                 /*!< Stores last time Viewport changed the cursor spriteID. */
 static uint32 s_tickMapScroll;                              /*!< Stores last time Viewport ran MapScroll function. */
+static uint32 s_tickEdgeScroll;                             /*!< Stores last time passive edge scroll moved the map. */
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
 static bool s_selectionBoxActive;                           /*!< A left drag is selecting a group. */
 static uint16 s_selectionBoxStart;                          /*!< Start tile, fixed in world coordinates. */
@@ -77,7 +78,7 @@ static void GUI_Widget_Viewport_DrawHealthBar(int16 x, int16 y, uint16 current, 
 	if (width != 0) GUI_DrawFilledRectangle(left, top, left + width - 1, top + 1, colour);
 }
 
-/** Scroll the tactical map while the pointer rests on one of its edges. */
+/** Scroll the tactical map while the pointer rests on a game-screen edge. */
 void GUI_Widget_Viewport_HandleEdgeScroll(void)
 {
 	uint16 direction = 0xFFFF;
@@ -86,14 +87,13 @@ void GUI_Widget_Viewport_HandleEdgeScroll(void)
 	bool top;
 	bool bottom;
 
-	/* The viewport itself is 240 by 160 pixels at (0, 40).  Keep the scroll
-	 * zones inside it so the sidebar and minimap never trigger a map move. */
-	if (g_mouseX >= 240 || g_mouseY < 40 || g_mouseY >= 200) return;
-
+	/* Use the physical 320x200 game display, rather than the 240x160 tactical
+	 * widget.  This deliberately includes the sidebar, top decoration, and
+	 * minimap, so an edge remains an edge after the map ends. */
 	left   = g_mouseX < 8;
-	right  = g_mouseX >= 232;
-	top    = g_mouseY < 48;
-	bottom = g_mouseY >= 192;
+	right  = g_mouseX >= SCREEN_WIDTH - 8;
+	top    = g_mouseY < 8;
+	bottom = g_mouseY >= SCREEN_HEIGHT - 8;
 
 	if (top) {
 		if (left) direction = 7;
@@ -109,9 +109,11 @@ void GUI_Widget_Viewport_HandleEdgeScroll(void)
 		direction = 2;
 	}
 
-	if (direction == 0xFFFF || s_tickMapScroll + 10 >= g_timerGame) return;
+	/* GUI time continues consistently even if game simulation is paused or
+	 * changed to Fast mode. */
+	if (direction == 0xFFFF || s_tickEdgeScroll + 4 >= g_timerGUI) return;
 
-	s_tickMapScroll = g_timerGame;
+	s_tickEdgeScroll = g_timerGUI;
 	Map_MoveDirection(direction);
 }
 

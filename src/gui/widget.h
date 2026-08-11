@@ -254,6 +254,7 @@ extern bool GUI_Widget_SaveLoad_Click(bool save);
 extern bool GUI_Widget_HOF_ClearList_Click(Widget *w);
 extern bool GUI_Widget_HOF_Resume_Click(Widget *w);
 extern bool GUI_Production_List_Click(Widget *w);
+extern void GUI_Production_List_ResetDoubleClick(void);
 extern bool GUI_Production_Upgrade_Click(Widget *w);
 extern bool GUI_Production_ResumeGame_Click(Widget *w);
 extern bool GUI_Production_Down_Click(Widget *w);
