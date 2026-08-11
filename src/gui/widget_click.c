@@ -96,7 +96,9 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 	if (Structure_Queue_CanOrder(s)) {
 		bool changed;
 
-		changed = ((w->state.buttonState & 0x10) != 0) ? Structure_Queue_RemoveOrder(s) : Structure_Queue_AddOrder(s);
+		/* This button fires on mouse release: 0x04 is left and 0x40 is right. */
+		changed = ((w->state.buttonState & 0x40) != 0) ? Structure_Queue_RemoveOrder(s) : Structure_Queue_AddOrder(s);
+		if (changed && (w->state.buttonState & 0x40) == 0) s->o.flags.s.onHold = false;
 		if (changed) GUI_Widget_ActionPanel_Draw(true);
 		return false;
 	}

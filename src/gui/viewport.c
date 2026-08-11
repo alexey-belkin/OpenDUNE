@@ -165,7 +165,8 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	} else if ((w->state.buttonState & 0x02) != 0 && !g_var_37B8) {
 		drag = true;
 	}
-	rightClick = (w->state.buttonState & 0x10) != 0;
+	/* The tactical-map widget filters right mouse input on release. */
+	rightClick = (w->state.buttonState & 0x40) != 0;
 
 	/* A viewport widget receives left-button release as bit 0x04.  It is
 	 * distinct from the press/hold states above, so a drag must be completed

@@ -228,6 +228,11 @@ void GameLoop_Structure(void)
 
 		if (tickStructure) {
 			Structure_Queue_StartNext(s);
+			/* Repeat production must not remain stuck after a temporary funds
+			 * shortage.  Construction yards retain their original manual flow. */
+			if (Structure_Queue_CanOrder(s) && s->o.flags.s.onHold && s->countDown != 0 && s->o.linkedID != 0xFF && h->credits != 0) {
+				s->o.flags.s.onHold = false;
+			}
 
 			if (s->o.flags.s.upgrading) {
 				uint16 upgradeCost = si->o.buildCredits / 40;
