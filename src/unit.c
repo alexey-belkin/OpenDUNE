@@ -2676,6 +2676,7 @@ void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
 	uint16 minY = min(Tile_GetPackedY(packedA), Tile_GetPackedY(packedB));
 	uint16 maxY = max(Tile_GetPackedY(packedA), Tile_GetPackedY(packedB));
 	Unit *primary = NULL;
+	Structure *selectedStructure = NULL;
 	uint16 i;
 
 	s_unitSelectionChanging = true;
@@ -2695,9 +2696,39 @@ void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
 		UnitSelection_Add(unit);
 	}
 
-	if (g_unitSelectionCount != 0) primary = Unit_Get_ByIndex(s_unitSelection[0]);
+	if (g_unitSelectionCount != 0) {
+		primary = Unit_Get_ByIndex(s_unitSelection[0]);
+	} else if (!additive) {
+		/* A box is allowed to select one building.  Test its complete footprint,
+		 * so dragging over any visible part of a 2x2/3x3 structure works. */
+		PoolFindStruct find;
+
+		find.houseID = HOUSE_INVALID;
+		find.type = 0xFFFF;
+		find.index = 0xFFFF;
+		while (true) {
+			Structure *s = Structure_Find(&find);
+			const XYSize *size;
+			uint16 x;
+			uint16 y;
+
+			if (s == NULL) break;
+			if (s->o.flags.s.isNotOnMap) continue;
+			size = &g_table_structure_layoutSize[g_table_structureInfo[s->o.type].layout];
+			x = Tile_GetPackedX(Tile_PackTile(s->o.position));
+			y = Tile_GetPackedY(Tile_PackTile(s->o.position));
+			if (x + size->width - 1 < minX || x > maxX || y + size->height - 1 < minY || y > maxY) continue;
+			if (selectedStructure != NULL) {
+				selectedStructure = NULL;
+				break;
+			}
+			selectedStructure = s;
+		}
+	}
+
 	Unit_Select(primary);
 	s_unitSelectionChanging = false;
+	if (selectedStructure != NULL) Map_SetSelection(Tile_PackTile(selectedStructure->o.position));
 
 	GUI_Widget_ActionPanel_Draw(true);
 }
