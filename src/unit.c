@@ -64,6 +64,7 @@ static uint32 s_attackPositionETA[UNIT_INDEX_MAX];
 static uint32 s_attackPositionNextCheck[UNIT_INDEX_MAX];
 static bool s_autonomousAttack[UNIT_INDEX_MAX];
 static ActionType s_autonomousReturnAction[UNIT_INDEX_MAX];
+static bool s_manualHunt[UNIT_INDEX_MAX];
 static uint32 s_autonomyNextCheck[UNIT_INDEX_MAX];
 static uint32 s_harvesterNextCheck[UNIT_INDEX_MAX];
 static uint16 s_harvesterLastPosition[UNIT_INDEX_MAX];
@@ -392,6 +393,7 @@ static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
 
 static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 {
+	if (s_manualHunt[unit->o.index]) return 63;
 	switch (unit->actionID) {
 		case ACTION_GUARD:      return 5;
 		case ACTION_AREA_GUARD: return 14;
@@ -400,13 +402,22 @@ static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 	}
 }
 
+/* Player-issued Hunt is deliberately kept outside the original unit script.
+ * That script can recurse for an already-running Quad; the autonomous layer
+ * supplies map-wide target selection without touching its stack. */
+void Unit_SetManualHunt(Unit *unit, bool enabled)
+{
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
+	s_manualHunt[unit->o.index] = enabled;
+}
+
 static bool Unit_Autonomy_TargetInArea(const Unit *unit, uint16 target)
 {
 	uint16 radius = Unit_Autonomy_GetSearchRadius(unit);
 	uint16 anchor = unit->guardPosition;
 
 	if (radius == 0 || !Tools_Index_IsValid(target)) return false;
-	if (unit->actionID == ACTION_HUNT) return true;
+	if (s_manualHunt[unit->o.index] || unit->actionID == ACTION_HUNT) return true;
 	if (!Map_IsValidPosition(anchor)) anchor = Tile_PackTile(unit->o.position);
 
 	return Tile_GetDistance(Tile_UnpackTile(anchor), Tools_Index_GetTile(target)) <= (radius << 8);
@@ -587,6 +598,10 @@ static void Unit_Autonomy_Return(Unit *unit)
 	unit->targetAttack = 0;
 	unit->targetMove = 0;
 	unit->route[0] = 0xFF;
+	if (s_manualHunt[unit->o.index]) {
+		Unit_SetAction(unit, ACTION_AREA_GUARD);
+		return;
+	}
 
 	if (returnAction == ACTION_HUNT || !Map_IsValidPosition(anchor) || Tile_GetDistance(unit->o.position, Tile_UnpackTile(anchor)) <= 128) {
 		Unit_SetAction(unit, returnAction);
@@ -846,6 +861,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 {
 	uint16 encoded;
 
+	Unit_SetManualHunt(unit, false);
 	Unit_AttackPosition_SetManual(unit, false);
 	Object_Script_Variable4_Clear(&unit->o);
 	unit->targetAttack = 0;
@@ -2761,12 +2777,16 @@ void UnitSelection_OrderHunt(void)
 		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
 
 		if (!UnitSelection_UnitHasAction(unit, ACTION_ATTACK)) continue;
+		Unit_SetManualHunt(unit, false);
 		Unit_AttackPosition_SetManual(unit, false);
 		Object_Script_Variable4_Clear(&unit->o);
 		unit->targetAttack = 0;
 		unit->targetMove = 0;
 		unit->route[0] = 0xFF;
-		Unit_SetAction(unit, ACTION_HUNT);
+		/* Keep the stable Area Guard script alive.  The manual-hunt flag makes
+		 * autonomous target search global without loading legacy Hunt code. */
+		Unit_SetAction(unit, ACTION_AREA_GUARD);
+		Unit_SetManualHunt(unit, true);
 	}
 
 	GUI_Widget_ActionPanel_Draw(true);
@@ -2821,6 +2841,7 @@ bool UnitSelection_BeginAction(ActionType action)
 		if (unitAction == ACTION_INVALID || !UnitSelection_UnitHasAction(unit, unitAction)) continue;
 
 		Object_Script_Variable4_Clear(&unit->o);
+		Unit_SetManualHunt(unit, false);
 		unit->targetAttack = 0;
 		unit->targetMove = 0;
 		unit->route[0] = 0xFF;
@@ -2848,6 +2869,7 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 			Unit *unit = Unit_Get_ByIndex(s_unitOrder[i]);
 
 			if (!UnitSelection_CanAirTransit(unit)) continue;
+			Unit_SetManualHunt(unit, false);
 			Unit_AttackPosition_SetManual(unit, false);
 			Object_Script_Variable4_Clear(&unit->o);
 			unit->targetAttack = 0;
