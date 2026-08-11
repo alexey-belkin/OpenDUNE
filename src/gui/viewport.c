@@ -286,6 +286,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 		action = g_activeAction;
 
+		Unit_AttackPosition_SetManual(u, false);
 		Object_Script_Variable4_Clear(&u->o);
 		u->targetAttack   = 0;
 		u->targetMove     = 0;
@@ -307,6 +308,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			Unit *target;
 
 			Unit_SetTarget(u, encoded);
+			if (action == ACTION_ATTACK) Unit_AttackPosition_SetManual(u, true);
 			target = Tools_Index_GetUnit(u->targetAttack);
 			if (target != NULL) target->blinkCounter = 8;
 		}

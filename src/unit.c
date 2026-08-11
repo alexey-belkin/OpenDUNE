@@ -54,6 +54,154 @@ static uint16 s_unitOrderCount = 0;
 static ActionType s_unitOrderAction = ACTION_INVALID;
 static bool s_unitSelectionChanging = false;
 
+/* Runtime-only tactical state.  The actual route remains owned by the unit
+ * script, so save-game layouts and the normal movement system stay intact. */
+static bool s_attackPositionManual[UNIT_INDEX_MAX];
+static uint16 s_attackPositionTile[UNIT_INDEX_MAX];
+static uint16 s_attackPositionTarget[UNIT_INDEX_MAX];
+static uint32 s_attackPositionNextCheck[UNIT_INDEX_MAX];
+
+static bool Unit_AttackPosition_IsEligible(Unit *unit)
+{
+	const UnitInfo *ui;
+
+	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
+	if (!s_attackPositionManual[unit->o.index] || unit->actionID != ACTION_ATTACK) return false;
+	if (Unit_GetHouseID(unit) != g_playerHouseID || !Tools_Index_IsValid(unit->targetAttack)) return false;
+
+	ui = &g_table_unitInfo[unit->o.type];
+	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || ui->fireDistance == 0) return false;
+
+	return ui->movementType == MOVEMENT_FOOT || ui->movementType == MOVEMENT_TRACKED || ui->movementType == MOVEMENT_WHEELED;
+}
+
+static void Unit_AttackPosition_Clear(Unit *unit)
+{
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
+	s_attackPositionTile[unit->o.index] = 0;
+	s_attackPositionTarget[unit->o.index] = 0;
+	s_attackPositionNextCheck[unit->o.index] = 0;
+}
+
+/** Enable or clear tactical firing positions for a player-issued order. */
+void Unit_AttackPosition_SetManual(Unit *unit, bool enabled)
+{
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
+
+	s_attackPositionManual[unit->o.index] = enabled;
+	Unit_AttackPosition_Clear(unit);
+	if (enabled) s_attackPositionNextCheck[unit->o.index] = g_timerGame + (unit->o.index % 7) * 3;
+}
+
+static bool Unit_AttackPosition_IsReserved(const Unit *unit, uint16 packed, uint16 target)
+{
+	uint16 i;
+
+	for (i = 0; i < UNIT_INDEX_MAX; i++) {
+		Unit *other;
+
+		if (i == unit->o.index) continue;
+		if (!s_attackPositionManual[i] || s_attackPositionTile[i] != packed || s_attackPositionTarget[i] != target) continue;
+		other = Unit_Get_ByIndex(i);
+		if (!other->o.flags.s.used || other->actionID != ACTION_ATTACK) continue;
+		return true;
+	}
+
+	return false;
+}
+
+static bool Unit_AttackPosition_IsStillUseful(const Unit *unit, uint16 packedTarget)
+{
+	uint16 position = s_attackPositionTile[unit->o.index];
+	uint16 fireDistance = g_table_unitInfo[unit->o.type].fireDistance;
+
+	if (position == 0 || s_attackPositionTarget[unit->o.index] != unit->targetAttack) return false;
+	if (!Map_IsValidPosition(position) || Object_GetByPackedTile(position) != NULL) return false;
+
+	return Tile_GetDistancePacked(position, packedTarget) <= fireDistance;
+}
+
+/* Pick a reachable, unclaimed tile near the outer edge of weapon range. */
+static void Unit_AttackPosition_Update(Unit *unit)
+{
+	static const int8 directionX[16] = {4, 4, 3, 2, 0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4};
+	static const int8 directionY[16] = {0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4, 4, 4, 3, 2};
+	const UnitInfo *ui;
+	uint16 packedSource;
+	uint16 packedTarget;
+	uint16 bestPacked = 0;
+	int32 bestScore = 0x7FFFFFFF;
+	uint16 targetDistance;
+	uint16 radius;
+	uint16 minRadius;
+	uint16 dir;
+
+	if (!Unit_AttackPosition_IsEligible(unit)) {
+		Unit_AttackPosition_Clear(unit);
+		return;
+	}
+
+	if (s_attackPositionNextCheck[unit->o.index] > g_timerGame) return;
+	s_attackPositionNextCheck[unit->o.index] = g_timerGame + 30;
+
+	ui = &g_table_unitInfo[unit->o.type];
+	packedSource = Tile_PackTile(unit->o.position);
+	packedTarget = Tools_Index_GetPackedTile(unit->targetAttack);
+	if (!Map_IsValidPosition(packedSource) || !Map_IsValidPosition(packedTarget)) {
+		Unit_AttackPosition_Clear(unit);
+		return;
+	}
+
+	/* A unit already in range keeps firing instead of chasing a new slot. */
+	targetDistance = Object_GetDistanceToEncoded(&unit->o, unit->targetAttack);
+	if (targetDistance <= (ui->fireDistance << 8)) {
+		if (s_attackPositionTile[unit->o.index] != 0 && unit->targetMove == Tools_Index_Encode(s_attackPositionTile[unit->o.index], IT_TILE)) {
+			unit->targetMove = 0;
+			unit->route[0] = 0xFF;
+		}
+		Unit_AttackPosition_Clear(unit);
+		return;
+	}
+
+	/* Keep an in-range slot while travelling to it: no route thrashing. */
+	if (Unit_AttackPosition_IsStillUseful(unit, packedTarget)) return;
+
+	Unit_AttackPosition_Clear(unit);
+	minRadius = ui->fireDistance > 2 ? ui->fireDistance - 2 : 1;
+
+	for (radius = ui->fireDistance; radius >= minRadius; radius--) {
+		for (dir = 0; dir < lengthof(directionX); dir++) {
+			int16 x = Tile_GetPackedX(packedTarget) + (radius * directionX[dir] + 2) / 4;
+			int16 y = Tile_GetPackedY(packedTarget) + (radius * directionY[dir] + 2) / 4;
+			uint16 packed;
+			int16 routeScore;
+			int32 score;
+
+			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+			packed = Tile_PackXY(x, y);
+			if (!Map_IsValidPosition(packed) || packed == packedSource) continue;
+			if (Object_GetByPackedTile(packed) != NULL || Unit_AttackPosition_IsReserved(unit, packed, unit->targetAttack)) continue;
+			if (Tile_GetDistancePacked(packed, packedTarget) > ui->fireDistance) continue;
+			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
+			if (!Script_Unit_HasRoute(unit, packedSource, packed, &routeScore)) continue;
+
+			/* Prefer a short route, then the outer part of the firing ring. */
+			score = routeScore * 16 + (ui->fireDistance - Tile_GetDistancePacked(packed, packedTarget)) * 12;
+			if (score >= bestScore) continue;
+			bestScore = score;
+			bestPacked = packed;
+		}
+
+		if (radius == minRadius) break; /* avoid unsigned wrap */
+	}
+
+	if (bestPacked == 0) return;
+
+	s_attackPositionTile[unit->o.index] = bestPacked;
+	s_attackPositionTarget[unit->o.index] = unit->targetAttack;
+	Unit_SetDestination(unit, Tools_Index_Encode(bestPacked, IT_TILE));
+}
+
 /** Is this a player unit that can take part in a box selection? */
 static bool UnitSelection_IsControllable(const Unit *unit)
 {
@@ -133,6 +281,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 {
 	uint16 encoded;
 
+	Unit_AttackPosition_SetManual(unit, false);
 	Object_Script_Variable4_Clear(&unit->o);
 	unit->targetAttack = 0;
 	unit->targetMove = 0;
@@ -152,6 +301,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 		unit->targetMove = encoded;
 	} else {
 		Unit_SetTarget(unit, encoded);
+		if (action == ACTION_ATTACK) Unit_AttackPosition_SetManual(unit, true);
 		unit = Tools_Index_GetUnit(unit->targetAttack);
 		if (unit != NULL) unit->blinkCounter = 8;
 	}
@@ -297,6 +447,8 @@ void GameLoop_Unit(void)
 		g_scriptCurrentTeam      = NULL;
 
 		if (u->o.flags.s.isNotOnMap) continue;
+
+		if (tickUnknown4) Unit_AttackPosition_Update(u);
 
 		if (tickUnknown4 && u->targetAttack != 0 && ui->o.flags.hasTurret) {
 			tile32 tile;
@@ -610,6 +762,7 @@ void Unit_SetAction(Unit *u, ActionType action)
 
 	if (u == NULL) return;
 	if (u->actionID == ACTION_DESTRUCT || u->actionID == ACTION_DIE || action == ACTION_INVALID) return;
+	if (action != ACTION_ATTACK) Unit_AttackPosition_SetManual(u, false);
 
 	ai = &g_table_actionInfo[action];
 

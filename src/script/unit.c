@@ -1286,6 +1286,45 @@ static Pathfinder_Data Script_Unit_Pathfinder(uint16 packedSrc, uint16 packedDst
 }
 
 /**
+ * Test whether a unit can reach a tile using the same pathfinder as its
+ * movement script. Tactical callers use this before reserving a firing tile.
+ */
+bool Script_Unit_HasRoute(Unit *unit, uint16 packedSrc, uint16 packedDst, int16 *score)
+{
+	Unit *previousUnit;
+	Pathfinder_Data res;
+	uint8 buffer[42];
+	uint16 packed;
+	uint16 i;
+
+	if (unit == NULL || !Map_IsValidPosition(packedSrc) || !Map_IsValidPosition(packedDst)) return false;
+	if (packedSrc == packedDst) {
+		if (score != NULL) *score = 0;
+		return true;
+	}
+
+	/* The original pathfinder gets its movement rules from this context. */
+	previousUnit = g_scriptCurrentUnit;
+	g_scriptCurrentUnit = unit;
+	res = Script_Unit_Pathfinder(packedSrc, packedDst, buffer, 40);
+	g_scriptCurrentUnit = previousUnit;
+
+	if (score != NULL) *score = res.score;
+	if (res.routeSize == 0 || buffer[0] == 0xFF) return false;
+
+	/* Script_Unit_Pathfinder may return a useful partial route.  That is fine
+	 * for ordinary movement, but a firing-position reservation needs to know
+	 * that its exact endpoint is reachable. */
+	packed = packedSrc;
+	for (i = 0; i < res.routeSize && buffer[i] != 0xFF; i++) {
+		if (buffer[i] > 7) return false;
+		packed += s_mapDirection[buffer[i]];
+	}
+
+	return packed == packedDst;
+}
+
+/**
  * Calculate the route to a tile.
  *
  * Stack: 1 - An encoded tile to calculate the route to.

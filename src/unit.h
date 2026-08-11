@@ -262,6 +262,7 @@ extern void Unit_Remove(Unit *u);
 extern bool Unit_StartMovement(Unit *unit);
 extern void Unit_SetTarget(Unit* unit, uint16 encoded);
 extern bool Unit_Deviation_Decrease(Unit* unit, uint16 amount);
+extern void Unit_AttackPosition_SetManual(Unit *unit, bool enabled);
 extern void Unit_RemoveFog(Unit *unit);
 extern bool Unit_Deviate(Unit *unit, uint16 probability, uint8 houseID);
 extern bool Unit_Move(Unit *unit, uint16 distance);
