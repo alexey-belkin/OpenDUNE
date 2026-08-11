@@ -38,6 +38,7 @@ typedef struct GameCfg {
 	uint16 gameSpeed;                  /*!< GAME_SPEED_NORMAL or GAME_SPEED_FAST. */
 	uint16 hints;                      /*!< 0:Off, 1:On. */
 	uint16 autoScroll;                 /*!< 0:Off, 1:On. */
+	uint16 unitHealthBars;             /*!< 0:Off, 1:On. */
 } GameCfg;
 
 extern GameCfg g_gameConfig;

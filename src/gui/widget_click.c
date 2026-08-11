@@ -653,6 +653,10 @@ static void GUI_Widget_GameControls_Click(Widget *w)
 					break;
 
 				case 5:
+					g_gameConfig.unitHealthBars ^= 0x1;
+					break;
+
+				case 6:
 					loop = false;
 					break;
 

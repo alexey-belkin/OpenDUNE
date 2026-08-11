@@ -2926,6 +2926,7 @@ FactoryResult GUI_DisplayFactoryWindow(bool isConstructionYard, bool isStarPort,
 char *GUI_String_Get_ByIndex(int16 stringID)
 {
 	extern char g_savegameDesc[5][51];
+	static char healthBarsLabel[] = "HEALTH BARS";
 
 	switch (stringID) {
 		case -5: case -4: case -3: case -2: case -1: {
@@ -2953,6 +2954,13 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 		case -14:
 			stringID = (g_gameConfig.autoScroll != 0) ? STR_ON : STR_OFF;
 			break;
+
+		case -15:
+			stringID = (g_gameConfig.unitHealthBars != 0) ? STR_ON : STR_OFF;
+			break;
+
+		case -16:
+			return healthBarsLabel;
 
 		default: break;
 	}

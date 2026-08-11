@@ -47,6 +47,33 @@ static uint16 GUI_Widget_Viewport_GetPackedAt(uint16 x, uint16 y)
 	return Tile_PackXY(x / 16 + Tile_GetPackedX(g_minimapPosition), (y - 40) / 16 + Tile_GetPackedY(g_minimapPosition));
 }
 
+/** Draw a compact health bar using the same green/yellow/red thresholds as
+ * the selected-unit panel. */
+static void GUI_Widget_Viewport_DrawHealthBar(int16 x, int16 y, uint16 current, uint16 max)
+{
+	int16 left = x - 7;
+	int16 top = y - 15;
+	uint16 width;
+	uint8 colour = 4;
+
+	if (max == 0) return;
+	if (current > max) current = max;
+
+	if (left < 1) left = 1;
+	if (left > 225) left = 225;
+	if (top < 41) top = 41;
+	if (top + 2 >= 200) return;
+
+	width = current * 14 / max;
+	if (current != 0 && width == 0) width = 1;
+	if (current <= max / 2) colour = 5;
+	if (current <= max / 4) colour = 8;
+
+	GUI_DrawFilledRectangle(left - 1, top - 1, left + 14, top + 2, 1);
+	GUI_DrawFilledRectangle(left, top, left + 13, top + 1, 12);
+	if (width != 0) GUI_DrawFilledRectangle(left, top, left + width - 1, top + 1, colour);
+}
+
 /**
  * Handles the Click events for the Viewport widget.
  *
@@ -675,6 +702,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], x, y - 14, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 			}
 
+			if (g_gameConfig.unitHealthBars && ui->flags.isNormalUnit) {
+				GUI_Widget_Viewport_DrawHealthBar(x, y, u->o.hitpoints, ui->o.hitpoints);
+			}
+
 			if (!UnitSelection_IsSelected(u)) continue;
 
 			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[6], x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
@@ -814,6 +845,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, x, y, 2, spriteFlags | DRAWSPRITE_FLAG_PAL, paletteHouse);
 			} else {
 				GUI_DrawSprite(SCREEN_ACTIVE, sprite, x, y, 2, spriteFlags);
+			}
+
+			if (g_gameConfig.unitHealthBars && ui->flags.isNormalUnit) {
+				GUI_Widget_Viewport_DrawHealthBar(x, y, u->o.hitpoints, ui->o.hitpoints);
 			}
 		}
 

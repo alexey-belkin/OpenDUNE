@@ -12,7 +12,7 @@
 #include "file.h"
 #include "string.h"
 
-GameCfg g_gameConfig = { 1, 1, GAME_SPEED_FAST, 1, 0 };
+GameCfg g_gameConfig = { 1, 1, GAME_SPEED_FAST, 1, 0, 1 };
 DuneCfg g_config;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
@@ -122,6 +122,8 @@ bool GameOptions_Load(void)
 	g_gameConfig.gameSpeed = File_Read_LE16(index);
 	g_gameConfig.hints = File_Read_LE16(index);
 	g_gameConfig.autoScroll = File_Read_LE16(index);
+	/* OPTIONS.CFG files written before health bars have only five values. */
+	g_gameConfig.unitHealthBars = (File_GetSize(index) >= 12) ? File_Read_LE16(index) : 1;
 
 	File_Close(index);
 
@@ -130,6 +132,7 @@ bool GameOptions_Load(void)
 	if (g_gameConfig.gameSpeed != GAME_SPEED_NORMAL && g_gameConfig.gameSpeed != GAME_SPEED_FAST) {
 		g_gameConfig.gameSpeed = GAME_SPEED_FAST;
 	}
+	g_gameConfig.unitHealthBars = (g_gameConfig.unitHealthBars != 0) ? 1 : 0;
 
 	return true;
 }
@@ -150,6 +153,7 @@ void GameOptions_Save(void)
 	File_Write_LE16(index, g_gameConfig.gameSpeed);
 	File_Write_LE16(index, g_gameConfig.hints);
 	File_Write_LE16(index, g_gameConfig.autoScroll);
+	File_Write_LE16(index, g_gameConfig.unitHealthBars);
 
 	File_Close(index);
 

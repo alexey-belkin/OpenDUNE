@@ -81,12 +81,12 @@ WindowDesc g_gameControlWindowDesc = {
 	/* index       */ 16,
 	/* stringID    */ STR_GAME_CONTROLS,
 	/* addArrows   */ false,
-	/* widgetCount */ 6,
+	/* widgetCount */ 7,
 	{ /* widgets */
 		{ /* 0 */
 		/* stringID      */ -10, /* Music state. */
 		/* offsetX       */ 152,
-		/* offsetY       */ 22,
+		/* offsetY       */ 20,
 		/* width         */ 80,
 		/* height        */ 15,
 		/* labelStringID */ STR_MUSIC_IS,
@@ -95,7 +95,7 @@ WindowDesc g_gameControlWindowDesc = {
 		{ /* 1 */
 		/* stringID      */ -11, /* Sound state. */
 		/* offsetX       */ 152,
-		/* offsetY       */ 39,
+		/* offsetY       */ 35,
 		/* width         */ 80,
 		/* height        */ 15,
 		/* labelStringID */ STR_SOUNDS_ARE,
@@ -104,7 +104,7 @@ WindowDesc g_gameControlWindowDesc = {
 		{ /* 2 */
 		/* stringID      */ -12, /* Game speed. */
 		/* offsetX       */ 152,
-		/* offsetY       */ 56,
+		/* offsetY       */ 50,
 		/* width         */ 80,
 		/* height        */ 15,
 		/* labelStringID */ STR_GAME_SPEED,
@@ -113,7 +113,7 @@ WindowDesc g_gameControlWindowDesc = {
 		{ /* 3 */
 		/* stringID      */ -13, /* Hints state */
 		/* offsetX       */ 152,
-		/* offsetY       */ 73,
+		/* offsetY       */ 65,
 		/* width         */ 80,
 		/* height        */ 15,
 		/* labelStringID */ STR_HINTS_ARE,
@@ -122,30 +122,30 @@ WindowDesc g_gameControlWindowDesc = {
 		{ /* 4 */
 		/* stringID      */ -14, /* Autoscroll state */
 		/* offsetX       */ 152,
-		/* offsetY       */ 90,
+		/* offsetY       */ 80,
 		/* width         */ 80,
 		/* height        */ 15,
 		/* labelStringID */ STR_AUTO_SCROLL_IS,
 		/* shortcut2     */ 0,
 		},
-		{ /* 5 */
+	{ /* 5 */
+		/* stringID      */ -15, /* Unit health bars state. */
+		/* offsetX       */ 152,
+		/* offsetY       */ 95,
+		/* width         */ 80,
+		/* height        */ 15,
+		/* labelStringID */ -16, /* Health bars. */
+		/* shortcut2     */ 0,
+	},
+	{ /* 6 */
 		/* stringID      */ STR_PREVIOUS,
 		/* offsetX       */ 96,
-		/* offsetY       */ 110,
+		/* offsetY       */ 116,
 		/* width         */ 136,
 		/* height        */ 15,
 		/* labelStringID */ STR_NULL,
 		/* shortcut2     */ 110,
 		},
-		{ /* 6 */
-		/* stringID      */ STR_NULL,
-		/* offsetX       */ 0,
-		/* offsetY       */ 0,
-		/* width         */ 0,
-		/* height        */ 0,
-		/* labelStringID */ STR_NULL,
-		/* shortcut2     */ 0,
-		}
 	}
 };
 

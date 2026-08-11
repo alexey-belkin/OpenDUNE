@@ -683,6 +683,14 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			uint16 index = (i < 4) ? i + 8 : i + 26;
 			buttons[i] = GUI_Widget_Get_ByIndex(w, index);
 			GUI_Widget_MakeInvisible(buttons[i]);
+			/* Group mode moves the first four buttons into the portrait area.
+			 * Restore their original geometry before drawing a single unit again. */
+			if (i < 4) {
+				buttons[i]->offsetX = 258;
+				buttons[i]->offsetY = 77 + i * 11;
+				buttons[i]->width = 60;
+				buttons[i]->height = 10;
+			}
 		}
 
 		GUI_Widget_DrawBorder(g_curWidgetIndex, 0, 0);
