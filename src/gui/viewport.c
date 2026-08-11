@@ -155,6 +155,13 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 	packed = Tile_PackXY(x, y);
 
+	/* A right click on the tactical map is a context order. It deliberately
+	 * replaces the old behaviour that recentered the viewport on the tile. */
+	if (w->index == 43 && (w->state.buttonState & 0x10) != 0 && g_selectionType == SELECTIONTYPE_UNIT) {
+		UnitSelection_IssueDefaultOrder(packed);
+		return true;
+	}
+
 	if (w->index == 43 && g_selectionType != SELECTIONTYPE_TARGET && g_selectionType != SELECTIONTYPE_PLACE) {
 		if (drag) {
 			if (!s_selectionBoxActive) {

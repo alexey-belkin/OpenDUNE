@@ -2943,15 +2943,7 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 			break;
 
 		case -12: {
-			static const uint16 gameSpeedStrings[] = {
-				STR_SLOWEST,
-				STR_SLOW,
-				STR_NORMAL,
-				STR_FAST,
-				STR_FASTEST
-			};
-
-			stringID = gameSpeedStrings[g_gameConfig.gameSpeed];
+			stringID = (g_gameConfig.gameSpeed == GAME_SPEED_FAST) ? STR_FAST : STR_NORMAL;
 		} break;
 
 		case -13:

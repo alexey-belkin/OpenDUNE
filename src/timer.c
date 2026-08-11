@@ -368,6 +368,12 @@ void Timer_Tick(void)
 	if (g_timerTimeout != 0) g_timerTimeout--;
 }
 
+/** Advance only game simulation time by one tick for Fast x2 mode. */
+void Timer_AdvanceGame(void)
+{
+	if ((s_timersActive & TIMER_GAME) != 0) g_timerGame++;
+}
+
 /**
  * Set timers on and off.
  *

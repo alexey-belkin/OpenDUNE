@@ -1914,6 +1914,33 @@ ActionType UnitSelection_GetSpecialAction(void)
 	return action;
 }
 
+/** Return the most useful targeted order for one selected unit. */
+static ActionType UnitSelection_GetUnitDefaultAction(const Unit *unit)
+{
+	static const ActionType defaults[] = { ACTION_MOVE, ACTION_HARVEST, ACTION_ATTACK };
+	uint16 i;
+
+	for (i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
+		if (UnitSelection_UnitHasAction(unit, defaults[i])) return defaults[i];
+	}
+
+	return ACTION_INVALID;
+}
+
+/** Issue the most useful targeted order available to each selected unit. */
+void UnitSelection_IssueDefaultOrder(uint16 packed)
+{
+	uint16 i;
+
+	UnitSelection_CancelPendingAction();
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		ActionType action = UnitSelection_GetUnitDefaultAction(unit);
+
+		if (action != ACTION_INVALID) UnitSelection_ResetOrder(unit, action, packed);
+	}
+}
+
 /** Begin a group command. Returns true when the next map click is its target. */
 bool UnitSelection_BeginAction(ActionType action)
 {

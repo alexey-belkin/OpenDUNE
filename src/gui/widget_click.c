@@ -641,7 +641,7 @@ static void GUI_Widget_GameControls_Click(Widget *w)
 					break;
 
 				case 2:
-					if (++g_gameConfig.gameSpeed >= 5) g_gameConfig.gameSpeed = 0;
+					g_gameConfig.gameSpeed = (g_gameConfig.gameSpeed == GAME_SPEED_FAST) ? GAME_SPEED_NORMAL : GAME_SPEED_FAST;
 					break;
 
 				case 3:

@@ -3,6 +3,11 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+typedef enum GameSpeed {
+	GAME_SPEED_NORMAL = 2,
+	GAME_SPEED_FAST   = 5
+} GameSpeed;
+
 MSVC_PACKED_BEGIN
 /**
  * This is the layout of decoded dune.cfg.
@@ -28,7 +33,7 @@ assert_compile(sizeof(DuneCfg) == 0xA);
 typedef struct GameCfg {
 	uint16 music;                      /*!< 0:Off, 1:On. */
 	uint16 sounds;                     /*!< 0:Off, 1:On. */
-	uint16 gameSpeed;                  /*!< 0:Slowest, 1:Slow, 2:Normal, 3:Fast, 4:Fastest. */
+	uint16 gameSpeed;                  /*!< GAME_SPEED_NORMAL or GAME_SPEED_FAST. */
 	uint16 hints;                      /*!< 0:Off, 1:On. */
 	uint16 autoScroll;                 /*!< 0:Off, 1:On. */
 } GameCfg;

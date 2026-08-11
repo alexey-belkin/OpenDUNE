@@ -277,6 +277,7 @@ extern bool UnitSelection_IsSelected(const Unit *unit);
 extern uint16 UnitSelection_GetActionCount(ActionType action);
 extern ActionType UnitSelection_GetActionForSlot(uint16 slot);
 extern ActionType UnitSelection_GetSpecialAction(void);
+extern void UnitSelection_IssueDefaultOrder(uint16 packed);
 extern bool UnitSelection_BeginAction(ActionType action);
 extern bool UnitSelection_HasPendingAction(void);
 extern void UnitSelection_ApplyPendingAction(uint16 packed);

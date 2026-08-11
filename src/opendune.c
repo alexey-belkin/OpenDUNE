@@ -1114,6 +1114,17 @@ static void GameLoop_Main(void)
 			GameLoop_Structure();
 			GameLoop_House();
 
+			/* Fast mode runs a second, sequential simulation tick. Advancing the
+			 * game timer between passes keeps every timer-driven system at x2,
+			 * rather than speeding up only selected subsystems. */
+			if (g_gameConfig.gameSpeed == GAME_SPEED_FAST) {
+				Timer_AdvanceGame();
+				GameLoop_Team();
+				GameLoop_Unit();
+				GameLoop_Structure();
+				GameLoop_House();
+			}
+
 			GUI_DrawScreen(SCREEN_0);
 		}
 

@@ -12,7 +12,7 @@
 #include "file.h"
 #include "string.h"
 
-GameCfg g_gameConfig = { 1, 1, 2, 1, 0 };
+GameCfg g_gameConfig = { 1, 1, GAME_SPEED_NORMAL, 1, 0 };
 DuneCfg g_config;
 bool g_enableSoundMusic = true;
 bool g_enableVoices = true;
@@ -124,6 +124,9 @@ bool GameOptions_Load(void)
 	g_gameConfig.autoScroll = File_Read_LE16(index);
 
 	File_Close(index);
+
+	/* Replace the legacy five-step speed slider with Normal and Fast x2. */
+	if (g_gameConfig.gameSpeed != GAME_SPEED_FAST) g_gameConfig.gameSpeed = GAME_SPEED_NORMAL;
 
 	return true;
 }
