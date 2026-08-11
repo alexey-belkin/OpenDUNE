@@ -37,6 +37,7 @@ static uint32 s_tickMapScroll;                              /*!< Stores last tim
 static uint32 s_tickEdgeScroll;                             /*!< Stores last time passive edge scroll moved the map. */
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
 static bool s_selectionBoxActive;                           /*!< A left drag is selecting a group. */
+static bool s_selectionBoxDragging;                         /*!< The press moved far enough to be a box, not a click. */
 static uint16 s_selectionBoxStart;                          /*!< Start tile, fixed in world coordinates. */
 static uint16 s_selectionBoxEnd;                            /*!< End tile, fixed in world coordinates. */
 
@@ -46,6 +47,24 @@ static uint16 GUI_Widget_Viewport_GetPackedAt(uint16 x, uint16 y)
 	x = min(x, 239);
 	y = min(max(y, 40), 199);
 	return Tile_PackXY(x / 16 + Tile_GetPackedX(g_minimapPosition), (y - 40) / 16 + Tile_GetPackedY(g_minimapPosition));
+}
+
+static void GUI_Widget_Viewport_SelectAt(uint16 packed)
+{
+	uint16 position;
+
+	if (g_debugScenario) {
+		position = packed;
+	} else {
+		position = Unit_FindTargetAround(packed);
+	}
+
+	if (g_map[position].overlayTileID != g_veiledTileID || g_debugScenario) {
+		if (Object_GetByPackedTile(position) != NULL || g_debugScenario) {
+			Map_SetSelection(position);
+			Unit_DisplayStatusText(g_unitSelected);
+		}
+	}
 }
 
 /** Draw a compact health bar using the same green/yellow/red thresholds as
@@ -174,7 +193,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	release = (w->state.buttonState & 0x04) != 0;
 
 	/* ENHANCEMENT -- Dune2 depends on slow CPUs to limit the rate mouse clicks are handled. */
-	if (g_dune2_enhanced && (click || drag)) {
+	if (g_dune2_enhanced && drag) {
 		if (s_tickClick + 2 >= g_timerGame) return true;
 		s_tickClick = g_timerGame;
 	}
@@ -232,6 +251,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	if ((w->index == 43 || w->index == 44) && rightClick) {
 		if (s_selectionBoxActive) {
 			s_selectionBoxActive = false;
+			s_selectionBoxDragging = false;
 			g_viewport_forceRedraw = true;
 		}
 
@@ -239,7 +259,15 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		return true;
 	}
 
-	if (w->index == 43 && g_selectionType != SELECTIONTYPE_TARGET && g_selectionType != SELECTIONTYPE_PLACE) {
+	if (w->index == 43 && g_selectionType == SELECTIONTYPE_UNIT) {
+		if (click) {
+			s_selectionBoxStart = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
+			s_selectionBoxEnd = s_selectionBoxStart;
+			s_selectionBoxActive = true;
+			s_selectionBoxDragging = false;
+			return true;
+		}
+
 		if (drag) {
 			if (!s_selectionBoxActive) {
 				s_selectionBoxStart = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
@@ -247,6 +275,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			}
 
 			s_selectionBoxEnd = packed;
+			s_selectionBoxDragging = true;
 			g_viewport_forceRedraw = true;
 			return true;
 		}
@@ -255,8 +284,13 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			bool additive = g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39));
 
 			s_selectionBoxEnd = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
-			UnitSelection_SelectBox(s_selectionBoxStart, s_selectionBoxEnd, additive);
+			if (s_selectionBoxDragging) {
+				UnitSelection_SelectBox(s_selectionBoxStart, s_selectionBoxEnd, additive);
+			} else {
+				GUI_Widget_Viewport_SelectAt(s_selectionBoxEnd);
+			}
 			s_selectionBoxActive = false;
+			s_selectionBoxDragging = false;
 			g_viewport_forceRedraw = true;
 			return true;
 		}
@@ -301,7 +335,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		Unit_SetAction(u, action);
 
 		if (action == ACTION_MOVE) {
-			u->guardPosition = packed;
+			Unit_SetGuardPosition(u, packed);
 			Unit_SetDestination(u, encoded);
 		} else if (action == ACTION_HARVEST) {
 			u->harvestCenter = packed;
@@ -393,20 +427,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	}
 
 	if (click && w->index == 43) {
-		uint16 position;
-
-		if (g_debugScenario) {
-			position = packed;
-		} else {
-			position = Unit_FindTargetAround(packed);
-		}
-
-		if (g_map[position].overlayTileID != g_veiledTileID || g_debugScenario) {
-			if (Object_GetByPackedTile(position) != NULL || g_debugScenario) {
-				Map_SetSelection(position);
-				Unit_DisplayStatusText(g_unitSelected);
-			}
-		}
+		GUI_Widget_Viewport_SelectAt(packed);
 
 		if ((w->state.buttonState & 0x10) != 0) Map_SetViewportPosition(packed);
 

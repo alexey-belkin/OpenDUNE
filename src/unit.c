@@ -809,7 +809,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 	if (action == ACTION_MOVE) {
 		/* A player-directed move relocates the default Area Guard post. The
 		 * completion hook below replaces this with the exact arrival tile. */
-		unit->guardPosition = packed;
+		Unit_SetGuardPosition(unit, packed);
 		Unit_SetDestination(unit, encoded);
 	} else if (action == ACTION_HARVEST) {
 		unit->harvestCenter = packed;
@@ -1330,13 +1330,29 @@ ActionType Unit_GetDefaultAction(const Unit *u)
 	return ui->o.actionsPlayer[3];
 }
 
+/* Area Guard in the original unit script uses originEncoded as its home.
+ * Keep it in lockstep with our explicit post so legacy and new behaviour
+ * agree about where a manually moved unit should return. */
+void Unit_SetGuardPosition(Unit *u, uint16 packed)
+{
+	const UnitInfo *ui;
+
+	if (u == NULL || !Map_IsValidPosition(packed)) return;
+	u->guardPosition = packed;
+
+	ui = &g_table_unitInfo[u->o.type];
+	if (Unit_GetHouseID(u) == g_playerHouseID && ui->flags.isNormalUnit && ui->flags.isGroundUnit && ui->fireDistance != 0) {
+		u->originEncoded = Tools_Index_Encode(packed, IT_TILE);
+	}
+}
+
 /* A manual order establishes a new defensive post. Autonomous defence keeps
  * its existing post, so reacting to a threat never drifts the unit's area. */
 ActionType Unit_GetDefaultActionAfterCompletion(Unit *u)
 {
 	if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID &&
 		(u->actionID == ACTION_MOVE || (u->actionID == ACTION_ATTACK && s_attackPositionManual[u->o.index] && !s_autonomousAttack[u->o.index]))) {
-		u->guardPosition = Tile_PackTile(u->o.position);
+		Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
 	}
 
 	return Unit_GetDefaultAction(u);
@@ -1679,7 +1695,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 	u->currentDestination.y = 0;
 	u->targetMove = 0;
 	u->targetAttack = 0;
-	if (u->o.houseID == g_playerHouseID && u->o.type != UNIT_HARVESTER) u->guardPosition = Tile_PackTile(u->o.position);
+	if (u->o.houseID == g_playerHouseID && u->o.type != UNIT_HARVESTER) Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
 
 	if (g_map[Tile_PackTile(u->o.position)].isUnveiled) {
 		/* A new unit being delivered fresh from the factory; force a seenByHouses
@@ -2693,7 +2709,7 @@ bool UnitSelection_BeginAction(ActionType action)
 		unit->targetAttack = 0;
 		unit->targetMove = 0;
 		unit->route[0] = 0xFF;
-		if (unitAction == ACTION_GUARD || unitAction == ACTION_AREA_GUARD) unit->guardPosition = Tile_PackTile(unit->o.position);
+		if (unitAction == ACTION_GUARD || unitAction == ACTION_AREA_GUARD) Unit_SetGuardPosition(unit, Tile_PackTile(unit->o.position));
 		Unit_SetAction(unit, unitAction);
 	}
 

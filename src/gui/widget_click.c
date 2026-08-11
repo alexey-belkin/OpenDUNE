@@ -343,7 +343,7 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 	u->targetAttack = 0;
 	u->targetMove = 0;
 	u->route[0] = 0xFF;
-	if (action == ACTION_GUARD || action == ACTION_AREA_GUARD) u->guardPosition = Tile_PackTile(u->o.position);
+	if (action == ACTION_GUARD || action == ACTION_AREA_GUARD) Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
 
 	Unit_SetAction(u, action);
 

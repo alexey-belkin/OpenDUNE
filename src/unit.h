@@ -253,6 +253,7 @@ extern bool Unit_IsTypeOnMap(uint8 houseID, uint8 typeID);
 extern void Unit_SetAction(Unit *u, ActionType action);
 extern ActionType Unit_GetDefaultAction(const Unit *u);
 extern ActionType Unit_GetDefaultActionAfterCompletion(Unit *u);
+extern void Unit_SetGuardPosition(Unit *u, uint16 packed);
 extern uint16 Unit_AddToTeam(Unit *u, struct Team *t);
 extern uint16 Unit_RemoveFromTeam(Unit *u);
 extern struct Team *Unit_GetTeam(Unit *u);
