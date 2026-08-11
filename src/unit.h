@@ -153,6 +153,7 @@ typedef struct Unit {
 	uint16 targetMove;                                      /*!< Target to move to (encoded index). */
 	uint16 guardPosition;                                   /*!< Tile the unit returns to after autonomous defence. */
 	uint16 harvestCenter;                                   /*!< Player-selected spice field centre for a Harvester. */
+	uint16 repairReturnPosition;                             /*!< Tile a repaired vehicle should return to when it is safe. */
 	uint8  amount;                                          /*!< Meaning depends on type:
 	                                                         * - Sandworm : units to eat before disappearing.
 	                                                         * - Harvester : harvested spice.
@@ -278,6 +279,7 @@ extern void Unit_SetOrientation(Unit *unit, int8 orientation, bool rotateInstant
 extern void Unit_Select(Unit *unit);
 extern uint16 g_unitSelectionCount;
 extern void UnitSelection_Clear(void);
+extern void UnitSelection_Remove(Unit *unit);
 extern void UnitSelection_SelectSingle(Unit *unit);
 extern void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive);
 extern bool UnitSelection_IsSelected(const Unit *unit);
@@ -297,6 +299,8 @@ extern void Unit_SetSpeed(Unit *unit, uint16 speed);
 extern Unit *Unit_CreateBullet(tile32 position, UnitType type, uint8 houseID, uint16 damage, uint16 target);
 extern void Unit_DisplayStatusText(Unit *unit);
 extern void Unit_Hide(Unit *unit);
+extern uint16 Unit_Harvester_FindPreferredSpice(Unit *unit);
+extern bool Unit_RepairReturnIsSafe(Unit *unit, uint16 packed);
 extern Unit *Unit_CallUnitByType(UnitType type, uint8 houseID, uint16 target, bool createCarryall);
 extern void Unit_EnterStructure(Unit *unit, struct Structure *s);
 extern int16 Unit_GetTileEnterScore(Unit *unit, uint16 packed, uint16 orient8);

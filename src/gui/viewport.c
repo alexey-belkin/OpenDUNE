@@ -32,8 +32,6 @@
 #include "../tools.h"
 #include "../unit.h"
 
-static uint32 s_tickCursor;                                 /*!< Stores last time Viewport changed the cursor spriteID. */
-static uint32 s_tickMapScroll;                              /*!< Stores last time Viewport ran MapScroll function. */
 static uint32 s_tickEdgeScroll;                             /*!< Stores last time passive edge scroll moved the map. */
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
 static bool s_selectionBoxActive;                           /*!< A left drag is selecting a group. */
@@ -143,7 +141,6 @@ void GUI_Widget_Viewport_HandleEdgeScroll(void)
  */
 bool GUI_Widget_Viewport_Click(Widget *w)
 {
-	uint16 direction;
 	uint16 x, y;
 	uint16 spriteID;
 	uint16 packed;
@@ -152,10 +149,6 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	spriteID = g_cursorSpriteID;
 	switch (w->index) {
 		default: break;
-		case 39: spriteID = 1; break;
-		case 40: spriteID = 2; break;
-		case 41: spriteID = 4; break;
-		case 42: spriteID = 3; break;
 		case 43: spriteID = g_cursorDefaultSpriteID; break;
 		case 44: spriteID = g_cursorDefaultSpriteID; break;
 		case 45: spriteID = 0; break;
@@ -164,8 +157,6 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	if (spriteID != g_cursorSpriteID) {
 		/* HotSpots for different cursor types. */
 		static const XYPosition cursorHotSpots[6] = {{0, 0}, {5, 0}, {8, 5}, {5, 8}, {0, 5}, {8, 8}};
-
-		s_tickCursor = g_timerGame;
 
 		Sprites_SetMouseSprite(cursorHotSpots[spriteID].x, cursorHotSpots[spriteID].y, g_sprites[spriteID]);
 
@@ -181,7 +172,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	if ((w->state.buttonState & 0x01) != 0) {
 		click = true;
 		g_var_37B8 = false;
-	} else if ((w->state.buttonState & 0x02) != 0 && !g_var_37B8) {
+	} else if ((w->state.buttonState & 0x02) != 0 && (!g_var_37B8 || (w->index >= 39 && w->index <= 43 && g_selectionType == SELECTIONTYPE_UNIT))) {
 		drag = true;
 	}
 	/* The tactical-map widget filters right mouse input on release. */
@@ -193,33 +184,9 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	release = (w->state.buttonState & 0x04) != 0;
 
 	/* ENHANCEMENT -- Dune2 depends on slow CPUs to limit the rate mouse clicks are handled. */
-	if (g_dune2_enhanced && drag) {
+	if (g_dune2_enhanced && drag && !(w->index >= 39 && w->index <= 43 && g_selectionType == SELECTIONTYPE_UNIT)) {
 		if (s_tickClick + 2 >= g_timerGame) return true;
 		s_tickClick = g_timerGame;
-	}
-
-	direction = 0xFFFF;
-	switch (w->index) {
-		default: break;
-		case 39: direction = 0; break;
-		case 40: direction = 2; break;
-		case 41: direction = 6; break;
-		case 42: direction = 4; break;
-	}
-
-	if (direction != 0xFFFF) {
-		/* Always scroll if we have a click or a drag */
-		if (!click && !drag) {
-			/* Wait for either one of the timers */
-			if (s_tickMapScroll + 10 >= g_timerGame || s_tickCursor + 20 >= g_timerGame) return true;
-			/* Don't scroll if we have a structure/unit selected and don't want to autoscroll */
-			if (g_gameConfig.autoScroll == 0 && (g_selectionType == SELECTIONTYPE_STRUCTURE || g_selectionType == SELECTIONTYPE_UNIT)) return true;
-		}
-
-		s_tickMapScroll = g_timerGame;
-
-		Map_MoveDirection(direction);
-		return true;
 	}
 
 	if (click || rightClick) {
@@ -230,7 +197,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		y = g_mouseY;
 	}
 
-	if (w->index == 43) {
+	if (w->index >= 39 && w->index <= 43) {
 		x =  x / 16 + Tile_GetPackedX(g_minimapPosition);
 		y = (y - 40) / 16 + Tile_GetPackedY(g_minimapPosition);
 	} else if (w->index == 44) {
@@ -248,7 +215,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 	/* A right click is never a selection drag.  Apart from issuing a context
 	 * order, consume it so the old recenter-on-right-click path cannot run. */
-	if ((w->index == 43 || w->index == 44) && rightClick) {
+	if ((w->index >= 39 && w->index <= 44) && rightClick) {
 		if (s_selectionBoxActive) {
 			s_selectionBoxActive = false;
 			s_selectionBoxDragging = false;
@@ -259,7 +226,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		return true;
 	}
 
-	if (w->index == 43 && g_selectionType == SELECTIONTYPE_UNIT) {
+	if (w->index >= 39 && w->index <= 43 && g_selectionType == SELECTIONTYPE_UNIT) {
 		if (click) {
 			s_selectionBoxStart = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
 			s_selectionBoxEnd = s_selectionBoxStart;

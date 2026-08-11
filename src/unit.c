@@ -65,6 +65,8 @@ static bool s_autonomousAttack[UNIT_INDEX_MAX];
 static ActionType s_autonomousReturnAction[UNIT_INDEX_MAX];
 static uint32 s_autonomyNextCheck[UNIT_INDEX_MAX];
 static uint32 s_harvesterNextCheck[UNIT_INDEX_MAX];
+static uint16 s_harvesterLastPosition[UNIT_INDEX_MAX];
+static uint32 s_harvesterLastProgress[UNIT_INDEX_MAX];
 static uint16 s_houseThreatTarget[HOUSE_MAX];
 static uint32 s_houseThreatUntil[HOUSE_MAX];
 
@@ -638,10 +640,31 @@ void Unit_Autonomy_ReportThreat(uint8 houseID, uint16 attacker, uint16 packed)
 	s_houseThreatUntil[houseID] = g_timerGame + 180;
 }
 
+static void Unit_Harvester_AddCandidate(uint16 *candidates, uint32 *scores, uint16 *count, uint16 target, uint32 score)
+{
+	uint16 i;
+	uint16 insert = *count;
+
+	for (i = 0; i < *count; i++) {
+		if (score < scores[i]) {
+			insert = i;
+			break;
+		}
+	}
+	if (insert >= 24) return;
+	if (*count < 24) (*count)++;
+	for (i = *count - 1; i > insert; i--) {
+		candidates[i] = candidates[i - 1];
+		scores[i] = scores[i - 1];
+	}
+	candidates[insert] = target;
+	scores[insert] = score;
+}
+
 static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, uint16 *result)
 {
-	uint16 candidates[8];
-	uint32 roughScores[8];
+	uint16 candidates[24];
+	uint32 roughScores[24];
 	uint16 count = 0;
 	uint16 x;
 	uint16 y;
@@ -656,14 +679,14 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 			uint16 distance;
 			uint32 score;
 
-			if (!Map_IsValidPosition(packed)) continue;
+			if (!Map_IsValidPosition(packed) || !Map_IsPositionUnveiled(packed)) continue;
 			if (radius != 0 && Tile_GetDistancePacked(center, packed) > radius) continue;
 			type = Map_GetLandscapeType(packed);
 			if (type != LST_SPICE && type != LST_THICK_SPICE) continue;
 			if (Object_GetByPackedTile(packed) != NULL || Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
 			distance = Tile_GetDistancePacked(Tile_PackTile(unit->o.position), packed);
 			score = distance * 16 + (type == LST_THICK_SPICE ? 0 : 8);
-			Unit_Autonomy_AddCandidate(candidates, roughScores, &count, packed, 0xFFFFFFFF - score);
+			Unit_Harvester_AddCandidate(candidates, roughScores, &count, packed, score);
 		}
 	}
 
@@ -686,6 +709,21 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 	return true;
 }
 
+/* Prefer the user-selected harvesting area, but never leave a player harvester
+ * idle when another explored spice field is reachable. */
+uint16 Unit_Harvester_FindPreferredSpice(Unit *unit)
+{
+	uint16 packed;
+	uint16 target;
+
+	if (unit == NULL || unit->o.type != UNIT_HARVESTER || unit->o.flags.s.isNotOnMap) return 0;
+	packed = Tile_PackTile(unit->o.position);
+	if (Map_IsValidPosition(unit->harvestCenter) && Unit_Harvester_FindSpice(unit, unit->harvestCenter, 12, &target)) return target;
+	if (!Unit_Harvester_FindSpice(unit, packed, 0, &target)) return 0;
+
+	return target;
+}
+
 static void Unit_Harvester_Update(Unit *unit)
 {
 	uint16 packed;
@@ -693,22 +731,35 @@ static void Unit_Harvester_Update(Unit *unit)
 	uint16 type;
 
 	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID || unit->actionID != ACTION_HARVEST || unit->amount >= 100) return;
-	if (unit->o.flags.s.isNotOnMap || unit->targetMove != 0 || unit->currentDestination.x != 0 || unit->currentDestination.y != 0) return;
+	if (unit->o.flags.s.isNotOnMap) return;
 	if (s_harvesterNextCheck[unit->o.index] > g_timerGame) return;
 	s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
 
 	packed = Tile_PackTile(unit->o.position);
+	if (s_harvesterLastPosition[unit->o.index] != packed || s_harvesterLastProgress[unit->o.index] == 0) {
+		s_harvesterLastPosition[unit->o.index] = packed;
+		s_harvesterLastProgress[unit->o.index] = g_timerGame;
+	}
+
+	/* A valid route is left alone.  A route that has made no progress for six
+	 * checks is abandoned so a fresh reachable spice field can be selected. */
+	if (unit->targetMove != 0 || unit->currentDestination.x != 0 || unit->currentDestination.y != 0) {
+		if (unit->o.script.variables[4] != 0 || s_harvesterLastProgress[unit->o.index] + 540 > g_timerGame) return;
+		Object_Script_Variable4_Clear(&unit->o);
+		unit->targetMove = 0;
+		unit->currentDestination.x = 0;
+		unit->currentDestination.y = 0;
+		unit->route[0] = 0xFF;
+	}
+
 	type = Map_GetLandscapeType(packed);
 	if (type == LST_SPICE || type == LST_THICK_SPICE) return;
 
-	if (Map_IsValidPosition(unit->harvestCenter) && Unit_Harvester_FindSpice(unit, unit->harvestCenter, 12, &target)) {
-		Unit_SetDestination(unit, Tools_Index_Encode(target, IT_TILE));
-		return;
-	}
-	if (!Unit_Harvester_FindSpice(unit, packed, 0, &target)) return;
+	target = Unit_Harvester_FindPreferredSpice(unit);
+	if (target == 0) return;
 
-	/* The old field is exhausted; keep the newly found field as the working
-	 * area so the next refinery trip returns to useful spice. */
+	/* Keep the newly found field as the working area so the next refinery trip
+	 * returns to useful spice instead of the harvester's stale last waypoint. */
 	unit->harvestCenter = target;
 	Unit_SetDestination(unit, Tools_Index_Encode(target, IT_TILE));
 }
@@ -1210,6 +1261,7 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 	u->targetMove    = 0x0000;
 	u->guardPosition = (position.x == 0xFFFF && position.y == 0xFFFF) ? 0 : Tile_PackTile(position);
 	u->harvestCenter = (typeID == UNIT_HARVESTER && position.x != 0xFFFF && position.y != 0xFFFF) ? Tile_PackTile(position) : 0;
+	u->repairReturnPosition = 0;
 	u->amount        = 0;
 	u->wobbleIndex   = 0;
 	u->spriteOffset  = 0;
@@ -1730,7 +1782,7 @@ void Unit_Remove(Unit *u)
 	u->o.flags.s.allocated = true;
 	Unit_UntargetMe(u);
 
-	if (u == g_unitSelected) Unit_Select(NULL);
+	UnitSelection_Remove(u);
 
 	u->o.flags.s.bulletIsBig = true;
 	Unit_UpdateMap(0, u);
@@ -2531,6 +2583,39 @@ void UnitSelection_Clear(void)
 	UnitSelection_CancelPendingAction();
 }
 
+/* Remove one member without turning a surviving group into an empty single
+ * selection.  Carryalls use this while taking a unit off the map. */
+void UnitSelection_Remove(Unit *unit)
+{
+	uint16 i;
+	bool wasPrimary;
+	bool removed = false;
+
+	if (unit == NULL) return;
+	wasPrimary = (unit == g_unitSelected);
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		if (s_unitSelection[i] != unit->o.index) continue;
+		for (; i + 1 < g_unitSelectionCount; i++) s_unitSelection[i] = s_unitSelection[i + 1];
+		g_unitSelectionCount--;
+		removed = true;
+		break;
+	}
+
+	if (!wasPrimary) {
+		if (removed) GUI_Widget_ActionPanel_Draw(true);
+		return;
+	}
+	if (g_unitSelectionCount == 0) {
+		g_unitSelected = NULL;
+		GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
+	} else {
+		s_unitSelectionChanging = true;
+		Unit_Select(Unit_Get_ByIndex(s_unitSelection[0]));
+		s_unitSelectionChanging = false;
+	}
+	GUI_Widget_ActionPanel_Draw(true);
+}
+
 /** Select exactly one controllable unit. */
 void UnitSelection_SelectSingle(Unit *unit)
 {
@@ -3166,6 +3251,8 @@ void Unit_Hide(Unit *unit)
 {
 	if (unit == NULL) return;
 
+	UnitSelection_Remove(unit);
+
 	unit->o.flags.s.bulletIsBig = true;
 	Unit_UpdateMap(0, unit);
 	unit->o.flags.s.bulletIsBig = false;
@@ -3175,6 +3262,32 @@ void Unit_Hide(Unit *unit)
 
 	unit->o.flags.s.isNotOnMap = true;
 	Unit_HouseUnitCount_Remove(unit);
+}
+
+bool Unit_RepairReturnIsSafe(Unit *unit, uint16 packed)
+{
+	PoolFindStruct find;
+	bool alliedForce = false;
+	bool enemyForce = false;
+
+	if (unit == NULL || !Map_IsValidPosition(packed)) return false;
+	find.houseID = HOUSE_INVALID;
+	find.type = 0xFFFF;
+	find.index = 0xFFFF;
+	while (true) {
+		Unit *other = Unit_Find(&find);
+		const UnitInfo *ui;
+
+		if (other == NULL) break;
+		if (other == unit || other->o.flags.s.isNotOnMap) continue;
+		if (Tile_GetDistancePacked(packed, Tile_PackTile(other->o.position)) > 6) continue;
+		ui = &g_table_unitInfo[other->o.type];
+		if (!ui->flags.isNormalUnit || ui->fireDistance == 0) continue;
+		if (House_AreAllied(Unit_GetHouseID(unit), Unit_GetHouseID(other))) alliedForce = true;
+		else enemyForce = true;
+	}
+
+	return !enemyForce || alliedForce;
 }
 
 /**

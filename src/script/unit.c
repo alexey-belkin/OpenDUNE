@@ -199,6 +199,7 @@ uint16 Script_Unit_TransportDeliver(ScriptEngine *script)
 	Unit_SetOrientation(u2, u->orientation[0].current, true, 0);
 	Unit_SetOrientation(u2, u->orientation[0].current, true, 1);
 	Unit_SetSpeed(u2, 0);
+	if (u2->o.type != UNIT_HARVESTER) u2->repairReturnPosition = 0;
 
 	u->o.linkedID = u2->o.linkedID;
 	u2->o.linkedID = 0xFF;
@@ -260,8 +261,21 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 
 			if (s->o.linkedID == 0xFF) Structure_SetState(s, STRUCTURE_STATE_IDLE);
 
-			/* Check if the unit has a return-to position or try to find spice in case of a harvester */
-			if (u2->targetLast.x != 0 || u2->targetLast.y != 0) {
+			/* A player harvester returns to a reachable explored spice field.  A
+			 * repaired vehicle returns to its pickup point only when it is not
+			 * walking back into an unsupported enemy force. */
+			if (u2->o.type == UNIT_HARVESTER && Unit_GetHouseID(u2) == g_playerHouseID) {
+				uint16 spice = Unit_Harvester_FindPreferredSpice(u2);
+				if (spice != 0) {
+					u2->harvestCenter = spice;
+					u->targetMove = Tools_Index_Encode(spice, IT_TILE);
+				}
+			} else if (s->o.type == STRUCTURE_REPAIR && u2->repairReturnPosition != 0 && Unit_RepairReturnIsSafe(u2, u2->repairReturnPosition)) {
+				u->targetMove = Tools_Index_Encode(u2->repairReturnPosition, IT_TILE);
+			} else if (s->o.type == STRUCTURE_REPAIR) {
+				uint16 fallback = Structure_FindFreePosition(s, false);
+				if (fallback != 0) u->targetMove = Tools_Index_Encode(fallback, IT_TILE);
+			} else if (u2->targetLast.x != 0 || u2->targetLast.y != 0) {
 				u->targetMove = Tools_Index_Encode(Tile_PackTile(u2->targetLast), IT_TILE);
 			} else if (u2->o.type == UNIT_HARVESTER && Unit_GetHouseID(u2) != g_playerHouseID) {
 				u->targetMove = Tools_Index_Encode(Map_SearchSpice(Tile_PackTile(u->o.position), 20), IT_TILE);
@@ -313,12 +327,11 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 
 			if (s == NULL) return 0;
 
-			/* Deselect the unit as it is about to be picked up */
-			if (u2 == g_unitSelected) Unit_Select(NULL);
-
 			/* Pickup the unit */
 			u->o.linkedID = u2->o.index & 0xFF;
 			u->o.flags.s.inTransport = true;
+
+			if (u2->o.type != UNIT_HARVESTER) u2->repairReturnPosition = Tile_PackTile(u2->o.position);
 
 			Unit_UpdateMap(0, u2);
 
