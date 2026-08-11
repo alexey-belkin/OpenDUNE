@@ -47,6 +47,110 @@ static uint32 s_tickStructurePalace    = 0; /*!< Indicates next time Palace func
 
 uint16 g_structureIndex;
 
+typedef struct UnitBuildQueue {
+	uint16 type;
+	uint8 pending;
+} UnitBuildQueue;
+
+/* Queues contain repeat orders for one unit type only.  Buildings still need
+ * manual placement and the Starport retains its separate order cart. */
+static UnitBuildQueue s_unitBuildQueue[STRUCTURE_INDEX_MAX_HARD];
+
+static void Structure_CancelBuild(Structure *s);
+
+static UnitBuildQueue *Structure_Queue_Get(const Structure *s)
+{
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT) return NULL;
+	return &s_unitBuildQueue[s->o.index];
+}
+
+static void Structure_Queue_Clear(Structure *s)
+{
+	UnitBuildQueue *queue = Structure_Queue_Get(s);
+
+	if (queue == NULL) return;
+	queue->type = UNIT_INVALID;
+	queue->pending = 0;
+}
+
+bool Structure_Queue_CanOrder(const Structure *s)
+{
+	const StructureInfo *si;
+
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT || s->o.houseID != g_playerHouseID) return false;
+	if (s->o.type == STRUCTURE_CONSTRUCTION_YARD || s->o.type == STRUCTURE_REPAIR || s->o.type == STRUCTURE_STARPORT) return false;
+
+	si = &g_table_structureInfo[s->o.type];
+	return si->o.flags.factory && s->objectType < UNIT_MAX;
+}
+
+uint16 Structure_Queue_GetOrderCount(const Structure *s)
+{
+	UnitBuildQueue *queue;
+	uint16 count;
+
+	if (!Structure_Queue_CanOrder(s)) return 0;
+
+	queue = Structure_Queue_Get(s);
+	count = queue->pending;
+	if (s->o.linkedID != 0xFF) count++;
+
+	return count;
+}
+
+bool Structure_Queue_AddOrder(Structure *s)
+{
+	UnitBuildQueue *queue;
+
+	if (!Structure_Queue_CanOrder(s)) return false;
+
+	queue = Structure_Queue_Get(s);
+	if (s->o.linkedID == 0xFF) {
+		queue->type = s->objectType;
+		return Structure_BuildObject(s, queue->type);
+	}
+
+	if (queue->type != s->objectType) {
+		queue->type = s->objectType;
+		queue->pending = 0;
+	}
+
+	if (queue->pending == 99) return false;
+
+	queue->pending++;
+	return true;
+}
+
+bool Structure_Queue_RemoveOrder(Structure *s)
+{
+	UnitBuildQueue *queue;
+
+	if (!Structure_Queue_CanOrder(s)) return false;
+
+	queue = Structure_Queue_Get(s);
+	if (queue->pending != 0) {
+		queue->pending--;
+		return true;
+	}
+
+	if (s->o.linkedID == 0xFF) return false;
+
+	Structure_CancelBuild(s);
+	return true;
+}
+
+static void Structure_Queue_StartNext(Structure *s)
+{
+	UnitBuildQueue *queue;
+
+	if (!Structure_Queue_CanOrder(s) || s->o.linkedID != 0xFF || s->state != STRUCTURE_STATE_IDLE) return;
+
+	queue = Structure_Queue_Get(s);
+	if (queue->pending == 0 || queue->type >= UNIT_MAX) return;
+
+	if (Structure_BuildObject(s, queue->type)) queue->pending--;
+}
+
 /**
  * Loop over all structures, preforming various of tasks.
  */
@@ -123,6 +227,8 @@ void GameLoop_Structure(void)
 		}
 
 		if (tickStructure) {
+			Structure_Queue_StartNext(s);
+
 			if (s->o.flags.s.upgrading) {
 				uint16 upgradeCost = si->o.buildCredits / 40;
 
@@ -381,6 +487,7 @@ Structure *Structure_Create(uint16 index, uint8 typeID, uint8 houseID, uint16 po
 	si = &g_table_structureInfo[typeID];
 	s = Structure_Allocate(index, typeID);
 	if (s == NULL) return NULL;
+	Structure_Queue_Clear(s);
 
 	s->o.houseID            = houseID;
 	s->creatorHouseID       = houseID;
@@ -1413,7 +1520,11 @@ static void Structure_CancelBuild(Structure *s)
 {
 	ObjectInfo *oi;
 
-	if (s == NULL || s->o.linkedID == 0xFF) return;
+	if (s == NULL) return;
+	if (s->o.linkedID == 0xFF) {
+		Structure_Queue_Clear(s);
+		return;
+	}
 
 	if (s->o.type == STRUCTURE_CONSTRUCTION_YARD) {
 		Structure *s2 = Structure_Get_ByIndex(s->o.linkedID);
@@ -1430,6 +1541,7 @@ static void Structure_CancelBuild(Structure *s)
 	s->o.flags.s.onHold = false;
 	s->countDown = 0;
 	s->o.linkedID = 0xFF;
+	Structure_Queue_Clear(s);
 }
 
 /**

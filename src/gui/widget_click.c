@@ -93,6 +93,13 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 	VARIABLE_NOT_USED(w);
 
 	s = Structure_Get_ByPackedTile(g_selectionPosition);
+	if (Structure_Queue_CanOrder(s)) {
+		bool changed;
+
+		changed = ((w->state.buttonState & 0x10) != 0) ? Structure_Queue_RemoveOrder(s) : Structure_Queue_AddOrder(s);
+		if (changed) GUI_Widget_ActionPanel_Draw(true);
+		return false;
+	}
 
 	switch (g_productionStringID) {
 		default: break;

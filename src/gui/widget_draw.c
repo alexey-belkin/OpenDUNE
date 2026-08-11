@@ -241,6 +241,12 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 
 	if (spriteID != 0) GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], positionX + 2, positionY + 2, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
 
+	if (Structure_Queue_CanOrder(s)) {
+		uint16 orderCount = Structure_Queue_GetOrderCount(s);
+
+		if (orderCount != 0) GUI_DrawText_Wrapper("x%u", positionX + width - 8, positionY + 2, buttonDown ? 0xE : 0xF, 0, 0x121, orderCount);
+	}
+
 	if (g_productionStringID == STR_D_DONE) {
 		uint16 buildTime;
 		uint16 timeLeft;
