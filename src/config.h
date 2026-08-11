@@ -4,8 +4,10 @@
 #define CONFIG_H
 
 typedef enum GameSpeed {
-	GAME_SPEED_NORMAL = 2,
-	GAME_SPEED_FAST   = 5
+	/* Values outside the original 0..4 range keep legacy OPTIONS.CFG files
+	 * distinguishable from this two-state Normal/Fast setting. */
+	GAME_SPEED_FAST   = 5,
+	GAME_SPEED_NORMAL = 6
 } GameSpeed;
 
 MSVC_PACKED_BEGIN

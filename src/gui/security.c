@@ -175,9 +175,11 @@ bool GUI_Security_Show(void)
 			strncpy(g_readBuffer, String_Get_ByIndex(STR_SECURITY_WRONG_HARKONNEN + g_playerHouseID * 3), g_readBufferSize);
 		} else {
 			strncpy(g_readBuffer, String_Get_ByIndex(STR_SECURITY_CORRECT_HARKONNEN + g_playerHouseID * 3), g_readBufferSize);
-
-			valid = true;
 		}
+
+		/* Security questions are flavour, not a campaign gate. One submitted
+		 * answer—correct or not—continues the campaign. */
+		valid = true;
 
 		GUI_Security_DrawText(g_readBuffer);
 
