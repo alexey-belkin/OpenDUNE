@@ -990,7 +990,8 @@ static void GameLoop_Main(void)
 
 	GUI_Mouse_Show_Safe();
 
-	g_canSkipIntro = File_Exists_Personal("ONETIME.DAT");
+	/* Let players skip the intro immediately, including on their first launch. */
+	g_canSkipIntro = true;
 
 	for (;; sleepIdle()) {
 		if (g_gameMode == GM_MENU) {

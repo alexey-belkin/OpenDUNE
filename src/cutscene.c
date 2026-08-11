@@ -946,11 +946,12 @@ void GameLoop_GameEndAnimation(void)
 /**
  * Logos at begin of intro.
  */
-static void Gameloop_Logos(void)
+static bool Gameloop_Logos(void)
 {
 	Screen oldScreenID;
 	void *wsa;
 	uint16 frame;
+	bool skipIntro = false;
 
 	oldScreenID = GFX_Screen_SetActive(SCREEN_0);
 
@@ -973,11 +974,17 @@ static void Gameloop_Logos(void)
 	
 	WSA_Unload(wsa);
 
-	if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) goto logos_exit;
+	if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) {
+		skipIntro = true;
+		goto logos_exit;
+	}
 	Voice_LoadVoices(0xFFFF);
 
 	for (; g_timerTimeout != 0; sleepIdle()) {
-		if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) goto logos_exit;
+		if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) {
+			skipIntro = true;
+			goto logos_exit;
+		}
 	}
 
 	GUI_SetPaletteAnimated(g_palette2, 60);
@@ -996,7 +1003,10 @@ static void Gameloop_Logos(void)
 	GUI_SetPaletteAnimated(g_palette_998A, 30);
 
 	for (g_timerTimeout = 60; g_timerTimeout != 0; sleepIdle()) {
-		if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) goto logos_exit;
+		if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) {
+			skipIntro = true;
+			goto logos_exit;
+		}
 	}
 
 	GUI_SetPaletteAnimated(g_palette2, 30);
@@ -1010,7 +1020,10 @@ static void Gameloop_Logos(void)
 	GUI_SetPaletteAnimated(g_palette_998A, 30);
 
 	for (g_timerTimeout = 180; g_timerTimeout != 0; sleepIdle()) {
-		if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) goto logos_exit;
+		if (Input_Keyboard_NextKey() != 0 && g_canSkipIntro) {
+			skipIntro = true;
+			goto logos_exit;
+		}
 	}
 
 logos_exit:
@@ -1019,6 +1032,8 @@ logos_exit:
 	GUI_ClearScreen(SCREEN_0);
 
 	GFX_Screen_SetActive(oldScreenID);
+
+	return skipIntro;
 }
 
 /**
@@ -1026,11 +1041,13 @@ logos_exit:
  */
 void GameLoop_GameIntroAnimation(void)
 {
+	bool skipIntro;
+
 	GUI_ChangeSelectionType(SELECTIONTYPE_INTRO);
 
-	Gameloop_Logos();
+	skipIntro = Gameloop_Logos();
 
-	if (Input_Keyboard_NextKey() == 0 || !g_canSkipIntro) {
+	if (!skipIntro && (Input_Keyboard_NextKey() == 0 || !g_canSkipIntro)) {
 		const HouseAnimation_Animation   *animation   = g_table_houseAnimation_animation[HOUSEANIMATION_INTRO];
 		const HouseAnimation_Subtitle    *subtitle    = g_table_houseAnimation_subtitle[HOUSEANIMATION_INTRO];
 		const HouseAnimation_SoundEffect *soundEffect = g_table_houseAnimation_soundEffect[HOUSEANIMATION_INTRO];

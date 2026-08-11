@@ -316,7 +316,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 		return false;
 	}
 
-	if (IniFile_GetInteger("fullscreen", 0) != 0) {
+	if (IniFile_GetInteger("fullscreen", 1) != 0) {
 		window_flags |= SDL_WINDOW_FULLSCREEN;
 		s_full_screen = true;
 	}
@@ -582,6 +582,14 @@ static void Video_DrawScreen_Hqx(void)
 static void Video_DrawScreen(void)
 {
 	if (!GFX_Screen_IsDirty(SCREEN_0) && !s_screen_needrepaint) return;
+
+	/*
+	 * The game draws the software cursor directly into the framebuffer.  On
+	 * some SDL2 renderers, updating only its dirty rectangles leaves stale
+	 * texture contents behind while the cursor moves.  A full 320x200 refresh
+	 * is inexpensive and keeps the renderer and framebuffer in sync.
+	 */
+	s_screen_needrepaint = true;
 
 	if (s_screen_magnification == 1) {
 		Video_DrawScreen_Nearest_Neighbor();

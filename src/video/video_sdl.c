@@ -303,7 +303,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 	width = SCREEN_WIDTH * s_screen_magnification;
 	height = SCREEN_HEIGHT * s_screen_magnification;
 	video_flags = SDL_HWSURFACE | SDL_HWACCEL;
-	if (IniFile_GetInteger("fullscreen", 0) != 0) {
+	if (IniFile_GetInteger("fullscreen", 1) != 0) {
 		video_flags |= SDL_FULLSCREEN;
 	}
 	if (filter == FILTER_HQX) {
