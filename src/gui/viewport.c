@@ -58,7 +58,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	uint16 x, y;
 	uint16 spriteID;
 	uint16 packed;
-	bool click, drag;
+	bool click, drag, release;
 
 	spriteID = g_cursorSpriteID;
 	switch (w->index) {
@@ -87,6 +87,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 	click = false;
 	drag = false;
+	release = false;
 
 	if ((w->state.buttonState & 0x11) != 0) {
 		click = true;
@@ -94,6 +95,11 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	} else if ((w->state.buttonState & 0x22) != 0 && !g_var_37B8) {
 		drag = true;
 	}
+
+	/* A viewport widget receives left-button release as bit 0x04.  It is
+	 * distinct from the press/hold states above, so a drag must be completed
+	 * here rather than waiting for a later click. */
+	release = (w->state.buttonState & 0x04) != 0;
 
 	/* ENHANCEMENT -- Dune2 depends on slow CPUs to limit the rate mouse clicks are handled. */
 	if (g_dune2_enhanced && (click || drag)) {
@@ -161,10 +167,10 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			return true;
 		}
 
-		if (click && s_selectionBoxActive) {
+		if (release && s_selectionBoxActive) {
 			bool additive = g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39));
 
-			s_selectionBoxEnd = packed;
+			s_selectionBoxEnd = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
 			UnitSelection_SelectBox(s_selectionBoxStart, s_selectionBoxEnd, additive);
 			s_selectionBoxActive = false;
 			g_viewport_forceRedraw = true;
