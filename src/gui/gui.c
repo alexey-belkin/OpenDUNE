@@ -2269,6 +2269,7 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 	}
 
 	if (selectionType == SELECTIONTYPE_STRUCTURE && g_unitSelected != NULL) {
+		UnitSelection_Clear();
 		g_unitSelected = NULL;
 	}
 
@@ -2295,7 +2296,7 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 
 			case SELECTIONTYPE_UNIT:
 				if (g_unitSelected != NULL && selectionType != SELECTIONTYPE_TARGET && selectionType != SELECTIONTYPE_UNIT) {
-					Unit_UpdateMap(2, g_unitSelected);
+					UnitSelection_Clear();
 					g_unitSelected = NULL;
 				}
 				break;

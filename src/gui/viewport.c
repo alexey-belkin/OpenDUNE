@@ -15,6 +15,7 @@
 #include "../explosion.h"
 #include "../gfx.h"
 #include "../house.h"
+#include "../input/input.h"
 #include "../input/mouse.h"
 #include "../map.h"
 #include "../opendune.h"
@@ -34,6 +35,17 @@
 static uint32 s_tickCursor;                                 /*!< Stores last time Viewport changed the cursor spriteID. */
 static uint32 s_tickMapScroll;                              /*!< Stores last time Viewport ran MapScroll function. */
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
+static bool s_selectionBoxActive;                           /*!< A left drag is selecting a group. */
+static uint16 s_selectionBoxStart;                          /*!< Start tile, fixed in world coordinates. */
+static uint16 s_selectionBoxEnd;                            /*!< End tile, fixed in world coordinates. */
+
+/** Convert a tactical-view pixel position to a map tile. */
+static uint16 GUI_Widget_Viewport_GetPackedAt(uint16 x, uint16 y)
+{
+	x = min(x, 239);
+	y = min(max(y, 40), 199);
+	return Tile_PackXY(x / 16 + Tile_GetPackedX(g_minimapPosition), (y - 40) / 16 + Tile_GetPackedY(g_minimapPosition));
+}
 
 /**
  * Handles the Click events for the Viewport widget.
@@ -137,6 +149,29 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 	packed = Tile_PackXY(x, y);
 
+	if (w->index == 43 && g_selectionType != SELECTIONTYPE_TARGET && g_selectionType != SELECTIONTYPE_PLACE) {
+		if (drag) {
+			if (!s_selectionBoxActive) {
+				s_selectionBoxStart = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
+				s_selectionBoxActive = true;
+			}
+
+			s_selectionBoxEnd = packed;
+			g_viewport_forceRedraw = true;
+			return true;
+		}
+
+		if (click && s_selectionBoxActive) {
+			bool additive = g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39));
+
+			s_selectionBoxEnd = packed;
+			UnitSelection_SelectBox(s_selectionBoxStart, s_selectionBoxEnd, additive);
+			s_selectionBoxActive = false;
+			g_viewport_forceRedraw = true;
+			return true;
+		}
+	}
+
 	if (click && g_selectionType == SELECTIONTYPE_TARGET) {
 		Unit *u;
 		ActionType action;
@@ -146,6 +181,14 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 		if (g_unitHouseMissile != NULL) {
 			Unit_LaunchHouseMissile(packed);
+			return true;
+		}
+
+		if (UnitSelection_HasPendingAction()) {
+			UnitSelection_ApplyPendingAction(packed);
+			g_unitActive = NULL;
+			g_activeAction = ACTION_INVALID;
+			GUI_ChangeSelectionType(SELECTIONTYPE_UNIT);
 			return true;
 		}
 
@@ -432,7 +475,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 		if (Map_IsPositionInViewport(u->targetPreLast, &x, &y)) {
 			GUI_DrawSprite(SCREEN_ACTIVE, sprite, x, y, 2, DRAWSPRITE_FLAG_BLUR | DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 		}
-		if (u == g_unitSelected && Map_IsPositionInViewport(u->o.position, &x, &y)) {
+		if (UnitSelection_IsSelected(u) && Map_IsPositionInViewport(u->o.position, &x, &y)) {
 			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[6], x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 		}
 	}
@@ -619,12 +662,28 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 				GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], x, y - 14, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 			}
 
-			if (u != g_unitSelected) continue;
+			if (!UnitSelection_IsSelected(u)) continue;
 
 			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[6], x, y, 2, DRAWSPRITE_FLAG_WIDGETPOS | DRAWSPRITE_FLAG_CENTER);
 		}
 
 		g_dirtyUnitCount = 0;
+	}
+
+	/* The drag endpoints are map tiles. Reproject them every frame so scrolling
+	 * never changes the selected world rectangle. */
+	if (s_selectionBoxActive) {
+		int16 left = ((int16)min(Tile_GetPackedX(s_selectionBoxStart), Tile_GetPackedX(s_selectionBoxEnd)) - Tile_GetPackedX(g_minimapPosition)) << 4;
+		int16 right = (((int16)max(Tile_GetPackedX(s_selectionBoxStart), Tile_GetPackedX(s_selectionBoxEnd)) - Tile_GetPackedX(g_minimapPosition) + 1) << 4) - 1;
+		int16 top = (((int16)min(Tile_GetPackedY(s_selectionBoxStart), Tile_GetPackedY(s_selectionBoxEnd)) - Tile_GetPackedY(g_minimapPosition)) << 4) + 40;
+		int16 bottom = (((int16)max(Tile_GetPackedY(s_selectionBoxStart), Tile_GetPackedY(s_selectionBoxEnd)) - Tile_GetPackedY(g_minimapPosition) + 1) << 4) + 39;
+
+		GUI_SetClippingArea(0, 40, 239, 199);
+		GUI_DrawLine(left, top, right, top, 0xFF);
+		GUI_DrawLine(left, bottom, right, bottom, 0xFF);
+		GUI_DrawLine(left, top, left, bottom, 0xFF);
+		GUI_DrawLine(right, top, right, bottom, 0xFF);
+		GUI_SetClippingArea(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
 	}
 
 	/* draw explosions */

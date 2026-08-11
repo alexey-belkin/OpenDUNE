@@ -9,7 +9,7 @@
 extern bool GUI_Widget_Mentat_Click(Widget *w);
 
 /* TODO : const */
-WidgetInfo g_table_gameWidgetInfo[19] = {
+WidgetInfo g_table_gameWidgetInfo[23] = {
 	{ /* 0 */
 		/* index       */ 1,
 		/* clickProc   */ &GUI_Widget_Mentat_Click,
@@ -143,6 +143,54 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* stringID    */ STR_NULL,
 	},
 	{ /* 11 */
+		/* index       */ 30,
+		/* clickProc   */ &GUI_Widget_TextButton_Click,
+		/* shortcut    */ 0,
+		/* flags       */ 17605,
+		/* spriteID    */ -2,
+		/* offsetX     */ 258,
+		/* offsetY     */ 91,
+		/* width       */ 60,
+		/* height      */ 10,
+		/* stringID    */ STR_NULL,
+	},
+	{ /* 12 */
+		/* index       */ 31,
+		/* clickProc   */ &GUI_Widget_TextButton_Click,
+		/* shortcut    */ 0,
+		/* flags       */ 17605,
+		/* spriteID    */ -2,
+		/* offsetX     */ 258,
+		/* offsetY     */ 102,
+		/* width       */ 60,
+		/* height      */ 10,
+		/* stringID    */ STR_NULL,
+	},
+	{ /* 13 */
+		/* index       */ 32,
+		/* clickProc   */ &GUI_Widget_TextButton_Click,
+		/* shortcut    */ 0,
+		/* flags       */ 17605,
+		/* spriteID    */ -2,
+		/* offsetX     */ 258,
+		/* offsetY     */ 113,
+		/* width       */ 60,
+		/* height      */ 10,
+		/* stringID    */ STR_NULL,
+	},
+	{ /* 14 */
+		/* index       */ 33,
+		/* clickProc   */ &GUI_Widget_TextButton_Click,
+		/* shortcut    */ 0,
+		/* flags       */ 17605,
+		/* spriteID    */ -2,
+		/* offsetX     */ 258,
+		/* offsetY     */ 124,
+		/* width       */ 60,
+		/* height      */ 10,
+		/* stringID    */ STR_NULL,
+	},
+	{ /* 15 */
 		/* index       */ 39,
 		/* clickProc   */ &GUI_Widget_Viewport_Click,
 		/* shortcut    */ 0,
@@ -154,7 +202,7 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 12 */
+	{ /* 16 */
 		/* index       */ 40,
 		/* clickProc   */ &GUI_Widget_Viewport_Click,
 		/* shortcut    */ 0,
@@ -166,7 +214,7 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* height      */ 160,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 13 */
+	{ /* 17 */
 		/* index       */ 41,
 		/* clickProc   */ &GUI_Widget_Viewport_Click,
 		/* shortcut    */ 0,
@@ -178,7 +226,7 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* height      */ 160,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 14 */
+	{ /* 18 */
 		/* index       */ 42,
 		/* clickProc   */ &GUI_Widget_Viewport_Click,
 		/* shortcut    */ 0,
@@ -190,7 +238,7 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* height      */ 2,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 15 */
+	{ /* 19 */
 		/* index       */ 43,
 		/* clickProc   */ &GUI_Widget_Viewport_Click,
 		/* shortcut    */ 0,
@@ -202,7 +250,7 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* height      */ 160,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 16 */
+	{ /* 20 */
 		/* index       */ 44,
 		/* clickProc   */ &GUI_Widget_Viewport_Click,
 		/* shortcut    */ 0,
@@ -214,7 +262,7 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* height      */ 64,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 17 */
+	{ /* 21 */
 		/* index       */ 45,
 		/* clickProc   */ &GUI_Widget_Viewport_Click,
 		/* shortcut    */ 0,
@@ -226,7 +274,7 @@ WidgetInfo g_table_gameWidgetInfo[19] = {
 		/* height      */ 200,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 18 */
+	{ /* 22 */
 		/* index       */ -1,
 		/* clickProc   */ NULL,
 		/* shortcut    */ 0,

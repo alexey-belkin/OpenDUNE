@@ -250,7 +250,37 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 	uint16 *found;
 	ActionType unitAction;
 
+	if (g_unitSelectionCount > 1) {
+		uint16 slot;
+
+		if (w->index >= 8 && w->index <= 11) {
+			slot = w->index - 8;
+		} else if (w->index >= 30 && w->index <= 33) {
+			slot = w->index - 26;
+		} else {
+			return true;
+		}
+
+		action = UnitSelection_GetActionForSlot(slot);
+		if (action == ACTION_INVALID) return true;
+
+		if (g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39))) {
+			if (action == ACTION_GUARD) action = ACTION_AREA_GUARD;
+			else if (action == ACTION_ATTACK) action = ACTION_AMBUSH;
+		}
+
+		GUI_Widget_MakeSelected(w, false);
+		if (UnitSelection_BeginAction(action)) {
+			g_unitActive = g_unitSelected;
+			g_activeAction = action;
+			GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
+		}
+
+		return true;
+	}
+
 	u = g_unitSelected;
+	if (u == NULL) return true;
 	ui = &g_table_unitInfo[u->o.type];
 
 	actions = ui->o.actionsPlayer;

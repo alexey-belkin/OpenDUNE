@@ -33,6 +33,8 @@ void GUI_Widget_TextButton_Draw(Widget *w)
 	uint16 width, height;
 	uint16 state;
 	uint8 colour;
+	char groupLabel[32];
+	const char *label;
 
 	if (w == NULL) return;
 
@@ -53,10 +55,27 @@ void GUI_Widget_TextButton_Draw(Widget *w)
 
 	GUI_Widget_DrawBorder(19, state, 1);
 
+	label = GUI_String_Get_ByIndex(w->stringID);
+	if (g_unitSelectionCount > 1 && ((w->index >= 8 && w->index <= 11) || (w->index >= 30 && w->index <= 33))) {
+		uint16 slot = (w->index <= 11) ? w->index - 8 : w->index - 26;
+		ActionType action = UnitSelection_GetActionForSlot(slot);
+		uint16 count = UnitSelection_GetActionCount(action);
+
+		if (action == ACTION_MAX) {
+			ActionType special = UnitSelection_GetSpecialAction();
+			label = (special == ACTION_INVALID) ? "SPECIAL" : GUI_String_Get_ByIndex(g_table_actionInfo[special].stringID);
+		} else if (action != ACTION_INVALID) {
+			label = GUI_String_Get_ByIndex(g_table_actionInfo[action].stringID);
+		}
+
+		snprintf(groupLabel, sizeof(groupLabel), "%s %u/%u", label, count, g_unitSelectionCount);
+		label = groupLabel;
+	}
+
 	if (w->stringID == STR_CANCEL || w->stringID == STR_PREVIOUS || w->stringID == STR_YES || w->stringID == STR_NO) {
-		GUI_DrawText_Wrapper(GUI_String_Get_ByIndex(w->stringID), positionX + (width / 2), positionY + 2, colour, 0, 0x122);
+		GUI_DrawText_Wrapper(label, positionX + (width / 2), positionY + 2, colour, 0, 0x122);
 	} else {
-		GUI_DrawText_Wrapper(GUI_String_Get_ByIndex(w->stringID), positionX + 3, positionY + 2, colour, 0, 0x22);
+		GUI_DrawText_Wrapper(label, positionX + 3, positionY + 2, colour, 0, 0x22);
 	}
 
 	if (oldScreenID == SCREEN_0) {
@@ -553,11 +572,12 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	Screen oldScreenID;
 	uint16 oldWidgetID;
 	bool isNotPlayerOwned;
+	bool isGroup;
 	Object *o;
 	Unit *u;
 	Structure *s;
 	House *h;
-	Widget *buttons[4];
+	Widget *buttons[8];
 	Widget *widget24, *widget28, *widget2C, *widget30, *widget34;
 
 	o  = NULL;
@@ -569,6 +589,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	ui = NULL;
 	si = NULL;
 	isNotPlayerOwned = false;
+	isGroup = false;
 
 	actionType = GUI_Widget_ActionPanel_GetActionType(forceDraw);
 
@@ -583,6 +604,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			isNotPlayerOwned = (g_playerHouseID == Unit_GetHouseID(u)) ? false : true;
 
 			h = House_Get_ByIndex(u->o.houseID);
+			isGroup = g_unitSelectionCount > 1;
 		} break;
 
 		case 3: { /* Structure */
@@ -656,9 +678,10 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 		widget34 = GUI_Widget_Get_ByIndex(w, 3);
 		GUI_Widget_MakeInvisible(widget34);
 
-		/* Create the 4 buttons */
-		for (i = 0; i < 4; i++) {
-			buttons[i] = GUI_Widget_Get_ByIndex(w, i + 8);
+		/* Create the command buttons, including the four compact group rows. */
+		for (i = 0; i < 8; i++) {
+			uint16 index = (i < 4) ? i + 8 : i + 26;
+			buttons[i] = GUI_Widget_Get_ByIndex(w, index);
 			GUI_Widget_MakeInvisible(buttons[i]);
 		}
 
@@ -684,7 +707,13 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			default: break;
 		}
 
-		if (stringID != STR_NULL) GUI_DrawText_Wrapper(String_Get_ByIndex(stringID), 288, 43, 29, 0, 0x111);
+		if (isGroup) {
+			char groupName[20];
+			snprintf(groupName, sizeof(groupName), "%u UNITS", g_unitSelectionCount);
+			GUI_DrawText_Wrapper(groupName, 288, 43, 29, 0, 0x111);
+		} else if (stringID != STR_NULL) {
+			GUI_DrawText_Wrapper(String_Get_ByIndex(stringID), 288, 43, 29, 0, 0x111);
+		}
 
 		switch (actionType) {
 			case 3: /* Structure */
@@ -716,12 +745,12 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 				break;
 		}
 
-		if (spriteID != 0xFFFF) {
+		if (!isGroup && spriteID != 0xFFFF) {
 			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], 258, 51, 0, 0);
 		}
 
 		/* Unit / Structure */
-		if (actionType == 2 || actionType == 3) {
+		if (!isGroup && (actionType == 2 || actionType == 3)) {
 			GUI_DrawProgressbar(o->hitpoints, oi->hitpoints);
 			GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[27], 292, 60, 0, 0);
 			GUI_DrawText_Wrapper(String_Get_ByIndex(STR_DMG), 296, 65, 29, 0, 0x11);
@@ -734,6 +763,20 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 					const uint16 *actions;
 					uint16 actionCurrent;
 					int i;
+
+					if (isGroup) {
+						for (i = 0; i < 8; i++) {
+							ActionType groupAction = UnitSelection_GetActionForSlot(i);
+							if (groupAction == ACTION_INVALID) continue;
+
+							buttons[i]->offsetY = 47 + i * 11;
+							buttons[i]->stringID = (groupAction == ACTION_MAX) ? STR_NULL : g_table_actionInfo[groupAction].stringID;
+							buttons[i]->shortcut = 0;
+							GUI_Widget_MakeVisible(buttons[i]);
+							GUI_Widget_MakeNormal(buttons[i], false);
+						}
+						break;
+					}
 
 					GUI_Widget_MakeVisible(widget34);
 

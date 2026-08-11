@@ -47,6 +47,116 @@ Unit *g_unitActive = NULL;
 Unit *g_unitHouseMissile = NULL;
 Unit *g_unitSelected = NULL;
 
+uint16 g_unitSelectionCount = 0;
+static uint16 s_unitSelection[UNIT_SELECTION_MAX];
+static uint16 s_unitOrder[UNIT_SELECTION_MAX];
+static uint16 s_unitOrderCount = 0;
+static ActionType s_unitOrderAction = ACTION_INVALID;
+static bool s_unitSelectionChanging = false;
+
+/** Is this a player unit that can take part in a box selection? */
+static bool UnitSelection_IsControllable(const Unit *unit)
+{
+	const UnitInfo *ui;
+
+	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
+	if ((unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID) != g_playerHouseID || unit->o.type == UNIT_CARRYALL) return false;
+
+	ui = &g_table_unitInfo[unit->o.type];
+	return ui->flags.isNormalUnit;
+}
+
+static bool UnitSelection_Contains(const Unit *unit)
+{
+	uint16 i;
+
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		if (s_unitSelection[i] == unit->o.index) return true;
+	}
+
+	return false;
+}
+
+static void UnitSelection_Add(Unit *unit)
+{
+	if (!UnitSelection_IsControllable(unit) || UnitSelection_Contains(unit) || g_unitSelectionCount >= UNIT_SELECTION_MAX) return;
+
+	s_unitSelection[g_unitSelectionCount++] = unit->o.index;
+	Unit_UpdateMap(2, unit);
+}
+
+static void UnitSelection_ClearInternal(void)
+{
+	uint16 i;
+
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		if (unit->o.flags.s.used) Unit_UpdateMap(2, unit);
+	}
+
+	g_unitSelectionCount = 0;
+}
+
+/** Does a unit expose an action in its normal four-action command set? */
+static bool UnitSelection_UnitHasAction(const Unit *unit, ActionType action)
+{
+	const uint16 *actions;
+	uint16 i;
+
+	if (!UnitSelection_IsControllable(unit)) return false;
+
+	actions = g_table_unitInfo[unit->o.type].o.actionsPlayer;
+	for (i = 0; i < 4; i++) {
+		if (actions[i] == action) return true;
+	}
+
+	/* Shift variants share the capability of their normal command. */
+	if (action == ACTION_AMBUSH) return UnitSelection_UnitHasAction(unit, ACTION_ATTACK);
+	if (action == ACTION_AREA_GUARD) return UnitSelection_UnitHasAction(unit, ACTION_GUARD);
+
+	return false;
+}
+
+static ActionType UnitSelection_GetUnitSpecialAction(const Unit *unit)
+{
+	static const ActionType specials[] = { ACTION_DEPLOY, ACTION_SABOTAGE, ACTION_DESTRUCT };
+	uint16 i;
+
+	for (i = 0; i < sizeof(specials) / sizeof(specials[0]); i++) {
+		if (UnitSelection_UnitHasAction(unit, specials[i])) return specials[i];
+	}
+
+	return ACTION_INVALID;
+}
+
+static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packed)
+{
+	uint16 encoded;
+
+	Object_Script_Variable4_Clear(&unit->o);
+	unit->targetAttack = 0;
+	unit->targetMove = 0;
+	unit->route[0] = 0xFF;
+
+	if (action != ACTION_MOVE && action != ACTION_HARVEST) {
+		encoded = Tools_Index_Encode(Unit_FindTargetAround(packed), IT_TILE);
+	} else {
+		encoded = Tools_Index_Encode(packed, IT_TILE);
+	}
+
+	Unit_SetAction(unit, action);
+
+	if (action == ACTION_MOVE) {
+		Unit_SetDestination(unit, encoded);
+	} else if (action == ACTION_HARVEST) {
+		unit->targetMove = encoded;
+	} else {
+		Unit_SetTarget(unit, encoded);
+		unit = Tools_Index_GetUnit(unit->targetAttack);
+		if (unit != NULL) unit->blinkCounter = 8;
+	}
+}
+
 uint16 g_dirtyUnitCount = 0;
 uint16 g_dirtyAirUnitCount = 0;
 
@@ -1695,6 +1805,177 @@ void Unit_SetOrientation(Unit *unit, int8 orientation, bool rotateInstantly, uin
 	}
 }
 
+/** Clear the UI-only group selection and any target command in progress. */
+void UnitSelection_Clear(void)
+{
+	UnitSelection_ClearInternal();
+	UnitSelection_CancelPendingAction();
+}
+
+/** Select exactly one controllable unit. */
+void UnitSelection_SelectSingle(Unit *unit)
+{
+	s_unitSelectionChanging = true;
+	UnitSelection_ClearInternal();
+	UnitSelection_Add(unit);
+	Unit_Select(unit);
+	s_unitSelectionChanging = false;
+
+	GUI_Widget_ActionPanel_Draw(true);
+}
+
+/**
+ * Select player-controlled units inside a rectangle described in map tiles.
+ * The caller deliberately supplies packed map coordinates rather than pixels,
+ * which keeps this selection stable when the viewport scrolls.
+ */
+void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
+{
+	uint16 minX = min(Tile_GetPackedX(packedA), Tile_GetPackedX(packedB));
+	uint16 maxX = max(Tile_GetPackedX(packedA), Tile_GetPackedX(packedB));
+	uint16 minY = min(Tile_GetPackedY(packedA), Tile_GetPackedY(packedB));
+	uint16 maxY = max(Tile_GetPackedY(packedA), Tile_GetPackedY(packedB));
+	Unit *primary = NULL;
+	uint16 i;
+
+	s_unitSelectionChanging = true;
+	if (!additive) UnitSelection_ClearInternal();
+
+	for (i = 0; i < UNIT_INDEX_MAX; i++) {
+		Unit *unit = Unit_Get_ByIndex(i);
+		uint16 x;
+		uint16 y;
+
+		if (!UnitSelection_IsControllable(unit)) continue;
+
+		x = Tile_GetPackedX(Tile_PackTile(unit->o.position));
+		y = Tile_GetPackedY(Tile_PackTile(unit->o.position));
+		if (x < minX || x > maxX || y < minY || y > maxY) continue;
+
+		UnitSelection_Add(unit);
+	}
+
+	if (g_unitSelectionCount != 0) primary = Unit_Get_ByIndex(s_unitSelection[0]);
+	Unit_Select(primary);
+	s_unitSelectionChanging = false;
+
+	GUI_Widget_ActionPanel_Draw(true);
+}
+
+/** Return whether this unit is part of the visible group selection. */
+bool UnitSelection_IsSelected(const Unit *unit)
+{
+	return unit != NULL && (unit == g_unitSelected || UnitSelection_Contains(unit));
+}
+
+/** Return how many selected units can execute a command category. */
+uint16 UnitSelection_GetActionCount(ActionType action)
+{
+	uint16 count = 0;
+	uint16 i;
+
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		if (action == ACTION_MAX) {
+			if (UnitSelection_GetUnitSpecialAction(unit) != ACTION_INVALID) count++;
+		} else if (UnitSelection_UnitHasAction(unit, action)) {
+			count++;
+		}
+	}
+
+	return count;
+}
+
+/** Map the eight compact group-command rows to their command categories. */
+ActionType UnitSelection_GetActionForSlot(uint16 slot)
+{
+	static const ActionType actions[] = {
+		ACTION_ATTACK, ACTION_MOVE, ACTION_RETREAT, ACTION_GUARD,
+		ACTION_HARVEST, ACTION_RETURN, ACTION_STOP, ACTION_MAX
+	};
+
+	if (slot >= sizeof(actions) / sizeof(actions[0])) return ACTION_INVALID;
+	return UnitSelection_GetActionCount(actions[slot]) == 0 ? ACTION_INVALID : actions[slot];
+}
+
+/** Return a single special action only when the group has one unambiguous kind. */
+ActionType UnitSelection_GetSpecialAction(void)
+{
+	ActionType action = ACTION_INVALID;
+	uint16 i;
+
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		ActionType special = UnitSelection_GetUnitSpecialAction(Unit_Get_ByIndex(s_unitSelection[i]));
+		if (special == ACTION_INVALID) continue;
+		if (action != ACTION_INVALID && action != special) return ACTION_INVALID;
+		action = special;
+	}
+
+	return action;
+}
+
+/** Begin a group command. Returns true when the next map click is its target. */
+bool UnitSelection_BeginAction(ActionType action)
+{
+	uint16 i;
+
+	UnitSelection_CancelPendingAction();
+
+	if (action == ACTION_INVALID || UnitSelection_GetActionCount(action) == 0) return false;
+
+	if (action != ACTION_MAX && g_table_actionInfo[action].selectionType == SELECTIONTYPE_TARGET) {
+		for (i = 0; i < g_unitSelectionCount; i++) {
+			Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+			if (UnitSelection_UnitHasAction(unit, action)) s_unitOrder[s_unitOrderCount++] = unit->o.index;
+		}
+		s_unitOrderAction = action;
+		return s_unitOrderCount != 0;
+	}
+
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		ActionType unitAction = (action == ACTION_MAX) ? UnitSelection_GetUnitSpecialAction(unit) : action;
+		if (unitAction == ACTION_INVALID || !UnitSelection_UnitHasAction(unit, unitAction)) continue;
+
+		Object_Script_Variable4_Clear(&unit->o);
+		unit->targetAttack = 0;
+		unit->targetMove = 0;
+		unit->route[0] = 0xFF;
+		Unit_SetAction(unit, unitAction);
+	}
+
+	GUI_Widget_ActionPanel_Draw(true);
+	return false;
+}
+
+bool UnitSelection_HasPendingAction(void)
+{
+	return s_unitOrderAction != ACTION_INVALID && s_unitOrderCount != 0;
+}
+
+/** Apply the pending target action to the recipients captured at command time. */
+void UnitSelection_ApplyPendingAction(uint16 packed)
+{
+	uint16 i;
+
+	if (!UnitSelection_HasPendingAction()) return;
+
+	for (i = 0; i < s_unitOrderCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitOrder[i]);
+		if (UnitSelection_UnitHasAction(unit, s_unitOrderAction)) {
+			UnitSelection_ResetOrder(unit, s_unitOrderAction, packed);
+		}
+	}
+
+	UnitSelection_CancelPendingAction();
+}
+
+void UnitSelection_CancelPendingAction(void)
+{
+	s_unitOrderCount = 0;
+	s_unitOrderAction = ACTION_INVALID;
+}
+
 /**
  * Selects the given unit.
  *
@@ -1702,14 +1983,22 @@ void Unit_SetOrientation(Unit *unit, int8 orientation, bool rotateInstantly, uin
  */
 void Unit_Select(Unit *unit)
 {
-	if (unit == g_unitSelected) return;
-
 	if (unit != NULL && !unit->o.flags.s.allocated && !g_debugGame) {
 		unit = NULL;
 	}
 
 	if (unit != NULL && (unit->o.seenByHouses & (1 << g_playerHouseID)) == 0 && !g_debugGame) {
 		unit = NULL;
+	}
+
+	if (!s_unitSelectionChanging) {
+		UnitSelection_ClearInternal();
+		UnitSelection_Add(unit);
+	}
+
+	if (unit == g_unitSelected) {
+		GUI_Widget_ActionPanel_Draw(true);
+		return;
 	}
 
 	if (g_unitSelected != NULL) Unit_UpdateMap(2, g_unitSelected);

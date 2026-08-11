@@ -99,6 +99,9 @@ typedef enum ActionType {
 	ACTION_INVALID       = 0xFF
 } ActionType;
 
+/* UI-only selection state. Unit indices are stable for the duration of an order. */
+#define UNIT_SELECTION_MAX 102
+
 /**
  * Types of Movements available in the game.
  */
@@ -266,6 +269,18 @@ extern bool Unit_Damage(Unit *unit, uint16 damage, uint16 range);
 extern void Unit_UntargetMe(Unit *unit);
 extern void Unit_SetOrientation(Unit *unit, int8 orientation, bool rotateInstantly, uint16 level);
 extern void Unit_Select(Unit *unit);
+extern uint16 g_unitSelectionCount;
+extern void UnitSelection_Clear(void);
+extern void UnitSelection_SelectSingle(Unit *unit);
+extern void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive);
+extern bool UnitSelection_IsSelected(const Unit *unit);
+extern uint16 UnitSelection_GetActionCount(ActionType action);
+extern ActionType UnitSelection_GetActionForSlot(uint16 slot);
+extern ActionType UnitSelection_GetSpecialAction(void);
+extern bool UnitSelection_BeginAction(ActionType action);
+extern bool UnitSelection_HasPendingAction(void);
+extern void UnitSelection_ApplyPendingAction(uint16 packed);
+extern void UnitSelection_CancelPendingAction(void);
 extern Unit *Unit_CreateWrapper(uint8 houseID, UnitType type, uint16 location);
 extern uint16 Unit_FindTargetAround(uint16 packed);
 extern bool Unit_IsTileOccupied(Unit *unit);

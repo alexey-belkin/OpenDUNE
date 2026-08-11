@@ -180,7 +180,7 @@ typedef struct WidgetProperties {
 	uint8  fgColourSelected;                                /*!< Foreground colour when 'selected' */
 } WidgetProperties;
 
-extern WidgetInfo g_table_gameWidgetInfo[19];
+extern WidgetInfo g_table_gameWidgetInfo[23];
 extern WidgetInfo g_table_factoryWidgetInfo[13];
 
 extern WindowDesc g_optionsWindowDesc;
