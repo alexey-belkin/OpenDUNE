@@ -119,10 +119,14 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	static const int8 directionX[16] = {4, 4, 3, 2, 0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4};
 	static const int8 directionY[16] = {0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4, 4, 4, 3, 2};
 	const UnitInfo *ui;
+	Structure *targetStructure;
 	uint16 packedSource;
 	uint16 packedTarget;
 	uint16 oldPacked;
 	uint16 bestPacked = 0;
+	uint16 bestDistance = 0;
+	uint16 fallbackPacked = 0;
+	uint32 fallbackETA = 0xFFFFFFFF;
 	int16 bestOwner = -1;
 	uint32 bestETA = 0xFFFFFFFF;
 	uint32 oldETA = 0;
@@ -131,6 +135,10 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	uint16 radius;
 	uint16 minRadius;
 	uint16 dir;
+	int16 left = 0;
+	int16 right = 0;
+	int16 top = 0;
+	int16 bottom = 0;
 
 	if (!Unit_AttackPosition_IsEligible(unit)) {
 		Unit_AttackPosition_Clear(unit);
@@ -146,6 +154,19 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	if (!Map_IsValidPosition(packedSource) || !Map_IsValidPosition(packedTarget)) {
 		Unit_AttackPosition_Clear(unit);
 		return;
+	}
+
+	/* Structures occupy several map tiles.  Their attack range is measured to
+	 * the nearest edge, so tactical positions must be generated from the full
+	 * footprint instead of the structure's upper-left anchor tile. */
+	targetStructure = Tools_Index_GetStructure(unit->targetAttack);
+	if (targetStructure != NULL) {
+		const XYSize *size = &g_table_structure_layoutSize[g_table_structureInfo[targetStructure->o.type].layout];
+
+		left = Tile_GetPackedX(Tile_PackTile(targetStructure->o.position));
+		top = Tile_GetPackedY(Tile_PackTile(targetStructure->o.position));
+		right = left + size->width - 1;
+		bottom = top + size->height - 1;
 	}
 
 	/* A unit already in range keeps firing instead of chasing a new slot. */
@@ -164,21 +185,42 @@ static void Unit_AttackPosition_Update(Unit *unit)
 
 	for (radius = ui->fireDistance; radius >= minRadius; radius--) {
 		for (dir = 0; dir < lengthof(directionX); dir++) {
-			int16 x = Tile_GetPackedX(packedTarget) + (radius * directionX[dir] + 2) / 4;
-			int16 y = Tile_GetPackedY(packedTarget) + (radius * directionY[dir] + 2) / 4;
+			int16 x;
+			int16 y;
 			uint16 packed;
 			uint32 travelTicks;
 			uint32 eta;
+			uint16 firingDistance;
 			int16 owner;
+			Object candidate;
+
+			if (targetStructure == NULL) {
+				x = Tile_GetPackedX(packedTarget) + (radius * directionX[dir] + 2) / 4;
+				y = Tile_GetPackedY(packedTarget) + (radius * directionY[dir] + 2) / 4;
+			} else {
+				uint16 offsetX = (radius * abs(directionX[dir]) + 2) / 4;
+				uint16 offsetY = (radius * abs(directionY[dir]) + 2) / 4;
+
+				x = directionX[dir] > 0 ? right + offsetX : (directionX[dir] < 0 ? left - offsetX : (left + right) / 2);
+				y = directionY[dir] > 0 ? bottom + offsetY : (directionY[dir] < 0 ? top - offsetY : (top + bottom) / 2);
+			}
 
 			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
 			packed = Tile_PackXY(x, y);
 			if (!Map_IsValidPosition(packed) || packed == packedSource) continue;
 			if (Object_GetByPackedTile(packed) != NULL) continue;
-			if (Tile_GetDistancePacked(packed, packedTarget) > ui->fireDistance) continue;
 			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
 			if (!Script_Unit_HasRoute(unit, packedSource, packed, &travelTicks)) continue;
+
+			candidate = unit->o;
+			candidate.position = Tile_UnpackTile(packed);
+			firingDistance = Object_GetDistanceToEncoded(&candidate, unit->targetAttack);
+			if (firingDistance > (ui->fireDistance << 8)) continue;
 			eta = g_timerGame + travelTicks;
+			if (eta < fallbackETA) {
+				fallbackETA = eta;
+				fallbackPacked = packed;
+			}
 
 			owner = Unit_AttackPosition_GetReservationOwner(unit, packed, unit->targetAttack);
 			/* A closer arrival may preempt this slot, but only with a wide
@@ -190,9 +232,10 @@ static void Unit_AttackPosition_Update(Unit *unit)
 			/* Arrival time is the primary ordering. At an exact tie, preserve
 			 * the outer ring preference of the original implementation. */
 			if (eta > bestETA) continue;
-			if (eta == bestETA && bestPacked != 0 && Tile_GetDistancePacked(packed, packedTarget) <= Tile_GetDistancePacked(bestPacked, packedTarget)) continue;
+			if (eta == bestETA && bestPacked != 0 && firingDistance <= bestDistance) continue;
 			bestETA = eta;
 			bestPacked = packed;
+			bestDistance = firingDistance;
 			bestOwner = owner;
 		}
 
@@ -201,7 +244,14 @@ static void Unit_AttackPosition_Update(Unit *unit)
 
 	if (bestPacked == 0) {
 		if (refreshedOldETA != 0) s_attackPositionETA[unit->o.index] = refreshedOldETA;
-		else Unit_AttackPosition_Clear(unit);
+		else {
+			Unit_AttackPosition_Clear(unit);
+			/* All viable firing spots may already be reserved.  Keep turreted
+			 * units advancing toward the target instead of leaving targetMove
+			 * at zero; the next tactical pass can then assign an opened slot. */
+			if (fallbackPacked != 0) Unit_SetDestination(unit, Tools_Index_Encode(fallbackPacked, IT_TILE));
+			else if (ui->o.flags.hasTurret) Unit_SetDestination(unit, unit->targetAttack);
+		}
 		return;
 	}
 
