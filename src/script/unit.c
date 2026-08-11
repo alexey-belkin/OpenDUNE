@@ -1289,17 +1289,18 @@ static Pathfinder_Data Script_Unit_Pathfinder(uint16 packedSrc, uint16 packedDst
  * Test whether a unit can reach a tile using the same pathfinder as its
  * movement script. Tactical callers use this before reserving a firing tile.
  */
-bool Script_Unit_HasRoute(Unit *unit, uint16 packedSrc, uint16 packedDst, int16 *score)
+bool Script_Unit_HasRoute(Unit *unit, uint16 packedSrc, uint16 packedDst, uint32 *travelTicks)
 {
 	Unit *previousUnit;
 	Pathfinder_Data res;
 	uint8 buffer[42];
 	uint16 packed;
 	uint16 i;
+	uint32 ticks = 0;
 
 	if (unit == NULL || !Map_IsValidPosition(packedSrc) || !Map_IsValidPosition(packedDst)) return false;
 	if (packedSrc == packedDst) {
-		if (score != NULL) *score = 0;
+		if (travelTicks != NULL) *travelTicks = 0;
 		return true;
 	}
 
@@ -1309,7 +1310,6 @@ bool Script_Unit_HasRoute(Unit *unit, uint16 packedSrc, uint16 packedDst, int16 
 	res = Script_Unit_Pathfinder(packedSrc, packedDst, buffer, 40);
 	g_scriptCurrentUnit = previousUnit;
 
-	if (score != NULL) *score = res.score;
 	if (res.routeSize == 0 || buffer[0] == 0xFF) return false;
 
 	/* Script_Unit_Pathfinder may return a useful partial route.  That is fine
@@ -1317,11 +1317,28 @@ bool Script_Unit_HasRoute(Unit *unit, uint16 packedSrc, uint16 packedDst, int16 
 	 * that its exact endpoint is reachable. */
 	packed = packedSrc;
 	for (i = 0; i < res.routeSize && buffer[i] != 0xFF; i++) {
+		uint16 type;
+		uint16 speed;
+		uint16 distance;
+
 		if (buffer[i] > 7) return false;
 		packed += s_mapDirection[buffer[i]];
+		type = Map_GetLandscapeType(packed);
+		if (type == LST_STRUCTURE) type = LST_CONCRETE_SLAB;
+		speed = g_table_landscapeInfo[type].movementSpeed[g_table_unitInfo[unit->o.type].movementType];
+		speed = g_table_unitInfo[unit->o.type].movingSpeedFactor * speed / 256;
+		if ((g_table_unitInfo[unit->o.type].o.hitpoints / 2) > unit->o.hitpoints) speed -= speed / 4;
+		if (speed == 0) return false;
+
+		/* GameLoop_Unit advances movement every three game ticks. Diagonal
+		 * steps cover one and a half tile lengths in the engine metric. */
+		distance = (buffer[i] & 1) != 0 ? 384 : 256;
+		ticks += (distance * 3 + speed - 1) / speed;
 	}
 
-	return packed == packedDst;
+	if (packed != packedDst) return false;
+	if (travelTicks != NULL) *travelTicks = ticks;
+	return true;
 }
 
 /**

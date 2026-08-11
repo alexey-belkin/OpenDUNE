@@ -59,6 +59,7 @@ static bool s_unitSelectionChanging = false;
 static bool s_attackPositionManual[UNIT_INDEX_MAX];
 static uint16 s_attackPositionTile[UNIT_INDEX_MAX];
 static uint16 s_attackPositionTarget[UNIT_INDEX_MAX];
+static uint32 s_attackPositionETA[UNIT_INDEX_MAX];
 static uint32 s_attackPositionNextCheck[UNIT_INDEX_MAX];
 
 static bool Unit_AttackPosition_IsEligible(Unit *unit)
@@ -80,6 +81,7 @@ static void Unit_AttackPosition_Clear(Unit *unit)
 	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
 	s_attackPositionTile[unit->o.index] = 0;
 	s_attackPositionTarget[unit->o.index] = 0;
+	s_attackPositionETA[unit->o.index] = 0;
 	s_attackPositionNextCheck[unit->o.index] = 0;
 }
 
@@ -93,7 +95,8 @@ void Unit_AttackPosition_SetManual(Unit *unit, bool enabled)
 	if (enabled) s_attackPositionNextCheck[unit->o.index] = g_timerGame + (unit->o.index % 7) * 3;
 }
 
-static bool Unit_AttackPosition_IsReserved(const Unit *unit, uint16 packed, uint16 target)
+/* Returns the owner of a matching reservation, or -1 when the tile is free. */
+static int16 Unit_AttackPosition_GetReservationOwner(const Unit *unit, uint16 packed, uint16 target)
 {
 	uint16 i;
 
@@ -104,21 +107,10 @@ static bool Unit_AttackPosition_IsReserved(const Unit *unit, uint16 packed, uint
 		if (!s_attackPositionManual[i] || s_attackPositionTile[i] != packed || s_attackPositionTarget[i] != target) continue;
 		other = Unit_Get_ByIndex(i);
 		if (!other->o.flags.s.used || other->actionID != ACTION_ATTACK) continue;
-		return true;
+		return i;
 	}
 
-	return false;
-}
-
-static bool Unit_AttackPosition_IsStillUseful(const Unit *unit, uint16 packedTarget)
-{
-	uint16 position = s_attackPositionTile[unit->o.index];
-	uint16 fireDistance = g_table_unitInfo[unit->o.type].fireDistance;
-
-	if (position == 0 || s_attackPositionTarget[unit->o.index] != unit->targetAttack) return false;
-	if (!Map_IsValidPosition(position) || Object_GetByPackedTile(position) != NULL) return false;
-
-	return Tile_GetDistancePacked(position, packedTarget) <= fireDistance;
+	return -1;
 }
 
 /* Pick a reachable, unclaimed tile near the outer edge of weapon range. */
@@ -129,8 +121,12 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	const UnitInfo *ui;
 	uint16 packedSource;
 	uint16 packedTarget;
+	uint16 oldPacked;
 	uint16 bestPacked = 0;
-	int32 bestScore = 0x7FFFFFFF;
+	int16 bestOwner = -1;
+	uint32 bestETA = 0xFFFFFFFF;
+	uint32 oldETA = 0;
+	uint32 refreshedOldETA = 0;
 	uint16 targetDistance;
 	uint16 radius;
 	uint16 minRadius;
@@ -163,10 +159,7 @@ static void Unit_AttackPosition_Update(Unit *unit)
 		return;
 	}
 
-	/* Keep an in-range slot while travelling to it: no route thrashing. */
-	if (Unit_AttackPosition_IsStillUseful(unit, packedTarget)) return;
-
-	Unit_AttackPosition_Clear(unit);
+	oldPacked = s_attackPositionTarget[unit->o.index] == unit->targetAttack ? s_attackPositionTile[unit->o.index] : 0;
 	minRadius = ui->fireDistance > 2 ? ui->fireDistance - 2 : 1;
 
 	for (radius = ui->fireDistance; radius >= minRadius; radius--) {
@@ -174,31 +167,59 @@ static void Unit_AttackPosition_Update(Unit *unit)
 			int16 x = Tile_GetPackedX(packedTarget) + (radius * directionX[dir] + 2) / 4;
 			int16 y = Tile_GetPackedY(packedTarget) + (radius * directionY[dir] + 2) / 4;
 			uint16 packed;
-			int16 routeScore;
-			int32 score;
+			uint32 travelTicks;
+			uint32 eta;
+			int16 owner;
 
 			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
 			packed = Tile_PackXY(x, y);
 			if (!Map_IsValidPosition(packed) || packed == packedSource) continue;
-			if (Object_GetByPackedTile(packed) != NULL || Unit_AttackPosition_IsReserved(unit, packed, unit->targetAttack)) continue;
+			if (Object_GetByPackedTile(packed) != NULL) continue;
 			if (Tile_GetDistancePacked(packed, packedTarget) > ui->fireDistance) continue;
 			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
-			if (!Script_Unit_HasRoute(unit, packedSource, packed, &routeScore)) continue;
+			if (!Script_Unit_HasRoute(unit, packedSource, packed, &travelTicks)) continue;
+			eta = g_timerGame + travelTicks;
 
-			/* Prefer a short route, then the outer part of the firing ring. */
-			score = routeScore * 16 + (ui->fireDistance - Tile_GetDistancePacked(packed, packedTarget)) * 12;
-			if (score >= bestScore) continue;
-			bestScore = score;
+			owner = Unit_AttackPosition_GetReservationOwner(unit, packed, unit->targetAttack);
+			/* A closer arrival may preempt this slot, but only with a wide
+			 * enough margin to prevent two units from trading it every check. */
+			if (owner >= 0 && s_attackPositionETA[owner] <= eta + 60) continue;
+
+			if (packed == oldPacked) refreshedOldETA = eta;
+
+			/* Arrival time is the primary ordering. At an exact tie, preserve
+			 * the outer ring preference of the original implementation. */
+			if (eta > bestETA) continue;
+			if (eta == bestETA && bestPacked != 0 && Tile_GetDistancePacked(packed, packedTarget) <= Tile_GetDistancePacked(bestPacked, packedTarget)) continue;
+			bestETA = eta;
 			bestPacked = packed;
+			bestOwner = owner;
 		}
 
 		if (radius == minRadius) break; /* avoid unsigned wrap */
 	}
 
-	if (bestPacked == 0) return;
+	if (bestPacked == 0) {
+		if (refreshedOldETA != 0) s_attackPositionETA[unit->o.index] = refreshedOldETA;
+		else Unit_AttackPosition_Clear(unit);
+		return;
+	}
+
+	/* Keep an existing slot unless the replacement arrives at least 60 ticks
+	 * sooner.  This is the hysteresis counterpart to reservation preemption. */
+	if (oldPacked != 0 && refreshedOldETA != 0 && bestPacked != oldPacked) {
+		oldETA = refreshedOldETA;
+		if (bestETA + 60 >= oldETA) {
+			s_attackPositionETA[unit->o.index] = oldETA;
+			return;
+		}
+	}
+
+	if (bestOwner >= 0) Unit_AttackPosition_Clear(Unit_Get_ByIndex(bestOwner));
 
 	s_attackPositionTile[unit->o.index] = bestPacked;
 	s_attackPositionTarget[unit->o.index] = unit->targetAttack;
+	s_attackPositionETA[unit->o.index] = bestETA;
 	Unit_SetDestination(unit, Tools_Index_Encode(bestPacked, IT_TILE));
 }
 
