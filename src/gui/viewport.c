@@ -229,7 +229,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 	/* A right click is never a selection drag.  Apart from issuing a context
 	 * order, consume it so the old recenter-on-right-click path cannot run. */
-	if (w->index == 43 && rightClick) {
+	if ((w->index == 43 || w->index == 44) && rightClick) {
 		if (s_selectionBoxActive) {
 			s_selectionBoxActive = false;
 			g_viewport_forceRedraw = true;
