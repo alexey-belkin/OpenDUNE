@@ -928,6 +928,7 @@ uint16 Script_Unit_SetActionDefault(ScriptEngine *script)
 	VARIABLE_NOT_USED(script);
 
 	u = g_scriptCurrentUnit;
+	if (Unit_Autonomy_ReturnToPost(u)) return 0;
 
 	Unit_SetAction(u, Unit_GetDefaultActionAfterCompletion(u));
 

@@ -588,29 +588,36 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit)
 	return best;
 }
 
-static void Unit_Autonomy_Return(Unit *unit)
+/* Consume an autonomous combat sortie and restore the unit's original post.
+ * This is also called from the unit script completion path, which runs before
+ * the periodic tactical update and therefore cannot lose the return order. */
+bool Unit_Autonomy_ReturnToPost(Unit *unit)
 {
-	ActionType returnAction = s_autonomousReturnAction[unit->o.index];
-	uint16 anchor = unit->guardPosition;
+	ActionType returnAction;
+	uint16 anchor;
 
-	if (!s_autonomousAttack[unit->o.index] || returnAction == ACTION_INVALID) return;
+	if (unit == NULL) return false;
+	returnAction = s_autonomousReturnAction[unit->o.index];
+	anchor = unit->guardPosition;
+	if (!s_autonomousAttack[unit->o.index] || returnAction == ACTION_INVALID) return false;
 	Unit_AttackPosition_SetManual(unit, false);
 	unit->targetAttack = 0;
 	unit->targetMove = 0;
 	unit->route[0] = 0xFF;
 	if (s_manualHunt[unit->o.index]) {
 		Unit_SetAction(unit, ACTION_AREA_GUARD);
-		return;
+		return true;
 	}
 
 	if (returnAction == ACTION_HUNT || !Map_IsValidPosition(anchor) || Tile_GetDistance(unit->o.position, Tile_UnpackTile(anchor)) <= 128) {
 		Unit_SetAction(unit, returnAction);
-		return;
+		return true;
 	}
 
 	Unit_SetAction(unit, ACTION_MOVE);
 	Unit_SetDestination(unit, Tools_Index_Encode(anchor, IT_TILE));
 	unit->nextActionID = returnAction;
+	return true;
 }
 
 static void Unit_Autonomy_BeginAttack(Unit *unit, uint16 target)
@@ -629,7 +636,7 @@ static void Unit_Autonomy_Update(Unit *unit)
 
 	if (!Unit_Autonomy_IsCombatUnit(unit)) return;
 	if (unit->actionID == ACTION_ATTACK && s_autonomousAttack[unit->o.index]) {
-		if (!Tools_Index_IsValid(unit->targetAttack)) Unit_Autonomy_Return(unit);
+		if (!Tools_Index_IsValid(unit->targetAttack)) Unit_Autonomy_ReturnToPost(unit);
 		return;
 	}
 	if (Unit_Autonomy_GetSearchRadius(unit) == 0) return;

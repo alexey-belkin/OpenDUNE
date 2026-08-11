@@ -255,6 +255,7 @@ extern struct Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile3
 extern bool Unit_IsTypeOnMap(uint8 houseID, uint8 typeID);
 extern void Unit_SetAction(Unit *u, ActionType action);
 extern void Unit_SetManualHunt(Unit *u, bool enabled);
+extern bool Unit_Autonomy_ReturnToPost(Unit *unit);
 extern ActionType Unit_GetDefaultAction(const Unit *u);
 extern ActionType Unit_GetDefaultActionAfterCompletion(Unit *u);
 extern void Unit_SetGuardPosition(Unit *u, uint16 packed);
