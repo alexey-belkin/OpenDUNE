@@ -52,6 +52,7 @@ static uint16 s_unitSelection[UNIT_SELECTION_MAX];
 static uint16 s_unitOrder[UNIT_SELECTION_MAX];
 static uint16 s_unitOrderCount = 0;
 static ActionType s_unitOrderAction = ACTION_INVALID;
+static bool s_unitOrderAirTransit = false;
 static bool s_unitSelectionChanging = false;
 
 /* Runtime-only tactical state.  The actual route remains owned by the unit
@@ -69,6 +70,8 @@ static uint16 s_harvesterLastPosition[UNIT_INDEX_MAX];
 static uint32 s_harvesterLastProgress[UNIT_INDEX_MAX];
 static uint16 s_houseThreatTarget[HOUSE_MAX];
 static uint32 s_houseThreatUntil[HOUSE_MAX];
+
+static void Unit_AirTransit_Update(Unit *unit);
 
 static const int8 s_firingPositionDirectionX[16] = {4, 4, 3, 2, 0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4};
 static const int8 s_firingPositionDirectionY[16] = {0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4, 4, 4, 3, 2};
@@ -1017,6 +1020,7 @@ void GameLoop_Unit(void)
 		if (tickUnknown4) {
 			Unit_Autonomy_Update(u);
 			Unit_Harvester_Update(u);
+			Unit_AirTransit_Update(u);
 			Unit_AttackPosition_Update(u);
 		}
 
@@ -1262,6 +1266,7 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 	u->guardPosition = (position.x == 0xFFFF && position.y == 0xFFFF) ? 0 : Tile_PackTile(position);
 	u->harvestCenter = (typeID == UNIT_HARVESTER && position.x != 0xFFFF && position.y != 0xFFFF) ? Tile_PackTile(position) : 0;
 	u->repairReturnPosition = 0;
+	u->airTransitDestination = 0;
 	u->amount        = 0;
 	u->wobbleIndex   = 0;
 	u->spriteOffset  = 0;
@@ -2767,6 +2772,31 @@ void UnitSelection_OrderHunt(void)
 	GUI_Widget_ActionPanel_Draw(true);
 }
 
+static bool UnitSelection_CanAirTransit(const Unit *unit)
+{
+	const UnitInfo *ui;
+
+	if (!UnitSelection_IsControllable(unit)) return false;
+	ui = &g_table_unitInfo[unit->o.type];
+	return ui->o.flags.canBePickedUp && ui->flags.isGroundUnit;
+}
+
+/* Begin a targeted carryall command.  Units without an immediately free
+ * carryall remain queued and are picked up as transport becomes available. */
+bool UnitSelection_BeginAirTransit(void)
+{
+	uint16 i;
+
+	UnitSelection_CancelPendingAction();
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		if (UnitSelection_CanAirTransit(unit)) s_unitOrder[s_unitOrderCount++] = unit->o.index;
+	}
+	if (s_unitOrderCount == 0) return false;
+	s_unitOrderAirTransit = true;
+	return true;
+}
+
 /** Begin a group command. Returns true when the next map click is its target. */
 bool UnitSelection_BeginAction(ActionType action)
 {
@@ -2804,7 +2834,7 @@ bool UnitSelection_BeginAction(ActionType action)
 
 bool UnitSelection_HasPendingAction(void)
 {
-	return s_unitOrderAction != ACTION_INVALID && s_unitOrderCount != 0;
+	return (s_unitOrderAction != ACTION_INVALID || s_unitOrderAirTransit) && s_unitOrderCount != 0;
 }
 
 /** Apply the pending target action to the recipients captured at command time. */
@@ -2813,6 +2843,23 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 	uint16 i;
 
 	if (!UnitSelection_HasPendingAction()) return;
+	if (s_unitOrderAirTransit) {
+		for (i = 0; i < s_unitOrderCount; i++) {
+			Unit *unit = Unit_Get_ByIndex(s_unitOrder[i]);
+
+			if (!UnitSelection_CanAirTransit(unit)) continue;
+			Unit_AttackPosition_SetManual(unit, false);
+			Object_Script_Variable4_Clear(&unit->o);
+			unit->targetAttack = 0;
+			unit->targetMove = 0;
+			unit->route[0] = 0xFF;
+			unit->airTransitDestination = packed;
+			Unit_SetAction(unit, ACTION_STOP);
+		}
+		UnitSelection_CancelPendingAction();
+		GUI_Widget_ActionPanel_Draw(true);
+		return;
+	}
 
 	for (i = 0; i < s_unitOrderCount; i++) {
 		Unit *unit = Unit_Get_ByIndex(s_unitOrder[i]);
@@ -2828,6 +2875,7 @@ void UnitSelection_CancelPendingAction(void)
 {
 	s_unitOrderCount = 0;
 	s_unitOrderAction = ACTION_INVALID;
+	s_unitOrderAirTransit = false;
 }
 
 /**
@@ -3288,6 +3336,20 @@ bool Unit_RepairReturnIsSafe(Unit *unit, uint16 packed)
 	}
 
 	return !enemyForce || alliedForce;
+}
+
+static void Unit_AirTransit_Update(Unit *unit)
+{
+	Unit *carryall;
+	uint16 encoded;
+
+	if (unit->airTransitDestination == 0 || !Map_IsValidPosition(unit->airTransitDestination)) return;
+	if (!UnitSelection_CanAirTransit(unit) || unit->o.script.variables[4] != 0) return;
+
+	encoded = Tools_Index_Encode(unit->o.index, IT_UNIT);
+	carryall = Unit_CallUnitByType(UNIT_CARRYALL, Unit_GetHouseID(unit), encoded, false);
+	if (carryall == NULL) return;
+	Object_Script_Variable4_Link(encoded, Tools_Index_Encode(carryall->o.index, IT_UNIT));
 }
 
 /**

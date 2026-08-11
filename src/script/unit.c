@@ -200,6 +200,7 @@ uint16 Script_Unit_TransportDeliver(ScriptEngine *script)
 	Unit_SetOrientation(u2, u->orientation[0].current, true, 1);
 	Unit_SetSpeed(u2, 0);
 	if (u2->o.type != UNIT_HARVESTER) u2->repairReturnPosition = 0;
+	u2->airTransitDestination = 0;
 
 	u->o.linkedID = u2->o.linkedID;
 	u2->o.linkedID = 0xFF;
@@ -291,10 +292,24 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 			Structure *s = NULL;
 			PoolFindStruct find;
 			int16 minDistance = 0;
+			uint16 airDestination;
 
 			u2 = Tools_Index_GetUnit(u->targetMove);
 
 			if (!u2->o.flags.s.allocated) return 0;
+			airDestination = u2->airTransitDestination;
+
+			if (airDestination != 0 && Map_IsValidPosition(airDestination)) {
+				/* An explicit Air Transit bypasses refinery/repair routing and
+				 * carries this unit directly to the player-selected landing tile. */
+				u->o.linkedID = u2->o.index & 0xFF;
+				u->o.flags.s.inTransport = true;
+				Object_Script_Variable4_Clear(&u->o);
+				Unit_Hide(u2);
+				u->targetMove = Tools_Index_Encode(airDestination, IT_TILE);
+				Unit_UpdateMap(2, u);
+				return 0;
+			}
 
 			find.houseID = Unit_GetHouseID(u);
 			find.index   = 0xFFFF;

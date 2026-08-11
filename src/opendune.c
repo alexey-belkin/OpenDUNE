@@ -1091,9 +1091,19 @@ static void GameLoop_Main(void)
 
 		key = GUI_Widget_HandleEvents(g_widgetLinkedListHead);
 		GUI_Widget_Viewport_HandleEdgeScroll();
-		/* T = Hunt.  H remains reserved for the Harvester command. */
-		if ((key & 0x7FFF) == 0x0014 && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
+		/* T = Hunt.  Polling the physical key also covers keys consumed by a
+		 * sidebar widget before this general in-game shortcut sees them. */
+		if (((key & 0x7FFF) == 0x0014 || Input_Test(0x14) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
 			UnitSelection_OrderHunt();
+			key = 0;
+		}
+		/* Y = Air Transit: choose a landing tile for the selected ground units. */
+		if (((key & 0x7FFF) == 0x0015 || Input_Test(0x15) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
+			if (UnitSelection_BeginAirTransit()) {
+				g_unitActive = g_unitSelected;
+				g_activeAction = ACTION_MOVE;
+				GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
+			}
 			key = 0;
 		}
 

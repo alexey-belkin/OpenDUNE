@@ -154,6 +154,7 @@ typedef struct Unit {
 	uint16 guardPosition;                                   /*!< Tile the unit returns to after autonomous defence. */
 	uint16 harvestCenter;                                   /*!< Player-selected spice field centre for a Harvester. */
 	uint16 repairReturnPosition;                             /*!< Tile a repaired vehicle should return to when it is safe. */
+	uint16 airTransitDestination;                            /*!< Tile queued for an explicit carryall airlift. */
 	uint8  amount;                                          /*!< Meaning depends on type:
 	                                                         * - Sandworm : units to eat before disappearing.
 	                                                         * - Harvester : harvested spice.
@@ -288,6 +289,7 @@ extern ActionType UnitSelection_GetActionForSlot(uint16 slot);
 extern ActionType UnitSelection_GetSpecialAction(void);
 extern void UnitSelection_IssueDefaultOrder(uint16 packed);
 extern void UnitSelection_OrderHunt(void);
+extern bool UnitSelection_BeginAirTransit(void);
 extern bool UnitSelection_BeginAction(ActionType action);
 extern bool UnitSelection_HasPendingAction(void);
 extern void UnitSelection_ApplyPendingAction(uint16 packed);

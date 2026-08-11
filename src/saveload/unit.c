@@ -61,7 +61,8 @@ static const SaveLoadDesc s_saveUnitNew[] = {
 	SLD_ENTRY (Unit, SLDT_UINT16, guardPosition),
 	SLD_ENTRY (Unit, SLDT_UINT16, harvestCenter),
 	SLD_ENTRY (Unit, SLDT_UINT16, repairReturnPosition),
-	SLD_EMPTY2(      SLDT_UINT16, 3),
+	SLD_ENTRY (Unit, SLDT_UINT16, airTransitDestination),
+	SLD_EMPTY2(      SLDT_UINT16, 2),
 	SLD_END
 };
 
