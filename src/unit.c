@@ -807,6 +807,9 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 	Unit_SetAction(unit, action);
 
 	if (action == ACTION_MOVE) {
+		/* A player-directed move relocates the default Area Guard post. The
+		 * completion hook below replaces this with the exact arrival tile. */
+		unit->guardPosition = packed;
 		Unit_SetDestination(unit, encoded);
 	} else if (action == ACTION_HARVEST) {
 		unit->harvestCenter = packed;
@@ -1325,6 +1328,18 @@ ActionType Unit_GetDefaultAction(const Unit *u)
 	}
 
 	return ui->o.actionsPlayer[3];
+}
+
+/* A manual order establishes a new defensive post. Autonomous defence keeps
+ * its existing post, so reacting to a threat never drifts the unit's area. */
+ActionType Unit_GetDefaultActionAfterCompletion(Unit *u)
+{
+	if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID &&
+		(u->actionID == ACTION_MOVE || (u->actionID == ACTION_ATTACK && s_attackPositionManual[u->o.index] && !s_autonomousAttack[u->o.index]))) {
+		u->guardPosition = Tile_PackTile(u->o.position);
+	}
+
+	return Unit_GetDefaultAction(u);
 }
 
 /**

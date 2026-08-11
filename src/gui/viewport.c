@@ -301,6 +301,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		Unit_SetAction(u, action);
 
 		if (action == ACTION_MOVE) {
+			u->guardPosition = packed;
 			Unit_SetDestination(u, encoded);
 		} else if (action == ACTION_HARVEST) {
 			u->harvestCenter = packed;

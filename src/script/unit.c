@@ -901,7 +901,7 @@ uint16 Script_Unit_SetActionDefault(ScriptEngine *script)
 
 	u = g_scriptCurrentUnit;
 
-	Unit_SetAction(u, Unit_GetDefaultAction(u));
+	Unit_SetAction(u, Unit_GetDefaultActionAfterCompletion(u));
 
 	return 0;
 }
