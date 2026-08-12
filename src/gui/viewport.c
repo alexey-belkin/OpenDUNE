@@ -39,6 +39,10 @@ static bool s_selectionBoxDragging;                         /*!< The press moved
 static bool s_selectionBoxSuppressUntilRelease;              /*!< Ignore the tail of a target click after returning to unit mode. */
 static uint16 s_selectionBoxStart;                          /*!< Start tile, fixed in world coordinates. */
 static uint16 s_selectionBoxEnd;                            /*!< End tile, fixed in world coordinates. */
+static uint16 s_lastClickPosition;                          /*!< Tile of the previous plain click, for double-click detection. */
+static uint32 s_lastClickTime;                              /*!< When that click happened. */
+
+#define VIEWPORT_DOUBLE_CLICK_TICKS 30                      /*!< Half a second on the 60 Hz game timer. */
 
 /** Convert a tactical-view pixel position to a map tile. */
 static uint16 GUI_Widget_Viewport_GetPackedAt(uint16 x, uint16 y)
@@ -64,6 +68,33 @@ static void GUI_Widget_Viewport_SelectAt(uint16 packed)
 			Unit_DisplayStatusText(g_unitSelected);
 		}
 	}
+}
+
+/* A single click on the map, carrying the same two group modifiers the box
+ * selection already has: shift takes a unit in or out of the group, and a
+ * double click takes every unit of that type on screen.  Anything that is not
+ * one of our units falls through to the classic "show me what this is". */
+static void GUI_Widget_Viewport_ClickAt(uint16 packed, bool additive)
+{
+	uint16 position = g_debugScenario ? packed : Unit_FindTargetAround(packed);
+	Unit *unit = NULL;
+	bool doubleClick;
+
+	if (g_map[position].overlayTileID == g_veiledTileID && !g_debugScenario) return;
+
+	unit = Unit_Get_ByPackedTile(position);
+	doubleClick = unit != NULL && position == s_lastClickPosition &&
+		s_lastClickTime != 0 && s_lastClickTime + VIEWPORT_DOUBLE_CLICK_TICKS > g_timerGame;
+
+	s_lastClickPosition = position;
+	s_lastClickTime = g_timerGame;
+
+	if (unit != NULL) {
+		if (doubleClick && UnitSelection_SelectSameTypeOnScreen(unit, additive)) return;
+		if (additive && UnitSelection_Toggle(unit)) return;
+	}
+
+	GUI_Widget_Viewport_SelectAt(packed);
 }
 
 /** Draw a compact health bar using the same green/yellow/red thresholds as
@@ -94,6 +125,57 @@ static void GUI_Widget_Viewport_DrawHealthBar(int16 x, int16 y, uint16 current, 
 	GUI_DrawFilledRectangle(left - 1, top - 1, left + 14, top + 2, 1);
 	GUI_DrawFilledRectangle(left, top, left + 13, top + 1, 12);
 	if (width != 0) GUI_DrawFilledRectangle(left, top, left + width - 1, top + 1, colour);
+}
+
+/* One debug line, in absolute screen coordinates.  Both endpoints are world
+ * positions; GUI_DrawLine() clips whatever leaves the tactical widget. */
+static void GUI_Widget_Viewport_DrawDebugLine(tile32 from, tile32 to, uint8 colour)
+{
+	int16 baseX = Tile_GetPackedX(g_viewportPosition) << 4;
+	int16 baseY = Tile_GetPackedY(g_viewportPosition) << 4;
+
+	GUI_DrawLine((int16)(from.x >> 4) - baseX, (int16)(from.y >> 4) - baseY + 40,
+	             (int16)(to.x >> 4) - baseX, (int16)(to.y >> 4) - baseY + 40, colour);
+}
+
+/* What each of our units is actually doing, drawn over the map:
+ *   white  - where it is moving (targetMove),
+ *   yellow - the firing position the tactical layer reserved for it,
+ *   red    - the target it picked.
+ * A unit with no line at all has decided to do nothing, which is usually the
+ * interesting case. */
+static void GUI_Widget_Viewport_DrawDebugLines(void)
+{
+	PoolFindStruct find;
+
+	find.houseID = g_playerHouseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	GUI_SetClippingArea(0, 40, 239, 199);
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+		uint16 tile;
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap) continue;
+		if (!Map_IsPositionInViewport(u->o.position, NULL, NULL)) continue;
+		if (!g_map[Tile_PackTile(u->o.position)].isUnveiled && !g_debugScenario) continue;
+
+		if (Tools_Index_IsValid(u->targetMove)) {
+			GUI_Widget_Viewport_DrawDebugLine(u->o.position, Tools_Index_GetTile(u->targetMove), 0xFF);
+		}
+
+		tile = Unit_AttackPosition_GetTile(u);
+		if (tile != 0) GUI_Widget_Viewport_DrawDebugLine(u->o.position, Tile_UnpackTile(tile), 5);
+
+		if (Tools_Index_IsValid(u->targetAttack)) {
+			GUI_Widget_Viewport_DrawDebugLine(u->o.position, Tools_Index_GetTile(u->targetAttack), 8);
+		}
+	}
+
+	GUI_SetClippingArea(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
 }
 
 /** Scroll the tactical map while the pointer rests on a game-screen edge. */
@@ -269,10 +351,13 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			bool additive = g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39));
 
 			s_selectionBoxEnd = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
-			if (s_selectionBoxDragging) {
+			/* A press that wandered inside one tile is a click, not a box.  The
+			 * mouse almost always reports a pixel of travel, so treating any drag
+			 * event as a box would make the modifiers below unreachable. */
+			if (s_selectionBoxDragging && s_selectionBoxStart != s_selectionBoxEnd) {
 				UnitSelection_SelectBox(s_selectionBoxStart, s_selectionBoxEnd, additive);
 			} else {
-				GUI_Widget_Viewport_SelectAt(s_selectionBoxEnd);
+				GUI_Widget_Viewport_ClickAt(s_selectionBoxEnd, additive);
 			}
 			s_selectionBoxActive = false;
 			s_selectionBoxDragging = false;
@@ -469,6 +554,10 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 	int16 maxX[10];
 
 	PoolFindStruct find;
+
+	/* Debug lines are drawn over the map, so the map underneath has to be
+	 * repainted every frame; a partial redraw would leave them smeared. */
+	if (g_gameConfig.debugLines) forceRedraw = true;
 
 	updateDisplay = forceRedraw;
 
@@ -751,6 +840,8 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 		g_dirtyUnitCount = 0;
 	}
+
+	if (g_gameConfig.debugLines) GUI_Widget_Viewport_DrawDebugLines();
 
 	/* The drag endpoints are map tiles. Reproject them every frame so scrolling
 	 * never changes the selected world rectangle. */

@@ -166,7 +166,7 @@ typedef struct WindowDesc {
 		uint16 height;                                      /*!< Height of the Widget. */
 		uint16 labelStringId;                               /*!< Label of the Widget. */
 		uint16 shortcut2;                                   /*!< The shortcut to trigger the Widget. */
-	} widgets[7];                                           /*!< The Widgets belonging to the Window. */
+	} widgets[8];                                           /*!< The Widgets belonging to the Window. */
 } WindowDesc;
 
 /** Widget properties. */
@@ -198,7 +198,7 @@ extern Widget *g_widgetMentatScrollUp;
 extern Widget *g_widgetMentatScrollDown;
 extern Widget *g_widgetMentatScrollbar;
 
-extern WidgetProperties g_widgetProperties[22];
+extern WidgetProperties g_widgetProperties[23];
 extern uint16 g_curWidgetIndex;
 extern uint16 g_curWidgetXBase;
 extern uint16 g_curWidgetYBase;
@@ -207,7 +207,7 @@ extern uint16 g_curWidgetHeight;
 extern uint8  g_curWidgetFGColourBlink;
 extern uint8  g_curWidgetFGColourNormal;
 
-extern Widget g_table_windowWidgets[9];
+extern Widget g_table_windowWidgets[10];
 
 
 extern Widget *GUI_Widget_GetNext(Widget *w);

@@ -78,10 +78,10 @@ WindowDesc g_optionsWindowDesc = {
 };
 
 WindowDesc g_gameControlWindowDesc = {
-	/* index       */ 16,
+	/* index       */ 22, /* Taller than the options window: one extra row. */
 	/* stringID    */ STR_GAME_CONTROLS,
 	/* addArrows   */ false,
-	/* widgetCount */ 7,
+	/* widgetCount */ 8,
 	{ /* widgets */
 		{ /* 0 */
 		/* stringID      */ -10, /* Music state. */
@@ -138,9 +138,18 @@ WindowDesc g_gameControlWindowDesc = {
 		/* shortcut2     */ 0,
 	},
 	{ /* 6 */
+		/* stringID      */ -17, /* Debug lines state. */
+		/* offsetX       */ 152,
+		/* offsetY       */ 110,
+		/* width         */ 80,
+		/* height        */ 15,
+		/* labelStringID */ -18, /* Debug lines. */
+		/* shortcut2     */ 0,
+	},
+	{ /* 7 */
 		/* stringID      */ STR_PREVIOUS,
 		/* offsetX       */ 96,
-		/* offsetY       */ 116,
+		/* offsetY       */ 131,
 		/* width         */ 136,
 		/* height        */ 15,
 		/* labelStringID */ STR_NULL,

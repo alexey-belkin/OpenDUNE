@@ -57,7 +57,10 @@ void GUI_Widget_TextButton_Draw(Widget *w)
 	GUI_Widget_DrawBorder(19, state, 1);
 
 	label = GUI_String_Get_ByIndex(w->stringID);
-	if (g_unitSelectionCount > 1 && ((w->index >= 8 && w->index <= 11) || (w->index >= 30 && w->index <= 33))) {
+	/* Dialog windows reuse widget indices 30..37 for their own rows (see
+	 * GUI_Window_Create), and they set parentID; the action panel does not.
+	 * Without that check a Game Controls row reads "ON 0/0". */
+	if (g_unitSelectionCount > 1 && w->parentID == 0 && ((w->index >= 8 && w->index <= 11) || (w->index >= 30 && w->index <= 33))) {
 		uint16 slot = (w->index <= 11) ? w->index - 8 : w->index - 26;
 		ActionType action = UnitSelection_GetActionForSlot(slot);
 		uint16 count = UnitSelection_GetActionCount(action);
@@ -830,7 +833,10 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 
 						GUI_Widget_MakeVisible(buttons[i]);
 
-						if (actions[i] == actionCurrent || panelAction == actionCurrent) {
+						/* Exact match only: the Guard slot issues Area Guard, so
+						 * highlighting it for plain Guard as well would hide which
+						 * of the two modes the unit is actually in. */
+						if (panelAction == actionCurrent) {
 							GUI_Widget_MakeSelected(buttons[i], false);
 						} else {
 							GUI_Widget_MakeNormal(buttons[i], false);

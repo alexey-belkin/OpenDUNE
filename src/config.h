@@ -39,6 +39,7 @@ typedef struct GameCfg {
 	uint16 hints;                      /*!< 0:Off, 1:On. */
 	uint16 autoScroll;                 /*!< 0:Off, 1:On. */
 	uint16 unitHealthBars;             /*!< 0:Off, 1:On. */
+	uint16 debugLines;                 /*!< 0:Off, 1:On.  Draws what each unit is doing. */
 } GameCfg;
 
 extern GameCfg g_gameConfig;

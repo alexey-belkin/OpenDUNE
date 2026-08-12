@@ -415,12 +415,48 @@ static void Unit_AttackPosition_SetAutomatic(Unit *unit, ActionType returnAction
 {
 	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
 
+	/* A sortie can be opened while the unit is already moving or attacking; the
+	 * post has to remember a guard mode to come back to, not the action it
+	 * happened to carry at that moment. */
+	if (returnAction != ACTION_GUARD && returnAction != ACTION_AREA_GUARD && returnAction != ACTION_HUNT) {
+		returnAction = Unit_GetDefaultAction(unit);
+	}
+
 	s_attackPositionManual[unit->o.index] = true;
 	s_autonomousPost[unit->o.index].anchor = unit->guardPosition;
 	s_autonomousPost[unit->o.index].action = returnAction;
 	s_autonomousPost[unit->o.index].state = AUTONOMOUS_POST_ENGAGING;
 	Unit_AttackPosition_Clear(unit);
 	s_attackPositionNextCheck[unit->o.index] = g_timerGame + (unit->o.index % 7) * 3;
+}
+
+/* A sandworm is never a movement destination.  It travels through sand and
+ * swallows whatever stands on it, so the only safe way to engage one is from
+ * rock, which Unit_AttackPosition_Update() picks explicitly.  The original
+ * scripts know nothing about that: Script_Unit_SetTarget() copies the target
+ * into targetMove for every unit without a turret, and the Area Guard routine
+ * drives straight at it (UNIT.EMC word 519).  Refusing the destination at the
+ * two setters is what actually stops the chase - the scripts run four times as
+ * often as the tactical pass, so clearing targetMove afterwards only loses the
+ * tug of war. */
+bool Unit_IsSandwormTarget(uint16 encoded)
+{
+	const Unit *u = Tools_Index_GetUnit(encoded);
+
+	return u != NULL && u->o.type == UNIT_SANDWORM;
+}
+
+/* True unless the step would carry the unit onto sand and closer to the worm it
+ * has taken as its target. */
+static bool Unit_Sandworm_StepAllowed(const Unit *unit, uint16 packed)
+{
+	const Unit *worm = Tools_Index_GetUnit(unit->targetAttack);
+
+	if (worm == NULL || worm->o.type != UNIT_SANDWORM) return true;
+	if (unit->o.type == UNIT_SANDWORM) return true;
+	if (!g_table_landscapeInfo[Map_GetLandscapeType(packed)].isSand) return true;
+
+	return Tile_GetDistance(Tile_UnpackTile(packed), worm->o.position) >= Tile_GetDistance(unit->o.position, worm->o.position);
 }
 
 /* A sandworm travels through sand and cannot touch rock, so a unit that engages
@@ -517,6 +553,57 @@ static bool Unit_AttackPosition_EstimateTravel(Unit *unit, uint16 target, uint32
 	return true;
 }
 
+/* The tile the tactical layer currently has this unit heading for, 0 when it
+ * has none.  Exposed for the debug overlay: from the outside a unit on its way
+ * to a firing position looks exactly like one wandering off. */
+uint16 Unit_AttackPosition_GetTile(const Unit *unit)
+{
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return 0;
+	if (s_attackPositionTarget[unit->o.index] != unit->targetAttack) return 0;
+
+	return s_attackPositionTile[unit->o.index];
+}
+
+/* True while the firing-position layer is placing this unit: a player Attack
+ * order or an autonomous sortie.  Its destination is then owned by that layer. */
+bool Unit_AttackPosition_IsManaged(const Unit *unit)
+{
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return false;
+
+	return s_attackPositionManual[unit->o.index] && Tools_Index_IsValid(unit->targetAttack);
+}
+
+/* How a unit under tactical control may approach its target.
+ *
+ * Attacking is supposed to mean "go to the firing position picked for me", but
+ * the original attack script paths straight at targetAttack (UNIT.EMC word 213)
+ * for every unit, and it does so without touching targetMove, so nothing at the
+ * order level can redirect it.  That is what drove units to point-blank range
+ * whatever the tactical layer had decided - and into sandworms.
+ *
+ * Returns false when the unit must not path at all: it is ours to place, and no
+ * position has been assigned yet, or none exists.  Holding for a tactical pass
+ * is the correct answer there; approaching the target itself never is. */
+bool Unit_AttackPosition_GetApproach(Unit *unit, uint16 encoded, uint16 *destination)
+{
+	if (unit == NULL || destination == NULL || unit->o.index >= UNIT_INDEX_MAX) return true;
+	if (!s_attackPositionManual[unit->o.index]) return true;
+	if (!Tools_Index_IsValid(unit->targetAttack) || encoded != unit->targetAttack) return true;
+
+	/* Whatever else is true, a unit that can already shoot does not move.  This
+	 * is what stops the pendulum: the firing ring lies at the outer edge of
+	 * weapon range, so a unit that has drifted inside it would otherwise be
+	 * pulled back out again, step in again, and never stand still long enough
+	 * to fire. */
+	if (Object_GetDistanceToEncoded(&unit->o, unit->targetAttack) <= (g_table_unitInfo[unit->o.type].fireDistance << 8)) return false;
+
+	if (s_attackPositionTile[unit->o.index] == 0) return false;
+	if (s_attackPositionTarget[unit->o.index] != unit->targetAttack) return false;
+
+	*destination = Tools_Index_Encode(s_attackPositionTile[unit->o.index], IT_TILE);
+	return true;
+}
+
 /* Returns the owner of a matching reservation, or -1 when the tile is free. */
 static int16 Unit_AttackPosition_GetReservationOwner(const Unit *unit, uint16 packed, uint16 target)
 {
@@ -535,6 +622,59 @@ static int16 Unit_AttackPosition_GetReservationOwner(const Unit *unit, uint16 pa
 	return -1;
 }
 
+/* A waiting spot just outside weapon range, used when every firing position is
+ * taken.  Standing at the edge of the fight is what the original script bought
+ * by driving at the target - the unit is there to step into a slot the moment
+ * one opens - except that it stops short of the target's own guns instead of
+ * ending up under them.  A sandworm keeps the same rule as everywhere: rock
+ * only, so the wait is never spent standing in its path. */
+static uint16 Unit_AttackPosition_FindStaging(Unit *unit, uint32 *travelTicks)
+{
+	const UnitInfo *ui = &g_table_unitInfo[unit->o.type];
+	uint16 packedSource = Tile_PackTile(unit->o.position);
+	uint16 packedTarget = Tools_Index_GetPackedTile(unit->targetAttack);
+	uint16 best = 0;
+	uint32 bestTicks = 0xFFFFFFFF;
+	uint16 current;
+	uint16 radius;
+	uint16 dir;
+
+	if (!Map_IsValidPosition(packedSource) || !Map_IsValidPosition(packedTarget)) return 0;
+
+	/* Waiting is only ever worth a step forward.  A unit already at the edge of
+	 * the fight stays where it is: sending it to another tile of the same ring,
+	 * or worse to a farther one, is the pendulum in its purest form. */
+	current = Tile_GetDistancePacked(packedSource, packedTarget);
+	if (current <= ui->fireDistance + 3) return 0;
+
+	for (radius = ui->fireDistance + 1; radius <= ui->fireDistance + 3; radius++) {
+		for (dir = 0; dir < lengthof(s_firingPositionDirectionX); dir++) {
+			int16 x = Tile_GetPackedX(packedTarget) + (radius * s_firingPositionDirectionX[dir] + 2) / 4;
+			int16 y = Tile_GetPackedY(packedTarget) + (radius * s_firingPositionDirectionY[dir] + 2) / 4;
+			uint16 packed;
+			uint32 ticks;
+
+			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+			packed = Tile_PackXY(x, y);
+			/* Already waiting on a good tile: staying put beats shuffling. */
+			if (packed == packedSource) return 0;
+			if (!Map_IsValidPosition(packed) || Object_GetByPackedTile(packed) != NULL) continue;
+			if (!Unit_AttackPosition_IsFiringTileAllowed(unit->targetAttack, packed)) continue;
+			if (Tile_GetDistancePacked(packed, packedTarget) >= current) continue;
+			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
+			if (Unit_AttackPosition_GetReservationOwner(unit, packed, unit->targetAttack) >= 0) continue;
+			if (!Script_Unit_HasRoute(unit, packedSource, packed, &ticks)) continue;
+			if (ticks >= bestTicks) continue;
+
+			bestTicks = ticks;
+			best = packed;
+		}
+	}
+
+	if (best != 0 && travelTicks != NULL) *travelTicks = bestTicks;
+	return best;
+}
+
 /* Pick a reachable, unclaimed tile near the outer edge of weapon range. */
 static void Unit_AttackPosition_Update(Unit *unit)
 {
@@ -545,8 +685,6 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	uint16 oldPacked;
 	uint16 bestPacked = 0;
 	uint16 bestDistance = 0;
-	uint16 fallbackPacked = 0;
-	uint32 fallbackETA = 0xFFFFFFFF;
 	int16 bestOwner = -1;
 	uint32 bestETA = 0xFFFFFFFF;
 	uint32 oldETA = 0;
@@ -592,7 +730,9 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	/* A unit already in range keeps firing instead of chasing a new slot. */
 	targetDistance = Object_GetDistanceToEncoded(&unit->o, unit->targetAttack);
 	if (targetDistance <= (ui->fireDistance << 8)) {
-		if (s_attackPositionTile[unit->o.index] != 0 && unit->targetMove == Tools_Index_Encode(s_attackPositionTile[unit->o.index], IT_TILE)) {
+		if (unit->targetMove != 0 &&
+			(unit->targetMove == unit->targetAttack ||
+			 (s_attackPositionTile[unit->o.index] != 0 && unit->targetMove == Tools_Index_Encode(s_attackPositionTile[unit->o.index], IT_TILE)))) {
 			unit->targetMove = 0;
 			unit->route[0] = 0xFF;
 		}
@@ -638,10 +778,6 @@ static void Unit_AttackPosition_Update(Unit *unit)
 			firingDistance = Object_GetDistanceToEncoded(&candidate, unit->targetAttack);
 			if (firingDistance > (ui->fireDistance << 8)) continue;
 			eta = g_timerGame + travelTicks;
-			if (eta < fallbackETA) {
-				fallbackETA = eta;
-				fallbackPacked = packed;
-			}
 
 			owner = Unit_AttackPosition_GetReservationOwner(unit, packed, unit->targetAttack);
 			/* A closer arrival may preempt this slot, but only with a wide
@@ -663,7 +799,19 @@ static void Unit_AttackPosition_Update(Unit *unit)
 		if (radius == minRadius) break; /* avoid unsigned wrap */
 	}
 
+	/* Script_Unit_Pathfinder() answers from the tile the unit is standing on and
+	 * happily returns a partial route, which Script_Unit_HasRoute() then has to
+	 * reject.  So the very same slot is unreachable on one pass and reachable on
+	 * the next, purely because the unit moved a tile.  Dropping the reservation
+	 * whenever a pass cannot confirm it destroys the hysteresis below and turns
+	 * the approach into a pendulum: forward two tiles, back two tiles, never
+	 * standing still long enough to fire.  A slot that this pass failed to
+	 * confirm is kept unless somebody else has taken the tile. */
+	if (oldPacked != 0 && oldPacked != packedSource && refreshedOldETA == 0 && Object_GetByPackedTile(oldPacked) == NULL) return;
+
 	if (bestPacked == 0) {
+		/* Same reasoning for a pass that found nothing at all. */
+		if (s_attackPositionTile[unit->o.index] != 0 && s_attackPositionTarget[unit->o.index] == unit->targetAttack) return;
 		if (refreshedOldETA != 0) s_attackPositionETA[unit->o.index] = refreshedOldETA;
 		else {
 			const Unit *targetUnit = Tools_Index_GetUnit(unit->targetAttack);
@@ -678,13 +826,25 @@ static void Unit_AttackPosition_Update(Unit *unit)
 				unit->targetMove = 0;
 				unit->route[0] = 0xFF;
 				Unit_Autonomy_ReturnToPost(unit);
-			} else if (fallbackPacked != 0) {
-				/* All viable firing spots may already be reserved.  Keep the
-				 * unit advancing toward the target instead of leaving targetMove
-				 * at zero; the next tactical pass can assign an opened slot. */
-				Unit_SetDestination(unit, Tools_Index_Encode(fallbackPacked, IT_TILE));
-			} else if (ui->o.flags.hasTurret) {
-				Unit_SetDestination(unit, unit->targetAttack);
+			} else {
+				/* No firing slot of our own: take a waiting spot at the edge of
+				 * the fight and claim it, so a compact target does not leave half
+				 * the force standing where it was.  The claim is what keeps the
+				 * queue spread out instead of stacked on one tile, and it is the
+				 * single answer to "no slot" - driving at a slot another unit has
+				 * already claimed only trades the tile back and forth on arrival.
+				 * There is deliberately no fallback onto the target itself either:
+				 * approaching a target is only ever a means of reaching a firing
+				 * position. */
+				uint32 stagingTicks = 0;
+				uint16 staging = Unit_AttackPosition_FindStaging(unit, &stagingTicks);
+
+				if (staging != 0) {
+					s_attackPositionTile[unit->o.index] = staging;
+					s_attackPositionTarget[unit->o.index] = unit->targetAttack;
+					s_attackPositionETA[unit->o.index] = g_timerGame + stagingTicks;
+					Unit_SetDestination(unit, Tools_Index_Encode(staging, IT_TILE));
+				}
 			}
 		}
 		return;
@@ -724,9 +884,17 @@ static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
 
 static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 {
+	const AutonomousPost *post = &s_autonomousPost[unit->o.index];
+	ActionType action = (ActionType)unit->actionID;
 	uint16 fireDistance;
 
 	if (s_manualHunt[unit->o.index]) return 63;
+
+	/* A unit in a sortie carries Attack or Move as its action, but the zone it
+	 * answers to is still the guard mode it will return to.  Without this the
+	 * radius would read as zero for exactly the two states in which the unit is
+	 * away from its post and most needs to know how far its area reaches. */
+	if (post->state != AUTONOMOUS_POST_NONE && post->action != ACTION_INVALID) action = post->action;
 
 	/* The radius is measured from the post, and a unit stops as soon as its
 	 * target is within its own weapon range, so what it really controls is how
@@ -738,7 +906,7 @@ static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 	 * tiles whatever the unit carries, Area Guard keeps its wider fixed area. */
 	fireDistance = g_table_unitInfo[unit->o.type].fireDistance;
 
-	switch (unit->actionID) {
+	switch (action) {
 		case ACTION_GUARD:      return max(5, fireDistance + 5);
 		case ACTION_AREA_GUARD: return max(14, fireDistance + 5);
 		case ACTION_HUNT:       return 63;
@@ -757,11 +925,19 @@ void Unit_SetManualHunt(Unit *unit, bool enabled)
 
 static bool Unit_Autonomy_TargetInArea(const Unit *unit, uint16 target)
 {
+	const AutonomousPost *post = &s_autonomousPost[unit->o.index];
 	uint16 radius = Unit_Autonomy_GetSearchRadius(unit);
 	uint16 anchor = unit->guardPosition;
 
 	if (radius == 0 || !Tools_Index_IsValid(target)) return false;
 	if (s_manualHunt[unit->o.index] || unit->actionID == ACTION_HUNT) return true;
+
+	/* The zone is measured from the guard post, never from where the unit
+	 * happens to stand.  During a sortie that is the anchor the post was opened
+	 * with, so a unit that has already moved out keeps answering for the same
+	 * piece of ground - both when it looks for a new target and when it decides
+	 * that the one it has has left. */
+	if (post->state != AUTONOMOUS_POST_NONE && Map_IsValidPosition(post->anchor)) anchor = post->anchor;
 	if (!Map_IsValidPosition(anchor)) anchor = Tile_PackTile(unit->o.position);
 
 	return Tile_GetDistance(Tile_UnpackTile(anchor), Tools_Index_GetTile(target)) <= (radius << 8);
@@ -782,6 +958,14 @@ static uint32 Unit_Autonomy_BasePriority(Unit *unit, uint16 target, uint16 *maxH
 		if (Unit_GetTargetUnitPriority(unit, targetUnit) == 0) return 0;
 		if (maxHitpoints != NULL) *maxHitpoints = ti->o.hitpoints;
 		if (hitpoints != NULL) *hitpoints = targetUnit->o.hitpoints;
+
+		/* A sandworm ranks below everything else.  Its damage of 300 makes the
+		 * formula below value it above any tank, which is how a defence walked
+		 * away from the base it was standing on.  Nothing that shoots back is
+		 * ever worth less than the worm, so it is engaged only when the area is
+		 * otherwise empty - and then only from rock. */
+		if (targetUnit->o.type == UNIT_SANDWORM) return 1;
+
 		return ti->o.priorityTarget + ti->o.priorityBuild + ti->damage * 12;
 	}
 
@@ -846,7 +1030,73 @@ static uint32 Unit_Autonomy_IncomingDamage(Unit *unit, uint16 target)
 	return damage;
 }
 
-static uint16 Unit_Autonomy_FindTarget(Unit *unit)
+/* Worth of one target to this unit, on the scale the whole selection uses.
+ * Kept separate so a unit already in a fight can weigh what it is shooting at
+ * against what it could be shooting at instead, with the same yardstick. */
+/* A rough approach time for ranking targets, used when no firing tile can be
+ * confirmed.  The point is that it is still a number: an enemy the unit cannot
+ * reserve a slot against - because its neighbours are already standing on all
+ * of them - is a target it should queue up behind, not one it cannot see. */
+static uint32 Unit_Autonomy_EstimateApproachTicks(const Unit *unit, uint16 target)
+{
+	const UnitInfo *ui = &g_table_unitInfo[unit->o.type];
+	uint16 type = Map_GetLandscapeType(Tile_PackTile(unit->o.position));
+	uint16 speed;
+	uint16 distance;
+
+	if (type == LST_STRUCTURE) type = LST_CONCRETE_SLAB;
+	speed = g_table_landscapeInfo[type].movementSpeed[ui->movementType];
+	speed = ui->movingSpeedFactor * speed / 256;
+	if (speed == 0) speed = 1;
+
+	distance = Tile_GetDistanceRoundedUp(unit->o.position, Tools_Index_GetTile(target));
+	distance = distance > ui->fireDistance ? distance - ui->fireDistance : 0;
+
+	return (uint32)distance * 256 * 3 / speed;
+}
+
+static uint32 Unit_Autonomy_ScoreTarget(Unit *unit, uint16 target)
+{
+	uint16 maxHitpoints;
+	uint16 hitpoints;
+	uint32 priority;
+	uint32 eta;
+	uint32 score;
+	uint32 coverage;
+	uint32 focus;
+
+	priority = Unit_Autonomy_BasePriority(unit, target, &maxHitpoints, &hitpoints);
+	if (priority == 0) return 0;
+
+	/* Whether a firing position happens to be free right now decides where the
+	 * unit goes, never whether the enemy exists.  Tying the two together made
+	 * every defender behind the front line blind: the ring around the target was
+	 * taken by its own neighbours, so the attacker scored zero and was skipped.
+	 * A sandworm stays the one exception - it may only be engaged from rock, so
+	 * no rock position genuinely means no target. */
+	if (!Unit_AttackPosition_EstimateTravel(unit, target, &eta)) {
+		if (Unit_IsSandwormTarget(target)) return 0;
+		eta = Unit_Autonomy_EstimateApproachTicks(unit, target);
+	}
+
+	/* ETA is the pathfinder-derived time to an actual firing tile, rather than
+	 * a straight-line distance. */
+	score = priority * 1024 / (eta / 15 + 1);
+	score = score * (256 + ((maxHitpoints - min(hitpoints, maxHitpoints)) * 179 / max(maxHitpoints, 1))) / 256;
+
+	coverage = Unit_Autonomy_IncomingDamage(unit, target) * 256 / max(hitpoints, 1);
+	if (coverage < 256) {
+		focus = 256 + min(154, coverage * 3 / 5);
+	} else {
+		focus = 410 - min(180, (coverage - 256) * 3 / 5);
+	}
+	score = score * focus / 256;
+	if (s_houseThreatUntil[g_playerHouseID] > g_timerGame && target == s_houseThreatTarget[g_playerHouseID]) score *= 2;
+
+	return score;
+}
+
+static uint16 Unit_Autonomy_FindTarget(Unit *unit, uint32 *bestScoreOut)
 {
 	uint16 candidates[8];
 	uint32 roughScores[8];
@@ -898,30 +1148,7 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit)
 	}
 
 	for (i = 0; i < count; i++) {
-		uint16 maxHitpoints;
-		uint16 hitpoints;
-		uint32 priority;
-		uint32 eta;
-		uint32 score;
-		uint32 coverage;
-		uint32 focus;
-
-		priority = Unit_Autonomy_BasePriority(unit, candidates[i], &maxHitpoints, &hitpoints);
-		if (priority == 0 || !Unit_AttackPosition_EstimateTravel(unit, candidates[i], &eta)) continue;
-
-		/* ETA is the pathfinder-derived time to an actual firing tile, rather
-		 * than a straight-line distance. */
-		score = priority * 1024 / (eta / 15 + 1);
-		score = score * (256 + ((maxHitpoints - min(hitpoints, maxHitpoints)) * 179 / max(maxHitpoints, 1))) / 256;
-
-		coverage = Unit_Autonomy_IncomingDamage(unit, candidates[i]) * 256 / max(hitpoints, 1);
-		if (coverage < 256) {
-			focus = 256 + min(154, coverage * 3 / 5);
-		} else {
-			focus = 410 - min(180, (coverage - 256) * 3 / 5);
-		}
-		score = score * focus / 256;
-		if (s_houseThreatUntil[g_playerHouseID] > g_timerGame && candidates[i] == s_houseThreatTarget[g_playerHouseID]) score *= 2;
+		uint32 score = Unit_Autonomy_ScoreTarget(unit, candidates[i]);
 
 		if (score > bestScore) {
 			bestScore = score;
@@ -929,7 +1156,30 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit)
 		}
 	}
 
+	if (bestScoreOut != NULL) *bestScoreOut = bestScore;
 	return best;
+}
+
+/* Break off a return and take up a fight again, without losing the post the
+ * unit was on its way back to.  Going through Unit_Autonomy_BeginAttack() here
+ * would record Move as the action to return to afterwards. */
+static void Unit_Autonomy_ResumeFromReturn(Unit *unit, uint16 target)
+{
+	AutonomousPost *post = &s_autonomousPost[unit->o.index];
+	ActionType returnAction = post->action;
+	uint16 anchor = post->anchor;
+
+	if (!Tools_Index_IsValid(target)) return;
+
+	Unit_AttackPosition_SetManual(unit, true);
+	post->anchor = anchor;
+	post->action = returnAction;
+	post->state = AUTONOMOUS_POST_ENGAGING;
+
+	unit->targetMove = 0;
+	unit->route[0] = 0xFF;
+	Unit_SetAction(unit, ACTION_ATTACK);
+	Unit_SetTarget(unit, target);
 }
 
 /* Consume an autonomous combat sortie and restore the unit's original post.
@@ -946,6 +1196,14 @@ bool Unit_Autonomy_ReturnToPost(Unit *unit)
 	returnAction = post->action;
 	anchor = post->anchor;
 	if (post->state != AUTONOMOUS_POST_ENGAGING || returnAction == ACTION_INVALID) return false;
+
+	/* A live target inside the guarded area is not something to walk away from.
+	 * Without this the move script's completion hook sends the unit home the
+	 * instant a return has been cancelled in favour of a fight, and the two
+	 * decisions trade the unit back and forth on the spot.  A sandworm is the
+	 * exception: breaking off is the whole point there. */
+	if (Tools_Index_IsValid(unit->targetAttack) && !Unit_IsSandwormTarget(unit->targetAttack) &&
+		Unit_Autonomy_TargetInArea(unit, unit->targetAttack)) return false;
 	if (!Map_IsValidPosition(anchor)) anchor = unit->guardPosition;
 	Unit_AttackPosition_SetManual(unit, false);
 	unit->targetAttack = 0;
@@ -970,6 +1228,25 @@ bool Unit_Autonomy_ReturnToPost(Unit *unit)
 	post->action = returnAction;
 	post->state = AUTONOMOUS_POST_RETURNING;
 	return true;
+}
+
+/* Advance: a march that keeps its initiative.  Mechanically it is the same
+ * state a unit is in on its way home from a sortie - travelling to an anchor,
+ * free to break off for anything worth fighting inside the zone around that
+ * anchor, and returning to the march afterwards.  The anchor is the tile the
+ * player pointed at rather than the one the unit came from, and the mode it
+ * settles into on arrival is the tight Guard: an advance ends as a held
+ * position, not as a wide patrol. */
+static void Unit_Autonomy_BeginAdvance(Unit *unit, uint16 anchor)
+{
+	AutonomousPost *post;
+
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX || !Map_IsValidPosition(anchor)) return;
+
+	post = &s_autonomousPost[unit->o.index];
+	post->anchor = anchor;
+	post->action = ACTION_GUARD;
+	post->state = AUTONOMOUS_POST_RETURNING;
 }
 
 static void Unit_Autonomy_BeginAttack(Unit *unit, uint16 target)
@@ -1008,6 +1285,13 @@ static void Unit_Autonomy_Update(Unit *unit)
 	 * ahead of the sortie bookkeeping below because the chase can equally be
 	 * started by the original script, which writes the worm straight into
 	 * targetMove for every unit without a turret. */
+	/* A worm close enough to shoot at is engaged from where the unit stands, but
+	 * it still may not be walked into: drop a destination left pointing at it. */
+	if (Unit_IsSandwormTarget(unit->targetMove)) {
+		unit->targetMove = 0;
+		unit->route[0] = 0xFF;
+	}
+
 	if (Unit_Autonomy_SandwormOutOfReach(unit)) {
 		Unit_AttackPosition_Clear(unit);
 		unit->targetMove = 0;
@@ -1016,16 +1300,15 @@ static void Unit_Autonomy_Update(Unit *unit)
 		return;
 	}
 
-	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_ENGAGING) {
-		/* Original Guard / Area Guard scripts can fight without changing their
-		 * action ID.  A live target keeps the sortie active regardless of whether
-		 * that script currently says Guard, Move or Attack. */
-		if (Tools_Index_IsValid(unit->targetAttack)) return;
-		/* Both the old and new scripts clear the target when combat is over. */
+	/* A sortie whose target is gone, or has left the guarded area, is over.  The
+	 * area check is what keeps a defender from being led away: the original
+	 * scripts follow a target for as long as it lives, however far it runs. */
+	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_ENGAGING &&
+		(!Tools_Index_IsValid(unit->targetAttack) || !Unit_Autonomy_TargetInArea(unit, unit->targetAttack))) {
 		Unit_Autonomy_ReturnToPost(unit);
 		return;
 	}
-	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_RETURNING) return;
+
 	if (Unit_Autonomy_GetSearchRadius(unit) == 0) return;
 
 	if (s_autonomyNextCheck[unit->o.index] == 0) {
@@ -1035,12 +1318,37 @@ static void Unit_Autonomy_Update(Unit *unit)
 	if (s_autonomyNextCheck[unit->o.index] > g_timerGame) return;
 	s_autonomyNextCheck[unit->o.index] = g_timerGame + 120;
 
+	/* Fighting: keep looking around.  A unit on its way to a firing position is
+	 * not committed to the target that sent it there - a worthwhile enough one
+	 * that turns up meanwhile takes over.  The quarter-margin is what stops two
+	 * comparable targets from trading the unit back and forth every check. */
+	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_ENGAGING) {
+		uint32 bestScore = 0;
+
+		target = Unit_Autonomy_FindTarget(unit, &bestScore);
+		if (target != 0 && target != unit->targetAttack) {
+			uint32 current = Unit_Autonomy_ScoreTarget(unit, unit->targetAttack);
+
+			if (bestScore > current + current / 4) Unit_Autonomy_BeginAttack(unit, target);
+		}
+		return;
+	}
+
+	/* Returning: the way home is not a commitment either.  Anything worth
+	 * fighting that appears inside the guarded area calls the unit straight back
+	 * into the fight, with the same post kept for afterwards. */
+	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_RETURNING) {
+		target = Unit_Autonomy_FindTarget(unit, NULL);
+		if (target != 0) Unit_Autonomy_ResumeFromReturn(unit, target);
+		return;
+	}
+
 	if (Tools_Index_IsValid(unit->targetAttack)) {
 		Unit_Autonomy_BeginAttack(unit, unit->targetAttack);
 		return;
 	}
 
-	target = Unit_Autonomy_FindTarget(unit);
+	target = Unit_Autonomy_FindTarget(unit, NULL);
 	if (target != 0) Unit_Autonomy_BeginAttack(unit, target);
 }
 
@@ -1719,9 +2027,162 @@ static ActionType UnitSelection_GetUnitSpecialAction(const Unit *unit)
 	return ACTION_INVALID;
 }
 
+/* An Attack order aimed at bare ground is an advance, not a shot at the dirt.
+ * "Bare" is deliberately the same test the classic targeting uses: no structure
+ * on the tile, no unit in the ring around it, and not a spice bloom - a bloom is
+ * something you shoot at on purpose. */
+static bool UnitSelection_IsAdvanceTarget(uint16 packed)
+{
+	static const int16 around[] = {0, -1, 1, -64, 64, -65, -63, 65, 63};
+	uint16 i;
+
+	if (!Map_IsValidPosition(packed)) return false;
+	if (Structure_Get_ByPackedTile(packed) != NULL) return false;
+	if (Map_GetLandscapeType(packed) == LST_BLOOM_FIELD) return false;
+
+	for (i = 0; i < lengthof(around); i++) {
+		uint16 neighbour = packed + around[i];
+
+		if (!Map_IsValidPosition(neighbour)) continue;
+		if (Unit_Get_ByPackedTile(neighbour) != NULL) return false;
+	}
+
+	return true;
+}
+
+/* Destination tiles handed out to one group order.  A group given a single
+ * destination piles onto one tile and sorts itself out by shoving, which is
+ * both ugly and slow; every recipient gets its own tile instead. */
+static uint16 s_spreadTiles[UNIT_SELECTION_MAX];
+static uint16 s_spreadCount = 0;
+
+static void UnitSelection_SpreadReset(void)
+{
+	s_spreadCount = 0;
+}
+
+/* Claim the free tile nearest to the target point, preferring the side the unit
+ * is coming from so the group does not cross over itself.  Unit_GetTileEnterScore()
+ * is the single admissibility test: it already rejects impassable ground and
+ * tiles held by another unit, while leaving the caller's own tile usable - a
+ * unit already standing in the target area simply keeps its place. */
+static uint16 UnitSelection_SpreadTake(Unit *unit, uint16 packed)
+{
+	uint16 unitPacked;
+	uint16 radius;
+
+	if (unit == NULL || !Map_IsValidPosition(packed)) return packed;
+	if (s_spreadCount >= UNIT_SELECTION_MAX) return packed;
+
+	unitPacked = Tile_PackTile(unit->o.position);
+
+	for (radius = 0; radius <= 8; radius++) {
+		uint16 best = 0;
+		uint16 bestDistance = 0xFFFF;
+		int16 dx;
+		int16 dy;
+
+		for (dy = -(int16)radius; dy <= (int16)radius; dy++) {
+			for (dx = -(int16)radius; dx <= (int16)radius; dx++) {
+				int16 x = Tile_GetPackedX(packed) + dx;
+				int16 y = Tile_GetPackedY(packed) + dy;
+				uint16 candidate;
+				uint16 distance;
+				uint16 i;
+				bool claimed = false;
+
+				if (max(abs(dx), abs(dy)) != (int16)radius) continue; /* ring only */
+				if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
+				candidate = Tile_PackXY(x, y);
+				if (!Map_IsValidPosition(candidate)) continue;
+
+				for (i = 0; i < s_spreadCount; i++) {
+					if (s_spreadTiles[i] == candidate) claimed = true;
+				}
+				if (claimed) continue;
+				if (Unit_GetTileEnterScore(unit, candidate, 0) > 255) continue;
+
+				distance = Tile_GetDistancePacked(candidate, unitPacked);
+				if (distance >= bestDistance) continue;
+				bestDistance = distance;
+				best = candidate;
+			}
+		}
+
+		if (best != 0) {
+			s_spreadTiles[s_spreadCount++] = best;
+			return best;
+		}
+	}
+
+	return packed;
+}
+
+/* Order the recipients of a group order by their distance to its target point,
+ * so the nearest unit claims the nearest tile.  Handing tiles out in selection
+ * order instead makes the group walk through itself. */
+static void UnitSelection_SortOrderByDistance(uint16 *order, uint16 count, uint16 packed)
+{
+	uint16 i;
+
+	for (i = 1; i < count; i++) {
+		uint16 index = order[i];
+		Unit *unit = Unit_Get_ByIndex(index);
+		uint16 distance = Tile_GetDistancePacked(Tile_PackTile(unit->o.position), packed);
+		uint16 j = i;
+
+		while (j > 0) {
+			Unit *other = Unit_Get_ByIndex(order[j - 1]);
+
+			if (Tile_GetDistancePacked(Tile_PackTile(other->o.position), packed) <= distance) break;
+			order[j] = order[j - 1];
+			j--;
+		}
+		order[j] = index;
+	}
+}
+
+/* Send one unit on an advance: a Move to its own tile of the target area, with
+ * the post that gives it its initiative on the way and its Guard mode on
+ * arrival.
+ *
+ * The Move is only the transport.  What decides whether the unit answers to
+ * anything on the way is the post, not the action: Unit_Autonomy_GetSearchRadius()
+ * reads the post's action while one is open, so this Move searches with a
+ * Guard radius, while a plain player Move - same action, no post - reads zero
+ * and ignores the world until it arrives.  A post on its own would not move the
+ * unit at all; RETURNING is a label meaning "travelling to the anchor", and the
+ * travelling is always issued by whoever sets it (see Unit_Autonomy_ReturnToPost).
+ *
+ * The order of the last two calls is therefore not cosmetic.  Unit_SetAction()
+ * on a manual order clears the post for every action but Attack, so the post
+ * has to be opened after it - never before. */
+static void UnitSelection_BeginAdvance(Unit *unit, uint16 packed)
+{
+	Unit_BeginManualOrder(unit);
+	Unit_SetManualHunt(unit, false);
+	Unit_AttackPosition_SetManual(unit, false);
+	Unit_Harvester_BeginOrder(unit, ACTION_MOVE);
+	Object_Script_Variable4_Clear(&unit->o);
+	unit->targetAttack = 0;
+	unit->targetMove = 0;
+	unit->route[0] = 0xFF;
+
+	Unit_SetGuardPosition(unit, packed);
+	Unit_SetGuardAction(unit, ACTION_GUARD);
+	Unit_SetAction(unit, ACTION_MOVE);
+	Unit_SetDestination(unit, Tools_Index_Encode(packed, IT_TILE));
+	Unit_Autonomy_BeginAdvance(unit, packed);
+}
+
 static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packed)
 {
 	uint16 encoded;
+
+	if (action == ACTION_ATTACK && UnitSelection_IsAdvanceTarget(packed)) {
+		UnitSelection_BeginAdvance(unit, packed);
+		return;
+	}
 
 	Unit_BeginManualOrder(unit);
 	Unit_SetManualHunt(unit, false);
@@ -2403,6 +2864,13 @@ void Unit_GetStatusText(const Unit *u, char *state, char *detail, uint16 length)
 		snprintf(detail, length, "POST %u,%u", Tile_GetPackedX(packed), Tile_GetPackedY(packed));
 		return;
 	}
+	/* A worm engagement is its own state: the unit is deliberately not closing
+	 * in, and without saying so the panel would just show it standing idle. */
+	if (Unit_IsSandwormTarget(u->targetAttack)) {
+		snprintf(state, length, "VS WORM");
+		snprintf(detail, length, g_table_landscapeInfo[Map_GetLandscapeType(Tile_PackTile(u->o.position))].isSand ? "ON SAND" : "ON ROCK");
+		return;
+	}
 	if (u->actionID == ACTION_HUNT || s_manualHunt[u->o.index]) {
 		snprintf(state, length, "HUNTING");
 		snprintf(detail, length, "SEEK TARGET");
@@ -2410,7 +2878,10 @@ void Unit_GetStatusText(const Unit *u, char *state, char *detail, uint16 length)
 	}
 	if (u->actionID == ACTION_ATTACK) {
 		snprintf(state, length, "ATTACKING");
-		snprintf(detail, length, Tools_Index_IsValid(u->targetAttack) ? "TARGET LOCK" : "NO TARGET");
+		/* Movement inside an attack is not a state of its own: the unit is on
+		 * its way to the firing position picked for it. */
+		if (s_attackPositionTile[u->o.index] != 0) snprintf(detail, length, "TO POSITION");
+		else snprintf(detail, length, Tools_Index_IsValid(u->targetAttack) ? "TARGET LOCK" : "NO TARGET");
 		return;
 	}
 	if (u->actionID == ACTION_MOVE) {
@@ -2654,6 +3125,11 @@ void Unit_SetDestination(Unit *u, uint16 destination)
 			if (s != NULL) destination = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
 		}
 	}
+
+	/* Refuse to walk into a sandworm.  The tile lookup above has already turned
+	 * the worm's own tile into its unit index, so this covers both the script
+	 * driving at the target and a tile order that lands on top of it. */
+	if (u->o.type != UNIT_SANDWORM && Unit_IsSandwormTarget(destination)) return;
 
 	s = Tools_Index_GetStructure(destination);
 	if (s != NULL && s->o.houseID == Unit_GetHouseID(u)) {
@@ -3021,6 +3497,13 @@ bool Unit_StartMovement(Unit *unit)
 
 	if (score > 255 || score == -1) return false;
 
+	/* Last line of defence against walking into a sandworm.  Every layer above
+	 * can be talked into an approach - the scripts run four times as often as
+	 * the tactical pass and reach the pathfinder through more than one route -
+	 * so the step onto sand is refused where it is finally committed.  Leaving
+	 * the worm or moving sideways stays allowed, and rock is never refused. */
+	if (!Unit_Sandworm_StepAllowed(unit, packed)) return false;
+
 	type = Map_GetLandscapeType(packed);
 	if (type == LST_STRUCTURE) type = LST_CONCRETE_SLAB;
 
@@ -3104,7 +3587,12 @@ void Unit_SetTarget(Unit *unit, uint16 encoded)
 	unit->targetAttack = encoded;
 
 	if (!g_table_unitInfo[unit->o.type].o.flags.hasTurret) {
-		unit->targetMove = encoded;
+		/* The original scripts make acquiring a target an order to walk into it.
+		 * That is the second half of the pendulum: the tactical layer sends the
+		 * unit to a firing position, this sends it at the target, and the two
+		 * take turns every pass.  While a unit is under tactical control its
+		 * destination belongs to that layer alone. */
+		unit->targetMove = (Unit_IsSandwormTarget(encoded) || Unit_AttackPosition_IsManaged(unit)) ? 0 : encoded;
 		unit->route[0] = 0xFF;
 	}
 }
@@ -3753,6 +4241,55 @@ void UnitSelection_SelectSingle(Unit *unit)
  * The caller deliberately supplies packed map coordinates rather than pixels,
  * which keeps this selection stable when the viewport scrolls.
  */
+/* Take one unit in or out of the group.  Shift could only ever add, so a
+ * mis-click could not be corrected without rebuilding the whole group.
+ * Returns false when the unit is not ours to command, leaving the caller to
+ * fall back on the classic "show me what this is" selection. */
+bool UnitSelection_Toggle(Unit *unit)
+{
+	if (unit == NULL || !UnitSelection_IsControllable(unit)) return false;
+
+	if (UnitSelection_IsSelected(unit)) {
+		UnitSelection_Remove(unit);
+		return true;
+	}
+
+	if (g_unitSelectionCount == 0) {
+		UnitSelection_SelectSingle(unit);
+		return true;
+	}
+
+	UnitSelection_Add(unit);
+	GUI_Widget_ActionPanel_Draw(true);
+	return true;
+}
+
+/* Every unit of one type currently on screen.  Deliberately limited to the
+ * viewport: "all my quads" means the ones in this fight, not the harvester
+ * escort three screens away. */
+bool UnitSelection_SelectSameTypeOnScreen(Unit *unit, bool additive)
+{
+	uint16 i;
+
+	if (unit == NULL || !UnitSelection_IsControllable(unit)) return false;
+
+	if (!additive) UnitSelection_ClearInternal();
+
+	for (i = 0; i < UNIT_INDEX_MAX; i++) {
+		Unit *other = Unit_Get_ByIndex(i);
+
+		if (!UnitSelection_IsControllable(other)) continue;
+		if (other->o.type != unit->o.type) continue;
+		if (!Map_IsPositionInViewport(other->o.position, NULL, NULL)) continue;
+		UnitSelection_Add(other);
+	}
+
+	UnitSelection_Add(unit);
+	Unit_Select(unit);
+	GUI_Widget_ActionPanel_Draw(true);
+	return true;
+}
+
 void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
 {
 	uint16 minX = min(Tile_GetPackedX(packedA), Tile_GetPackedX(packedB));
@@ -3975,14 +4512,24 @@ static ActionType UnitSelection_GetUnitDefaultAction(const Unit *unit)
 /** Issue the most useful targeted order available to each selected unit. */
 void UnitSelection_IssueDefaultOrder(uint16 packed)
 {
+	uint16 order[UNIT_SELECTION_MAX];
+	uint16 count = 0;
 	uint16 i;
 
 	UnitSelection_CancelPendingAction();
-	for (i = 0; i < g_unitSelectionCount; i++) {
-		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+
+	/* Sorted on a copy: the order tiles are handed out in is a property of this
+	 * one command, not of the group. */
+	for (i = 0; i < g_unitSelectionCount; i++) order[count++] = s_unitSelection[i];
+	UnitSelection_SortOrderByDistance(order, count, packed);
+	UnitSelection_SpreadReset();
+
+	for (i = 0; i < count; i++) {
+		Unit *unit = Unit_Get_ByIndex(order[i]);
 		ActionType action = UnitSelection_GetUnitDefaultAction(unit);
 
-		if (action != ACTION_INVALID) UnitSelection_ResetOrder(unit, action, packed);
+		if (action == ACTION_INVALID) continue;
+		UnitSelection_ResetOrder(unit, action, action == ACTION_MOVE ? UnitSelection_SpreadTake(unit, packed) : packed);
 	}
 }
 
@@ -4088,6 +4635,8 @@ bool UnitSelection_HasPendingAction(void)
 void UnitSelection_ApplyPendingAction(uint16 packed)
 {
 	uint16 i;
+	bool advance;
+	bool spread;
 
 	if (!UnitSelection_HasPendingAction()) return;
 	if (s_unitOrderAirTransit) {
@@ -4114,10 +4663,27 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 		return;
 	}
 
+	/* A Move, and an Attack that turns out to be an advance, place the group on
+	 * the ground: every recipient needs a tile of its own.  An Attack on a real
+	 * target is the opposite - the whole group shoots at the same thing, and the
+	 * decision is taken once here, not per tile, because a handed-out tile can
+	 * land next to a unit and would read as an ordinary attack order. */
+	advance = s_unitOrderAction == ACTION_ATTACK && UnitSelection_IsAdvanceTarget(packed);
+	spread = advance || s_unitOrderAction == ACTION_MOVE;
+
+	if (spread) {
+		UnitSelection_SortOrderByDistance(s_unitOrder, s_unitOrderCount, packed);
+		UnitSelection_SpreadReset();
+	}
+
 	for (i = 0; i < s_unitOrderCount; i++) {
 		Unit *unit = Unit_Get_ByIndex(s_unitOrder[i]);
-		if (UnitSelection_UnitHasAction(unit, s_unitOrderAction)) {
-			UnitSelection_ResetOrder(unit, s_unitOrderAction, packed);
+
+		if (!UnitSelection_UnitHasAction(unit, s_unitOrderAction)) continue;
+		if (advance) {
+			UnitSelection_BeginAdvance(unit, UnitSelection_SpreadTake(unit, packed));
+		} else {
+			UnitSelection_ResetOrder(unit, s_unitOrderAction, spread ? UnitSelection_SpreadTake(unit, packed) : packed);
 		}
 	}
 

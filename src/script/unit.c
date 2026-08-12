@@ -894,7 +894,11 @@ uint16 Script_Unit_SetTarget(ScriptEngine *script)
 
 	u->targetAttack = target;
 	if (!g_table_unitInfo[u->o.type].o.flags.hasTurret) {
-		u->targetMove = target;
+		/* The script copies the target into targetMove so a turretless unit
+		 * closes in on it.  Refused for a sandworm - the unit would walk onto the
+		 * sand to be swallowed - and refused while the tactical layer is placing
+		 * the unit, whose destination is then not the script's to set. */
+		u->targetMove = (Unit_IsSandwormTarget(target) || Unit_AttackPosition_IsManaged(u)) ? 0 : target;
 		Unit_SetOrientation(u, orientation, false, 0);
 	}
 	Unit_SetOrientation(u, orientation, false, 1);
@@ -1402,6 +1406,17 @@ uint16 Script_Unit_CalculateRoute(ScriptEngine *script)
 	encoded = STACK_PEEK(1);
 
 	if (u->currentDestination.x != 0 || u->currentDestination.y != 0 || !Tools_Index_IsValid(encoded)) return 1;
+
+	/* Never path at a sandworm.  The attack script routes straight at
+	 * targetAttack here (UNIT.EMC word 213) without ever touching targetMove,
+	 * so this - not the destination setters - is the approach that walks a unit
+	 * into the sand to be swallowed.  Refusing it leaves the unit standing,
+	 * which is what the script does anyway when no route can be built. */
+	if (u->o.type != UNIT_SANDWORM && Unit_IsSandwormTarget(encoded)) return 1;
+
+	/* Same route, general case: a unit the tactical layer is placing goes to
+	 * its firing position, never at the target itself. */
+	if (!Unit_AttackPosition_GetApproach(u, encoded, &encoded)) return 1;
 
 	packedSrc = Tile_PackTile(u->o.position);
 	packedDst = Tools_Index_GetPackedTile(encoded);

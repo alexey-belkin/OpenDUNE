@@ -813,7 +813,10 @@ static void GameLoop_GameIntroAnimationMenu(void)
 
 		GUI_SetPaletteAnimated(g_palette1, 30);
 
-		snprintf(buildLabel, sizeof(buildLabel), "BUILD %s", g_opendune_revision);
+		/* The revision alone cannot tell two builds of the same dirty tree apart,
+		 * which is exactly the case while developing.  rev.c is regenerated on
+		 * every build, so its compile time is a reliable build stamp. */
+		snprintf(buildLabel, sizeof(buildLabel), "BUILD %s %s", g_opendune_revision, g_opendune_build_date + 12);
 		GUI_DrawText_Wrapper(buildLabel, 1, 192, 133, 0, 0x31, 0x39);
 		GUI_DrawText_Wrapper("V1.07", 319, 192, 133, 0, 0x231, 0x39);
 		GUI_DrawText_Wrapper(NULL, 0, 0, 0, 0, 0x22);

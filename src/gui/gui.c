@@ -2936,6 +2936,7 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 {
 	extern char g_savegameDesc[5][51];
 	static char healthBarsLabel[] = "HEALTH BARS";
+	static char debugLinesLabel[] = "DEBUG LINES";
 
 	switch (stringID) {
 		case -5: case -4: case -3: case -2: case -1: {
@@ -2970,6 +2971,13 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 
 		case -16:
 			return healthBarsLabel;
+
+		case -17:
+			stringID = (g_gameConfig.debugLines != 0) ? STR_ON : STR_OFF;
+			break;
+
+		case -18:
+			return debugLinesLabel;
 
 		default: break;
 	}

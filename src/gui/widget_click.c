@@ -580,7 +580,7 @@ static void GUI_Window_Create(WindowDesc *desc)
 	}
 
 	if (s_savegameCountOnDisk >= 5 && desc->addArrows) {
-		Widget *w = &g_table_windowWidgets[7];
+		Widget *w = &g_table_windowWidgets[8];
 
 		w->drawParameterNormal.sprite   = g_sprites[59];
 		w->drawParameterSelected.sprite = g_sprites[60];
@@ -594,7 +594,7 @@ static void GUI_Window_Create(WindowDesc *desc)
 
 		g_widgetLinkedListTail = GUI_Widget_Link(g_widgetLinkedListTail, w);
 
-		w = &g_table_windowWidgets[8];
+		w = &g_table_windowWidgets[9];
 
 		w->drawParameterNormal.sprite   = g_sprites[61];
 		w->drawParameterSelected.sprite = g_sprites[62];
@@ -687,6 +687,10 @@ static void GUI_Widget_GameControls_Click(Widget *w)
 					break;
 
 				case 6:
+					g_gameConfig.debugLines ^= 0x1;
+					break;
+
+				case 7:
 					loop = false;
 					break;
 
@@ -995,7 +999,7 @@ static void UpdateArrows(bool save, bool force)
 
 	previousIndex = s_savegameIndexBase;
 
-	w = &g_table_windowWidgets[8];
+	w = &g_table_windowWidgets[9];
 	if (s_savegameIndexBase >= 5) {
 		GUI_Widget_MakeVisible(w);
 	} else {
@@ -1003,7 +1007,7 @@ static void UpdateArrows(bool save, bool force)
 		GUI_Widget_Undraw(w, 233);
 	}
 
-	w = &g_table_windowWidgets[7];
+	w = &g_table_windowWidgets[8];
 	if (s_savegameCountOnDisk - (save ? 0 : 1) > s_savegameIndexBase) {
 		GUI_Widget_MakeVisible(w);
 	} else {
@@ -1050,7 +1054,7 @@ bool GUI_Widget_SaveLoad_Click(bool save)
 			w2 = GUI_Widget_Get_ByIndex(w, key);
 
 			switch (key) {
-				case 0x25:
+				case 0x26:
 					s_savegameIndexBase = min(s_savegameCountOnDisk - (save ? 0 : 1), s_savegameIndexBase + 1);
 
 					FillSavegameDesc(save);
@@ -1058,7 +1062,7 @@ bool GUI_Widget_SaveLoad_Click(bool save)
 					GUI_Widget_DrawAll(w);
 					break;
 
-				case 0x26:
+				case 0x27:
 					s_savegameIndexBase = max(0, s_savegameIndexBase - 1);
 
 					FillSavegameDesc(save);
