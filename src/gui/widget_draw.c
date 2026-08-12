@@ -786,6 +786,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 							buttons[i]->offsetY = 47 + i * 11;
 							buttons[i]->stringID = (groupAction == ACTION_MAX) ? STR_NULL : g_table_actionInfo[groupAction].stringID;
 							buttons[i]->shortcut = 0;
+							buttons[i]->shortcut2 = 0;
 							GUI_Widget_MakeVisible(buttons[i]);
 							GUI_Widget_MakeNormal(buttons[i], false);
 						}
@@ -802,6 +803,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 					for (i = 0; i < 4; i++) {
 						buttons[i]->stringID = g_table_actionInfo[actions[i]].stringID;
 						buttons[i]->shortcut = GUI_Widget_GetShortcut(String_Get_ByIndex(buttons[i]->stringID)[0]);
+						buttons[i]->shortcut2 = buttons[i]->shortcut;
 
 						if (g_config.language == LANGUAGE_FRENCH) {
 							if (buttons[i]->stringID == STR_MOVE) buttons[i]->shortcut2 = 0x27;	/* L key */

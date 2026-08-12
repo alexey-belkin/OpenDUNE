@@ -18,6 +18,7 @@
 #include "gui/gui.h"
 #include "gui/widget.h"
 #include "house.h"
+#include "input/mouse.h"
 #include "map.h"
 #include "opendune.h"
 #include "pool/pool.h"
@@ -2867,7 +2868,6 @@ int UnitSelection_RunRegressionTest(void)
 	PoolFindStruct find;
 	Unit *primary = NULL;
 	uint16 expectedCount = 0;
-	uint16 packed;
 	uint16 i;
 
 	UnitSelection_ClearInternal();
@@ -2901,19 +2901,33 @@ int UnitSelection_RunRegressionTest(void)
 		if (!UnitSelection_Contains(Unit_Get_ByIndex(expected[i]))) return 0;
 	}
 
-	packed = Tile_PackTile(primary->o.position);
 	for (i = 0; i < 2; i++) {
 		ActionType action = i == 0 ? ACTION_MOVE : ACTION_ATTACK;
+		Widget viewport;
 		uint16 j;
 
 		if (!UnitSelection_BeginAction(action)) return 0;
 		g_unitActive = g_unitSelected;
 		g_activeAction = action;
 		GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
-		UnitSelection_ApplyPendingAction(packed);
-		g_unitActive = NULL;
-		g_activeAction = ACTION_INVALID;
-		GUI_ChangeSelectionType(SELECTIONTYPE_UNIT);
+
+		/* Exercise the real mouse lifecycle.  Before the release-tail guard was
+		 * added, the one-pixel drag below started a fresh box after the target
+		 * press had returned to UNIT mode and cleared the whole group. */
+		memset(&viewport, 0, sizeof(viewport));
+		viewport.index = 43;
+		g_mouseClickX = 32;
+		g_mouseClickY = 72;
+		g_mouseX = 32;
+		g_mouseY = 72;
+		viewport.state.buttonState = 0x01;
+		GUI_Widget_Viewport_Click(&viewport);
+		g_mouseX = 33;
+		g_mouseY = 73;
+		viewport.state.buttonState = 0x02;
+		GUI_Widget_Viewport_Click(&viewport);
+		viewport.state.buttonState = 0x04;
+		GUI_Widget_Viewport_Click(&viewport);
 		if (g_unitSelectionCount != expectedCount) return 0;
 		for (j = 0; j < expectedCount; j++) {
 			if (!UnitSelection_Contains(Unit_Get_ByIndex(expected[j]))) return 0;

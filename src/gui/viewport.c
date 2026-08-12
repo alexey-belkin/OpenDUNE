@@ -36,6 +36,7 @@ static uint32 s_tickEdgeScroll;                             /*!< Stores last tim
 static uint32 s_tickClick;                                  /*!< Stores last time Viewport handled a click. */
 static bool s_selectionBoxActive;                           /*!< A left drag is selecting a group. */
 static bool s_selectionBoxDragging;                         /*!< The press moved far enough to be a box, not a click. */
+static bool s_selectionBoxSuppressUntilRelease;              /*!< Ignore the tail of a target click after returning to unit mode. */
 static uint16 s_selectionBoxStart;                          /*!< Start tile, fixed in world coordinates. */
 static uint16 s_selectionBoxEnd;                            /*!< End tile, fixed in world coordinates. */
 
@@ -183,6 +184,23 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	 * here rather than waiting for a later click. */
 	release = (w->state.buttonState & 0x04) != 0;
 
+	/* A target order is committed on mouse-down and immediately switches back
+	 * to UNIT mode.  The drag/release events belonging to that same physical
+	 * click must not start a new selection box and replace the ordered group. */
+	if (s_selectionBoxSuppressUntilRelease) {
+		if (release) {
+			s_selectionBoxSuppressUntilRelease = false;
+			s_selectionBoxActive = false;
+			s_selectionBoxDragging = false;
+			g_viewport_forceRedraw = true;
+			return true;
+		}
+		if (drag) return true;
+		/* If a platform omitted the release event, a new press starts a new
+		 * gesture and must not leave selection locked indefinitely. */
+		if (click) s_selectionBoxSuppressUntilRelease = false;
+	}
+
 	/* ENHANCEMENT -- Dune2 depends on slow CPUs to limit the rate mouse clicks are handled. */
 	if (g_dune2_enhanced && drag && !(w->index >= 39 && w->index <= 43 && g_selectionType == SELECTIONTYPE_UNIT)) {
 		if (s_tickClick + 2 >= g_timerGame) return true;
@@ -279,6 +297,9 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			UnitSelection_ApplyPendingAction(packed);
 			g_unitActive = NULL;
 			g_activeAction = ACTION_INVALID;
+			s_selectionBoxActive = false;
+			s_selectionBoxDragging = false;
+			s_selectionBoxSuppressUntilRelease = true;
 			GUI_ChangeSelectionType(SELECTIONTYPE_UNIT);
 			return true;
 		}
@@ -330,6 +351,9 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		g_unitActive   = NULL;
 		g_activeAction = 0xFFFF;
 
+		s_selectionBoxActive = false;
+		s_selectionBoxDragging = false;
+		s_selectionBoxSuppressUntilRelease = true;
 		GUI_ChangeSelectionType(SELECTIONTYPE_UNIT);
 		return true;
 	}
