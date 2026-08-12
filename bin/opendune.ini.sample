@@ -30,6 +30,37 @@ midideviceid=0
 ; Game behaviour options :
 ;dune2_enhanced=0
 ;startport_unit_cap=1
+
+; Optional combat-class balance module. Values are integer percentages:
+; 100 = x1.00, 135 = x1.35, 60 = x0.60.
+class_balance_enabled=1
+class_balance_shared_infantry=1
+
+; Attacker P (Soldier, Infantry) versus P, RP, LT, TT.
+class_damage_p_vs_p=100
+class_damage_p_vs_rp=135
+class_damage_p_vs_lt=75
+class_damage_p_vs_tt=60
+; Attacker RP (Trooper, Troopers) versus P, RP, LT, TT.
+class_damage_rp_vs_p=70
+class_damage_rp_vs_rp=100
+class_damage_rp_vs_lt=125
+class_damage_rp_vs_tt=130
+; Attacker LT (Trike, Raider Trike, Quad) versus P, RP, LT, TT.
+class_damage_lt_vs_p=125
+class_damage_lt_vs_rp=135
+class_damage_lt_vs_lt=100
+class_damage_lt_vs_tt=70
+; Attacker TT (Tank, Siege Tank, Devastator) versus P, RP, LT, TT.
+class_damage_tt_vs_p=85
+class_damage_tt_vs_rp=90
+class_damage_tt_vs_lt=130
+class_damage_tt_vs_tt=100
+
+; House identity bonuses. Quad intentionally does not receive the Ordos bonus.
+class_bonus_atreides_p=120
+class_bonus_harkonnen_rp=110
+class_bonus_ordos_trike=110
 ; DEBUG options :
 ;debug_game=1
 ;debug_scenario=1

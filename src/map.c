@@ -408,6 +408,7 @@ void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 un
 
 	if (!s_debugNoExplosionDamage && hitpoints != 0) {
 		PoolFindStruct find;
+		Unit *source = Tools_Index_GetUnit(unitOriginEncoded);
 		find.houseID = HOUSE_INVALID;
 		find.index   = 0xFFFF;
 		find.type    = 0xFFFF;
@@ -429,7 +430,10 @@ void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 un
 			if (distance >= reactionDistance) continue;
 
 			if (!(u->o.type == UNIT_SANDWORM && type == EXPLOSION_SANDWORM_SWALLOW) && u->o.type != UNIT_FRIGATE) {
-				Unit_Damage(u, hitpoints >> (distance >> 2), 0);
+				uint16 damage = hitpoints >> (distance >> 2);
+
+				damage = Unit_CombatBalance_ApplyClassDamage(source, u, damage);
+				Unit_Damage(u, damage, 0);
 			}
 
 			if (u->o.houseID == g_playerHouseID) {

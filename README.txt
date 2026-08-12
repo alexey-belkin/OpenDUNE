@@ -109,6 +109,40 @@ debug options (for developpers) :
 - starport_unit_cap : 0 = Allows to overflow unit limit using starport (default)
                        1 = unit limit is enforced in starport
 
+Combat class balance
+--------------------
+The optional class-balance module is enabled by default. To configure it, create
+an opendune.ini file in the location described above (on macOS:
+~/Library/Application Support/OpenDUNE/opendune.ini). Put all settings under an
+[opendune] heading. Restart OpenDUNE after changing the file.
+
+Set class_balance_enabled=0 to restore original Dune II damage and original
+Barracks/WOR availability. With the module enabled,
+class_balance_shared_infantry=1 lets every House build Soldier, Infantry,
+Trooper and Troopers in Barracks. Set it to 0 to retain original production
+while keeping the damage matrix.
+
+Damage values are integer percentages: 100 means x1.00, 135 means x1.35 and 60
+means x0.60. The four classes are P (Soldier, Infantry), RP (Trooper, Troopers),
+LT (Trike, Raider Trike, Quad), and TT (Tank, Siege Tank, Devastator). Launcher,
+'Thopter, Sonic Tank and all other unlisted units are neutral (x1.00).
+
+The default matrix keys, grouped by attacker, are:
+- P:  class_damage_p_vs_p=100, class_damage_p_vs_rp=135,
+      class_damage_p_vs_lt=75, class_damage_p_vs_tt=60
+- RP: class_damage_rp_vs_p=70, class_damage_rp_vs_rp=100,
+      class_damage_rp_vs_lt=125, class_damage_rp_vs_tt=130
+- LT: class_damage_lt_vs_p=125, class_damage_lt_vs_rp=135,
+      class_damage_lt_vs_lt=100, class_damage_lt_vs_tt=70
+- TT: class_damage_tt_vs_p=85, class_damage_tt_vs_rp=90,
+      class_damage_tt_vs_lt=130, class_damage_tt_vs_tt=100
+
+House identity bonus keys are class_bonus_atreides_p=120,
+class_bonus_harkonnen_rp=110 and class_bonus_ordos_trike=110. The Ordos bonus
+applies to Trike and Raider Trike, not Quad. House bonuses multiply the base
+shot before the class matrix and also affect damage to structures. Deviator
+still deals zero HP damage and uses its normal area-deviation effect.
+
 
 Ingame
 ------

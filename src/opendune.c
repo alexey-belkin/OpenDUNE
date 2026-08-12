@@ -100,6 +100,8 @@ static bool  s_debugForceWin = false; /*!< When true, you immediately win the le
 static uint8 s_enableLog = 0; /*!< 0 = off, 1 = record game, 2 = playback game (stored in 'dune.log'). */
 static bool s_selectionSelfTest = false;
 static int s_selectionSelfTestResult = -1;
+static bool s_combatBalanceSelfTest = false;
+static int s_combatBalanceSelfTestResult = -1;
 
 static void PrintToConsole(const char *str);
 
@@ -962,6 +964,7 @@ static void GameLoop_Main(void)
 	g_readBuffer = calloc(1, g_readBufferSize);
 
 	ReadProfileIni("PROFILE.INI");
+	Unit_CombatBalance_Init();
 
 	free(g_readBuffer); g_readBuffer = NULL;
 
@@ -1008,6 +1011,18 @@ static void GameLoop_Main(void)
 	Structure_Init();
 
 	GUI_Mouse_Show_Safe();
+
+	if (s_combatBalanceSelfTest) {
+		s_combatBalanceSelfTestResult = Unit_CombatBalance_RunRegressionTest();
+		if (s_combatBalanceSelfTestResult == 1) {
+			PrintToConsole("combat-balance-self-test: PASS");
+		} else if (s_combatBalanceSelfTestResult == -1) {
+			PrintToConsole("combat-balance-self-test: SKIP (module disabled)");
+		} else {
+			PrintToConsole("combat-balance-self-test: FAIL");
+		}
+		return;
+	}
 
 	if (s_selectionSelfTest) {
 		static const char *saves[] = { "_SAVE004.DAT", "_SAVE003.DAT", "_SAVE002.DAT", "_SAVE001.DAT", "_SAVE000.DAT" };
@@ -1389,6 +1404,7 @@ int main(int argc, char **argv)
 		int i;
 		for (i = 1; i < argc; i++) {
 			if (strcmp(argv[i], "--selection-self-test") == 0) s_selectionSelfTest = true;
+			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
 		}
 	}
 
@@ -1460,7 +1476,9 @@ int main(int argc, char **argv)
 	PrepareEnd();
 	Free_IniFile();
 
-	return s_selectionSelfTest && s_selectionSelfTestResult != 1 ? 1 : 0;
+	if (s_selectionSelfTest && s_selectionSelfTestResult != 1) return 1;
+	if (s_combatBalanceSelfTest && s_combatBalanceSelfTestResult == 0) return 1;
+	return 0;
 }
 
 /**

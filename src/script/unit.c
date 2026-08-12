@@ -648,7 +648,7 @@ uint16 Script_Unit_Fire(ScriptEngine *script)
 		if (diff >= 8) return 0;
 	}
 
-	damage = ui->damage;
+	damage = Unit_CombatBalance_ApplyHouseDamage(u, ui->damage);
 	typeID = ui->bulletType;
 
 	fireTwice = ui->flags.firesTwice && u->o.hitpoints > ui->o.hitpoints / 2;

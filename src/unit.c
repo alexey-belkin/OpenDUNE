@@ -19,6 +19,7 @@
 #include "gui/widget.h"
 #include "house.h"
 #include "input/mouse.h"
+#include "inifile.h"
 #include "map.h"
 #include "opendune.h"
 #include "pool/pool.h"
@@ -60,6 +61,229 @@ static bool s_unitTargetSelectionActive = false;
 static uint16 s_unitOrderCount = 0;
 static ActionType s_unitOrderAction = ACTION_INVALID;
 static bool s_unitOrderAirTransit = false;
+
+typedef enum CombatClass {
+	COMBAT_CLASS_P = 0,
+	COMBAT_CLASS_RP,
+	COMBAT_CLASS_LT,
+	COMBAT_CLASS_TT,
+	COMBAT_CLASS_MAX,
+	COMBAT_CLASS_NONE = 0xFF
+} CombatClass;
+
+typedef struct CombatBalanceConfig {
+	bool enabled;
+	bool sharedInfantryProduction;
+	uint16 damage[COMBAT_CLASS_MAX][COMBAT_CLASS_MAX];
+	uint16 atreidesInfantry;
+	uint16 harkonnenRocketInfantry;
+	uint16 ordosTrike;
+} CombatBalanceConfig;
+
+static CombatBalanceConfig s_combatBalance = {
+	true,
+	true,
+	{
+		{ 100, 135,  75,  60 },
+		{  70, 100, 125, 130 },
+		{ 125, 135, 100,  70 },
+		{  85,  90, 130, 100 }
+	},
+	120,
+	110,
+	110
+};
+
+static uint16 Unit_CombatBalance_ReadPercent(const char *key, uint16 defaultValue)
+{
+	int value = IniFile_GetInteger(key, defaultValue);
+
+	if (value < 0) return 0;
+	if (value > 1000) return 1000;
+	return (uint16)value;
+}
+
+static uint16 Unit_CombatBalance_ScaleDamage(uint16 damage, uint16 percent)
+{
+	uint32 scaled;
+
+	if (damage == 0 || percent == 0) return 0;
+	scaled = ((uint32)damage * percent + 50) / 100;
+	return (uint16)min(scaled, 0xFFFF);
+}
+
+static CombatClass Unit_CombatBalance_GetClass(UnitType type)
+{
+	switch (type) {
+		case UNIT_SOLDIER:
+		case UNIT_INFANTRY:     return COMBAT_CLASS_P;
+		case UNIT_TROOPER:
+		case UNIT_TROOPERS:     return COMBAT_CLASS_RP;
+		case UNIT_TRIKE:
+		case UNIT_RAIDER_TRIKE:
+		case UNIT_QUAD:         return COMBAT_CLASS_LT;
+		case UNIT_TANK:
+		case UNIT_SIEGE_TANK:
+		case UNIT_DEVASTATOR:   return COMBAT_CLASS_TT;
+		default:                return COMBAT_CLASS_NONE;
+	}
+}
+
+/** Load the optional class-balance module and expose both infantry classes. */
+void Unit_CombatBalance_Init(void)
+{
+	static const char *matrixKeys[COMBAT_CLASS_MAX][COMBAT_CLASS_MAX] = {
+		{ "class_damage_p_vs_p",  "class_damage_p_vs_rp",  "class_damage_p_vs_lt",  "class_damage_p_vs_tt" },
+		{ "class_damage_rp_vs_p", "class_damage_rp_vs_rp", "class_damage_rp_vs_lt", "class_damage_rp_vs_tt" },
+		{ "class_damage_lt_vs_p", "class_damage_lt_vs_rp", "class_damage_lt_vs_lt", "class_damage_lt_vs_tt" },
+		{ "class_damage_tt_vs_p", "class_damage_tt_vs_rp", "class_damage_tt_vs_lt", "class_damage_tt_vs_tt" }
+	};
+	uint16 attacker;
+	uint16 target;
+
+	s_combatBalance.enabled = IniFile_GetInteger("class_balance_enabled", 1) != 0;
+	s_combatBalance.sharedInfantryProduction = IniFile_GetInteger("class_balance_shared_infantry", 1) != 0;
+	for (attacker = 0; attacker < COMBAT_CLASS_MAX; attacker++) {
+		for (target = 0; target < COMBAT_CLASS_MAX; target++) {
+			s_combatBalance.damage[attacker][target] = Unit_CombatBalance_ReadPercent(matrixKeys[attacker][target], s_combatBalance.damage[attacker][target]);
+		}
+	}
+	s_combatBalance.atreidesInfantry = Unit_CombatBalance_ReadPercent("class_bonus_atreides_p", 120);
+	s_combatBalance.harkonnenRocketInfantry = Unit_CombatBalance_ReadPercent("class_bonus_harkonnen_rp", 110);
+	s_combatBalance.ordosTrike = Unit_CombatBalance_ReadPercent("class_bonus_ordos_trike", 110);
+
+	if (!s_combatBalance.enabled || !s_combatBalance.sharedInfantryProduction) return;
+
+	/* Barracks becomes the common infantry factory. WOR remains available as
+	 * a specialised legacy factory so existing campaigns and saves still work. */
+	g_table_structureInfo[STRUCTURE_BARRACKS].o.availableHouse = FLAG_HOUSE_ALL;
+	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[0] = UNIT_SOLDIER;
+	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[1] = UNIT_INFANTRY;
+	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[2] = UNIT_TROOPER;
+	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[3] = UNIT_TROOPERS;
+	g_table_unitInfo[UNIT_SOLDIER].o.availableHouse = FLAG_HOUSE_ALL;
+	g_table_unitInfo[UNIT_INFANTRY].o.availableHouse = FLAG_HOUSE_ALL;
+	g_table_unitInfo[UNIT_TROOPER].o.availableHouse = FLAG_HOUSE_ALL;
+	g_table_unitInfo[UNIT_TROOPERS].o.availableHouse = FLAG_HOUSE_ALL;
+}
+
+/** Apply a House identity bonus to the base shot, including shots at structures. */
+uint16 Unit_CombatBalance_ApplyHouseDamage(const Unit *attacker, uint16 damage)
+{
+	uint16 percent = 100;
+
+	if (!s_combatBalance.enabled || attacker == NULL) return damage;
+	if (attacker->o.houseID == HOUSE_ATREIDES && Unit_CombatBalance_GetClass(attacker->o.type) == COMBAT_CLASS_P) {
+		percent = s_combatBalance.atreidesInfantry;
+	} else if (attacker->o.houseID == HOUSE_HARKONNEN && Unit_CombatBalance_GetClass(attacker->o.type) == COMBAT_CLASS_RP) {
+		percent = s_combatBalance.harkonnenRocketInfantry;
+	} else if (attacker->o.houseID == HOUSE_ORDOS && (attacker->o.type == UNIT_TRIKE || attacker->o.type == UNIT_RAIDER_TRIKE)) {
+		percent = s_combatBalance.ordosTrike;
+	}
+
+	return Unit_CombatBalance_ScaleDamage(damage, percent);
+}
+
+/** Apply the attacker/target class matrix to damage already carried by a shot. */
+uint16 Unit_CombatBalance_ApplyClassDamage(const Unit *attacker, const Unit *target, uint16 damage)
+{
+	CombatClass attackerClass;
+	CombatClass targetClass;
+
+	if (!s_combatBalance.enabled || attacker == NULL || target == NULL) return damage;
+	attackerClass = Unit_CombatBalance_GetClass(attacker->o.type);
+	targetClass = Unit_CombatBalance_GetClass(target->o.type);
+	if (attackerClass == COMBAT_CLASS_NONE || targetClass == COMBAT_CLASS_NONE) return damage;
+
+	return Unit_CombatBalance_ScaleDamage(damage, s_combatBalance.damage[attackerClass][targetClass]);
+}
+
+/** Verify the configured matrix, neutral classes, House bonuses and shared Barracks. */
+int Unit_CombatBalance_RunRegressionTest(void)
+{
+	static const UnitType representatives[COMBAT_CLASS_MAX] = { UNIT_SOLDIER, UNIT_TROOPER, UNIT_TRIKE, UNIT_TANK };
+	Unit attacker;
+	Unit target;
+	uint16 a;
+	uint16 t;
+
+	if (!s_combatBalance.enabled) return -1;
+	memset(&attacker, 0, sizeof(attacker));
+	memset(&target, 0, sizeof(target));
+	for (a = 0; a < COMBAT_CLASS_MAX; a++) {
+		attacker.o.type = representatives[a];
+		for (t = 0; t < COMBAT_CLASS_MAX; t++) {
+			target.o.type = representatives[t];
+			if (Unit_CombatBalance_ApplyClassDamage(&attacker, &target, 100) != s_combatBalance.damage[a][t]) return 0;
+		}
+	}
+
+	attacker.o.type = UNIT_LAUNCHER;
+	target.o.type = UNIT_TROOPER;
+	if (Unit_CombatBalance_ApplyClassDamage(&attacker, &target, 100) != 100) return 0;
+	attacker.o.type = UNIT_TROOPER;
+	target.o.type = UNIT_SONIC_TANK;
+	if (Unit_CombatBalance_ApplyClassDamage(&attacker, &target, 100) != 100) return 0;
+
+	attacker.o.type = UNIT_INFANTRY;
+	attacker.o.houseID = HOUSE_ATREIDES;
+	if (Unit_CombatBalance_ApplyHouseDamage(&attacker, 100) != s_combatBalance.atreidesInfantry) return 0;
+	attacker.o.type = UNIT_TROOPERS;
+	attacker.o.houseID = HOUSE_HARKONNEN;
+	if (Unit_CombatBalance_ApplyHouseDamage(&attacker, 100) != s_combatBalance.harkonnenRocketInfantry) return 0;
+	attacker.o.type = UNIT_RAIDER_TRIKE;
+	attacker.o.houseID = HOUSE_ORDOS;
+	if (Unit_CombatBalance_ApplyHouseDamage(&attacker, 100) != s_combatBalance.ordosTrike) return 0;
+	attacker.o.type = UNIT_QUAD;
+	if (Unit_CombatBalance_ApplyHouseDamage(&attacker, 100) != 100) return 0;
+
+	if (s_combatBalance.sharedInfantryProduction) {
+		const StructureInfo *si = &g_table_structureInfo[STRUCTURE_BARRACKS];
+
+		if (si->o.availableHouse != FLAG_HOUSE_ALL) return 0;
+		if (si->buildableUnits[0] != UNIT_SOLDIER || si->buildableUnits[1] != UNIT_INFANTRY ||
+				si->buildableUnits[2] != UNIT_TROOPER || si->buildableUnits[3] != UNIT_TROOPERS) return 0;
+	}
+
+	/* Integration path: a real explosion resolves its encoded source, applies
+	 * the House bonus carried by the shot, then applies the victim class. */
+	{
+		Unit *sourceUnit;
+		Unit *targetUnit;
+		uint16 shotDamage;
+		uint16 expectedDamage;
+		uint16 targetHitpoints;
+		tile32 offMap;
+
+		g_playerHouseID = HOUSE_ATREIDES;
+		g_playerHouse = House_Get_ByIndex(g_playerHouseID);
+		g_playerHouse->unitCountMax = UNIT_SELECTION_MAX;
+		House_Get_ByIndex(HOUSE_HARKONNEN)->unitCountMax = UNIT_SELECTION_MAX;
+		offMap.x = 0xFFFF;
+		offMap.y = 0xFFFF;
+		sourceUnit = Unit_Create(UNIT_INDEX_INVALID, UNIT_SOLDIER, HOUSE_ATREIDES, offMap, 0);
+		targetUnit = Unit_Create(UNIT_INDEX_INVALID, UNIT_TROOPER, HOUSE_HARKONNEN, offMap, 0);
+		if (sourceUnit == NULL || targetUnit == NULL) {
+			printf("combat-balance integration setup failed: source=%p target=%p\n", (void *)sourceUnit, (void *)targetUnit);
+			return 0;
+		}
+		sourceUnit->o.position = Tile_UnpackTile(Tile_PackXY(4, 4));
+		sourceUnit->o.flags.s.isNotOnMap = false;
+		targetUnit->o.position = Tile_UnpackTile(Tile_PackXY(20, 20));
+		targetUnit->o.flags.s.isNotOnMap = false;
+
+		shotDamage = Unit_CombatBalance_ApplyHouseDamage(sourceUnit, 10);
+		expectedDamage = Unit_CombatBalance_ApplyClassDamage(sourceUnit, targetUnit, shotDamage);
+		targetHitpoints = targetUnit->o.hitpoints;
+		Map_MakeExplosion(EXPLOSION_IMPACT_SMALL, targetUnit->o.position, shotDamage, Tools_Index_Encode(sourceUnit->o.index, IT_UNIT));
+		if (targetUnit->o.hitpoints != targetHitpoints - min(targetHitpoints, expectedDamage)) {
+			printf("combat-balance integration mismatch: shot=%u expected=%u hp=%u->%u\n", shotDamage, expectedDamage, targetHitpoints, targetUnit->o.hitpoints);
+			return 0;
+		}
+	}
+
+	return 1;
+}
 
 /* Runtime-only tactical state.  The actual route remains owned by the unit
  * script, so save-game layouts and the normal movement system stay intact. */
