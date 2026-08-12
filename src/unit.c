@@ -2982,7 +2982,10 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 			unit->route[0] = 0xFF;
 			s_autonomousReturning[unit->o.index] = false;
 			unit->airTransitDestination = packed;
-			Unit_SetAction(unit, ACTION_STOP);
+			/* Do not switch to ACTION_STOP here.  On a moving combat unit that
+			 * re-enters the legacy action script as a subroutine and can overflow
+			 * its tiny script stack.  The carryall request below is independent of
+			 * the unit's current action and will pick it up safely. */
 		}
 		UnitSelection_CancelPendingAction();
 		GUI_Widget_ActionPanel_Draw(true);
