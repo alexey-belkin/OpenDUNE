@@ -332,6 +332,7 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 	ai = &g_table_actionInfo[action];
 
 	if (ai->selectionType != g_selectionType) {
+		if (ai->selectionType == SELECTIONTYPE_TARGET) UnitSelection_BeginTargeting();
 		g_unitActive = g_unitSelected;
 		g_activeAction = action;
 		GUI_ChangeSelectionType(ai->selectionType);

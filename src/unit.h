@@ -285,6 +285,8 @@ extern uint16 g_unitSelectionCount;
 extern void UnitSelection_Clear(void);
 extern void UnitSelection_Remove(Unit *unit);
 extern void UnitSelection_Reconcile(void);
+extern void UnitSelection_AbortTargeting(void);
+extern void UnitSelection_BeginTargeting(void);
 extern void UnitSelection_SelectSingle(Unit *unit);
 extern void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive);
 extern bool UnitSelection_IsSelected(const Unit *unit);

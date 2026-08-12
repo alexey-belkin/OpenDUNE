@@ -50,6 +50,12 @@ Unit *g_unitSelected = NULL;
 uint16 g_unitSelectionCount = 0;
 static uint16 s_unitSelection[UNIT_SELECTION_MAX];
 static uint16 s_unitOrder[UNIT_SELECTION_MAX];
+/* A target command is modal UI, not a new selection.  Keep an immutable
+ * snapshot while its target is being chosen so any legacy UI action that
+ * touches g_unitSelected cannot discard the user's group. */
+static uint16 s_unitTargetSelection[UNIT_SELECTION_MAX];
+static uint16 s_unitTargetSelectionCount = 0;
+static bool s_unitTargetSelectionActive = false;
 static uint16 s_unitOrderCount = 0;
 static ActionType s_unitOrderAction = ACTION_INVALID;
 static bool s_unitOrderAirTransit = false;
@@ -866,6 +872,19 @@ static void UnitSelection_ClearInternal(void)
 	}
 
 	g_unitSelectionCount = 0;
+}
+
+static void UnitSelection_CaptureTargetSelection(void)
+{
+	uint16 i;
+
+	s_unitTargetSelectionCount = 0;
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		if (!UnitSelection_IsControllable(unit)) continue;
+		s_unitTargetSelection[s_unitTargetSelectionCount++] = unit->o.index;
+	}
+	s_unitTargetSelectionActive = s_unitTargetSelectionCount != 0;
 }
 
 /** Does a unit expose an action in its normal four-action command set? */
@@ -2706,6 +2725,22 @@ void UnitSelection_Reconcile(void)
 	Unit *primary = NULL;
 	uint16 i = 0;
 
+	/* Restore the captured group first.  The mutable working selection can be
+	 * changed by old widget code during a target command, whereas this snapshot
+	 * represents precisely the units that received the order. */
+	if (s_unitTargetSelectionActive) {
+		s_unitSelectionChanging = true;
+		UnitSelection_ClearInternal();
+		for (i = 0; i < s_unitTargetSelectionCount; i++) {
+			Unit *unit = Unit_Get_ByIndex(s_unitTargetSelection[i]);
+			if (UnitSelection_IsControllable(unit)) UnitSelection_Add(unit);
+		}
+		s_unitSelectionChanging = false;
+		s_unitTargetSelectionActive = false;
+		s_unitTargetSelectionCount = 0;
+		i = 0;
+	}
+
 	while (i < g_unitSelectionCount) {
 		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
 
@@ -2725,6 +2760,20 @@ void UnitSelection_Reconcile(void)
 	s_unitSelectionChanging = true;
 	Unit_Select(primary);
 	s_unitSelectionChanging = false;
+}
+
+/* Called when a target modal is abandoned for a non-unit selection mode. */
+void UnitSelection_AbortTargeting(void)
+{
+	s_unitTargetSelectionActive = false;
+	s_unitTargetSelectionCount = 0;
+}
+
+/* Begin the target-command selection transaction.  Both the group command
+ * panel and legacy single-unit panel use this entry point. */
+void UnitSelection_BeginTargeting(void)
+{
+	UnitSelection_CaptureTargetSelection();
 }
 
 /** Select exactly one controllable unit. */
@@ -2933,6 +2982,7 @@ bool UnitSelection_BeginAirTransit(void)
 		if (UnitSelection_CanAirTransit(unit)) s_unitOrder[s_unitOrderCount++] = unit->o.index;
 	}
 	if (s_unitOrderCount == 0) return false;
+	UnitSelection_CaptureTargetSelection();
 	s_unitOrderAirTransit = true;
 	return true;
 }
@@ -2951,6 +3001,7 @@ bool UnitSelection_BeginAction(ActionType action)
 			Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
 			if (UnitSelection_UnitHasAction(unit, action)) s_unitOrder[s_unitOrderCount++] = unit->o.index;
 		}
+		UnitSelection_CaptureTargetSelection();
 		s_unitOrderAction = action;
 		return s_unitOrderCount != 0;
 	}

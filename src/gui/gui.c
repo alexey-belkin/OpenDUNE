@@ -2282,6 +2282,8 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 	if (g_selectionType != selectionType) {
 		uint16 oldSelectionType = g_selectionType;
 
+		if (oldSelectionType == SELECTIONTYPE_TARGET && selectionType != SELECTIONTYPE_UNIT) UnitSelection_AbortTargeting();
+
 		Timer_SetTimer(TIMER_GAME, false);
 
 		g_selectionType = selectionType;
