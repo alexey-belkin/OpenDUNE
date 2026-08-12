@@ -2264,6 +2264,10 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 {
 	Screen oldScreenID;
 
+	/* Targeting is a modal UI state, not a new selection.  Restore the primary
+	 * display unit from the persistent selection group when closing it. */
+	if (selectionType == SELECTIONTYPE_UNIT) UnitSelection_Reconcile();
+
 	if (selectionType == SELECTIONTYPE_UNIT && g_unitSelected == NULL) {
 		selectionType = SELECTIONTYPE_STRUCTURE;
 	}

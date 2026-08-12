@@ -2682,20 +2682,29 @@ void UnitSelection_Remove(Unit *unit)
 	GUI_Widget_ActionPanel_Draw(true);
 }
 
-/* Command transitions must not discard the visible group.  Reassert its
- * primary unit after issuing an order, while preserving every member index. */
-static void UnitSelection_EnsurePrimary(void)
+/* Keep the primary UI selection consistent with the persistent group model.
+ * The index set is the source of truth; g_unitSelected only supplies the
+ * portrait/status.  This runs at selection-mode boundaries, not per order. */
+void UnitSelection_Reconcile(void)
 {
 	Unit *primary = NULL;
-	uint16 i;
+	uint16 i = 0;
 
-	for (i = 0; i < g_unitSelectionCount; i++) {
+	while (i < g_unitSelectionCount) {
 		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
-		if (!UnitSelection_IsControllable(unit)) continue;
-		primary = unit;
-		break;
+
+		if (!UnitSelection_IsControllable(unit)) {
+			uint16 j;
+
+			for (j = i; j + 1 < g_unitSelectionCount; j++) s_unitSelection[j] = s_unitSelection[j + 1];
+			g_unitSelectionCount--;
+			continue;
+		}
+		if (primary == NULL) primary = unit;
+		i++;
 	}
 	if (primary == NULL) return;
+	if (UnitSelection_Contains(g_unitSelected)) return;
 
 	s_unitSelectionChanging = true;
 	Unit_Select(primary);
@@ -2860,7 +2869,6 @@ void UnitSelection_IssueDefaultOrder(uint16 packed)
 
 		if (action != ACTION_INVALID) UnitSelection_ResetOrder(unit, action, packed);
 	}
-	UnitSelection_EnsurePrimary();
 }
 
 /* Hunt is intentionally a keyboard-only advanced order: it applies only to
@@ -2885,8 +2893,6 @@ void UnitSelection_OrderHunt(void)
 		Unit_SetAction(unit, ACTION_AREA_GUARD);
 		Unit_SetManualHunt(unit, true);
 	}
-	UnitSelection_EnsurePrimary();
-
 	GUI_Widget_ActionPanel_Draw(true);
 }
 
@@ -2948,7 +2954,6 @@ bool UnitSelection_BeginAction(ActionType action)
 		Unit_SetAction(unit, unitAction);
 	}
 
-	UnitSelection_EnsurePrimary();
 	GUI_Widget_ActionPanel_Draw(true);
 	return false;
 }
@@ -2980,7 +2985,6 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 			Unit_SetAction(unit, ACTION_STOP);
 		}
 		UnitSelection_CancelPendingAction();
-		UnitSelection_EnsurePrimary();
 		GUI_Widget_ActionPanel_Draw(true);
 		return;
 	}
@@ -2993,7 +2997,6 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 	}
 
 	UnitSelection_CancelPendingAction();
-	UnitSelection_EnsurePrimary();
 }
 
 void UnitSelection_CancelPendingAction(void)

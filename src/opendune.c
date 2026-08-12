@@ -1093,12 +1093,12 @@ static void GameLoop_Main(void)
 		GUI_Widget_Viewport_HandleEdgeScroll();
 		/* T = Hunt.  Polling the physical key also covers keys consumed by a
 		 * sidebar widget before this general in-game shortcut sees them. */
-		if (((key & 0x7FFF) == 0x0014 || Input_Test(0x14) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
+		if (((key & 0x7FFF) == 0x0015 || Input_Test(0x15) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
 			UnitSelection_OrderHunt();
 			key = 0;
 		}
 		/* Y = Air Transit: choose a landing tile for the selected ground units. */
-		if (((key & 0x7FFF) == 0x0015 || Input_Test(0x15) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
+		if (((key & 0x7FFF) == 0x0016 || Input_Test(0x16) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
 			if (UnitSelection_BeginAirTransit()) {
 				g_unitActive = g_unitSelected;
 				g_activeAction = ACTION_MOVE;
