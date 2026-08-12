@@ -122,15 +122,18 @@ class_balance_shared_infantry=1 lets every House build Soldier, Infantry,
 Trooper and Troopers in Barracks. Set it to 0 to retain original production
 while keeping the damage matrix.
 
-Damage values are integer percentages: 100 means x1.00, 135 means x1.35 and 60
-means x0.60. The four classes are P (Soldier, Infantry), RP (Trooper, Troopers),
+Damage values are integer percentages: 100 means x1.00, 250 means x2.50 and 30
+means x0.30. The four classes are P (Soldier, Infantry), RP (Trooper, Troopers),
 LT (Trike, Raider Trike, Quad), and TT (Tank, Siege Tank, Devastator). Launcher,
 'Thopter, Sonic Tank and all other unlisted units are neutral (x1.00).
 
+class_range_p_bonus=1 adds one map cell of firing range to Soldier and Infantry.
+Set it to 0 to retain their original range while keeping the damage matrix.
+
 The default matrix keys, grouped by attacker, are:
-- P:  class_damage_p_vs_p=100, class_damage_p_vs_rp=135,
+- P:  class_damage_p_vs_p=100, class_damage_p_vs_rp=250,
       class_damage_p_vs_lt=75, class_damage_p_vs_tt=60
-- RP: class_damage_rp_vs_p=70, class_damage_rp_vs_rp=100,
+- RP: class_damage_rp_vs_p=30, class_damage_rp_vs_rp=100,
       class_damage_rp_vs_lt=125, class_damage_rp_vs_tt=130
 - LT: class_damage_lt_vs_p=125, class_damage_lt_vs_rp=135,
       class_damage_lt_vs_lt=100, class_damage_lt_vs_tt=70

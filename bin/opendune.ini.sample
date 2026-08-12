@@ -32,17 +32,19 @@ midideviceid=0
 ;startport_unit_cap=1
 
 ; Optional combat-class balance module. Values are integer percentages:
-; 100 = x1.00, 135 = x1.35, 60 = x0.60.
+; 100 = x1.00, 250 = x2.50, 30 = x0.30.
 class_balance_enabled=1
 class_balance_shared_infantry=1
+; Extra firing range in map cells for Soldier and Infantry.
+class_range_p_bonus=1
 
 ; Attacker P (Soldier, Infantry) versus P, RP, LT, TT.
 class_damage_p_vs_p=100
-class_damage_p_vs_rp=135
+class_damage_p_vs_rp=250
 class_damage_p_vs_lt=75
 class_damage_p_vs_tt=60
 ; Attacker RP (Trooper, Troopers) versus P, RP, LT, TT.
-class_damage_rp_vs_p=70
+class_damage_rp_vs_p=30
 class_damage_rp_vs_rp=100
 class_damage_rp_vs_lt=125
 class_damage_rp_vs_tt=130

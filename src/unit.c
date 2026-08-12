@@ -75,6 +75,7 @@ typedef struct CombatBalanceConfig {
 	bool enabled;
 	bool sharedInfantryProduction;
 	uint16 damage[COMBAT_CLASS_MAX][COMBAT_CLASS_MAX];
+	uint16 pRangeBonus;
 	uint16 atreidesInfantry;
 	uint16 harkonnenRocketInfantry;
 	uint16 ordosTrike;
@@ -84,15 +85,18 @@ static CombatBalanceConfig s_combatBalance = {
 	true,
 	true,
 	{
-		{ 100, 135,  75,  60 },
-		{  70, 100, 125, 130 },
+		{ 100, 250,  75,  60 },
+		{  30, 100, 125, 130 },
 		{ 125, 135, 100,  70 },
 		{  85,  90, 130, 100 }
 	},
+	1,
 	120,
 	110,
 	110
 };
+
+static uint16 s_combatBalancePBaseRange[2];
 
 static uint16 Unit_CombatBalance_ReadPercent(const char *key, uint16 defaultValue)
 {
@@ -151,8 +155,18 @@ void Unit_CombatBalance_Init(void)
 	s_combatBalance.atreidesInfantry = Unit_CombatBalance_ReadPercent("class_bonus_atreides_p", 120);
 	s_combatBalance.harkonnenRocketInfantry = Unit_CombatBalance_ReadPercent("class_bonus_harkonnen_rp", 110);
 	s_combatBalance.ordosTrike = Unit_CombatBalance_ReadPercent("class_bonus_ordos_trike", 110);
+	s_combatBalance.pRangeBonus = (uint16)min(max(IniFile_GetInteger("class_range_p_bonus", 1), 0), 32);
 
-	if (!s_combatBalance.enabled || !s_combatBalance.sharedInfantryProduction) return;
+	if (!s_combatBalance.enabled) return;
+
+	/* fireDistance is measured in map cells. Keep the configured result below
+	 * the signed fixed-point limit used by the original firing scripts. */
+	s_combatBalancePBaseRange[0] = g_table_unitInfo[UNIT_SOLDIER].fireDistance;
+	s_combatBalancePBaseRange[1] = g_table_unitInfo[UNIT_INFANTRY].fireDistance;
+	g_table_unitInfo[UNIT_SOLDIER].fireDistance = (uint16)min(s_combatBalancePBaseRange[0] + s_combatBalance.pRangeBonus, 127);
+	g_table_unitInfo[UNIT_INFANTRY].fireDistance = (uint16)min(s_combatBalancePBaseRange[1] + s_combatBalance.pRangeBonus, 127);
+
+	if (!s_combatBalance.sharedInfantryProduction) return;
 
 	/* Barracks becomes the common infantry factory. WOR remains available as
 	 * a specialised legacy factory so existing campaigns and saves still work. */
@@ -208,6 +222,8 @@ int Unit_CombatBalance_RunRegressionTest(void)
 	uint16 t;
 
 	if (!s_combatBalance.enabled) return -1;
+	if (g_table_unitInfo[UNIT_SOLDIER].fireDistance != min(s_combatBalancePBaseRange[0] + s_combatBalance.pRangeBonus, 127)) return 0;
+	if (g_table_unitInfo[UNIT_INFANTRY].fireDistance != min(s_combatBalancePBaseRange[1] + s_combatBalance.pRangeBonus, 127)) return 0;
 	memset(&attacker, 0, sizeof(attacker));
 	memset(&target, 0, sizeof(target));
 	for (a = 0; a < COMBAT_CLASS_MAX; a++) {
