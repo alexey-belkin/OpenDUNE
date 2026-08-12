@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Complete OpenDUNE and Dune II unit reference">
+  <title>OpenDUNE / Dune II — Unit Reference</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #20252b;
+      --muted: #68717a;
+      --paper: #f6f1e7;
+      --paper-strong: #fffdf8;
+      --line: #ddd3c2;
+      --line-strong: #c9bba5;
+      --sand: #ead9b6;
+      --sand-light: #f5ead3;
+      --orange: #b85b28;
+      --orange-dark: #83401f;
+      --blue: #17384c;
+      --blue-soft: #e5eef0;
+      --shadow: 0 18px 45px rgba(70, 50, 25, .10);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 86% 4%, rgba(234, 217, 182, .75), transparent 28rem),
+        linear-gradient(180deg, #f1e7d3 0, var(--paper) 23rem, var(--paper) 100%);
+      font: 16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: var(--orange-dark); }
+    a:hover { color: var(--orange); }
+
+    .page {
+      width: min(1540px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 42px 0 72px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(28px, 5vw, 64px);
+      border: 1px solid rgba(201, 187, 165, .85);
+      border-radius: 28px;
+      background: linear-gradient(135deg, rgba(255, 253, 248, .94), rgba(245, 234, 211, .88));
+      box-shadow: var(--shadow);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -110px;
+      bottom: -180px;
+      width: 430px;
+      height: 430px;
+      border: 1px solid rgba(184, 91, 40, .18);
+      border-radius: 50%;
+      box-shadow: 0 0 0 26px rgba(184, 91, 40, .06), 0 0 0 52px rgba(184, 91, 40, .04);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--orange-dark);
+      font-size: .76rem;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1, h2 { font-family: Georgia, "Times New Roman", serif; line-height: 1.1; }
+    h1 { max-width: 800px; margin: 0; color: var(--blue); font-size: clamp(2.3rem, 6vw, 5.4rem); letter-spacing: -.045em; }
+    h2 { margin: 0; color: var(--blue); font-size: clamp(1.65rem, 3vw, 2.45rem); letter-spacing: -.025em; }
+
+    .lede {
+      max-width: 760px;
+      margin: 24px 0 0;
+      color: #4f585e;
+      font-size: clamp(1rem, 1.7vw, 1.18rem);
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      max-width: 780px;
+      margin-top: 32px;
+    }
+
+    .stat {
+      padding: 16px 18px;
+      border: 1px solid rgba(201, 187, 165, .9);
+      border-radius: 14px;
+      background: rgba(255, 253, 248, .76);
+    }
+
+    .stat strong { display: block; color: var(--blue); font-size: 1.45rem; }
+    .stat span { color: var(--muted); font-size: .82rem; }
+
+    .content { padding-top: 58px; }
+
+    .section-heading {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 18px;
+    }
+
+    .section-heading p { max-width: 650px; margin: 0; color: var(--muted); }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 26px 0 14px;
+    }
+
+    .search {
+      flex: 1 1 280px;
+      min-height: 46px;
+      padding: 0 15px;
+      border: 1px solid var(--line-strong);
+      border-radius: 12px;
+      outline: none;
+      color: var(--ink);
+      background: var(--paper-strong);
+      font: inherit;
+    }
+
+    .search:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(184, 91, 40, .15); }
+
+    .filter {
+      min-height: 44px;
+      padding: 0 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      color: var(--blue);
+      background: var(--paper-strong);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .filter.active, .filter:hover { border-color: var(--blue); color: white; background: var(--blue); }
+
+    .result-count { margin-left: auto; color: var(--muted); font-size: .9rem; }
+
+    .table-shell {
+      border: 1px solid var(--line-strong);
+      border-radius: 18px;
+      background: var(--paper-strong);
+      box-shadow: var(--shadow);
+    }
+
+    /* Keep horizontal scrolling isolated so the sticky header follows the
+       page rather than becoming trapped inside the outer card. */
+    .table-scroll {
+      overflow-x: auto;
+      overflow-y: visible;
+      border-radius: inherit;
+      scrollbar-color: var(--line-strong) transparent;
+    }
+
+    .sticky-header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      overflow: hidden;
+      border-radius: 17px 17px 0 0;
+      background: var(--blue);
+      box-shadow: 0 5px 14px rgba(23, 56, 76, .16);
+    }
+
+    .sticky-header table {
+      transform: translateX(0);
+    }
+
+    #units-table > thead { display: none; }
+
+    table {
+      width: 100%;
+      min-width: 1907px;
+      border-collapse: separate;
+      border-spacing: 0;
+      table-layout: fixed;
+    }
+
+    col.id { width: 54px; }
+    col.unit { width: 148px; }
+    col.role { width: 175px; }
+    col.movement { width: 94px; }
+    col.number { width: 68px; }
+    col.rate { width: 108px; }
+    col.weapon { width: 150px; }
+    col.access { width: 250px; }
+    col.notes { width: 480px; }
+
+    caption {
+      padding: 16px 20px;
+      color: var(--muted);
+      background: var(--sand-light);
+      text-align: left;
+      font-size: .88rem;
+    }
+
+    th, td {
+      padding: 14px 13px;
+      border-right: 1px solid rgba(221, 211, 194, .72);
+      border-bottom: 1px solid rgba(221, 211, 194, .72);
+      vertical-align: top;
+      text-align: left;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      color: white;
+      background: var(--blue);
+      font-size: .74rem;
+      letter-spacing: .075em;
+      text-transform: uppercase;
+    }
+
+    td { color: #374047; font-size: .91rem; }
+    tbody tr:nth-child(even) td { background: rgba(245, 234, 211, .28); }
+    tbody tr:hover td { background: #fff3dc; }
+    tbody tr:last-child td { border-bottom: 0; }
+    th:last-child, td:last-child {
+      position: sticky;
+      right: 0;
+      z-index: 2;
+      min-width: 480px;
+      border-right: 0;
+      border-left: 1px solid var(--line-strong);
+      background: var(--paper-strong);
+      box-shadow: -12px 0 18px rgba(70, 50, 25, .09);
+    }
+
+    th:last-child {
+      z-index: 5;
+      background: var(--blue);
+      box-shadow: -12px 0 18px rgba(0, 0, 0, .18);
+    }
+
+    tbody tr:nth-child(even) td:last-child { background: #fcf6eb; }
+    tbody tr:hover td:last-child { background: #fff3dc; }
+
+    th:first-child, td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    th:first-child { z-index: 5; background: var(--blue); }
+    td:first-child { color: var(--orange-dark); background: var(--paper-strong); font-weight: 800; }
+    tbody tr:nth-child(even) td:first-child { background: #fcf6eb; }
+    tbody tr:hover td:first-child { background: #fff3dc; }
+
+    .unit-name { color: var(--blue); font-weight: 800; }
+    .pill {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: var(--orange-dark);
+      background: var(--sand);
+      font-size: .75rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .internal .pill { color: var(--blue); background: var(--blue-soft); }
+    .num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted); }
+
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 42px;
+    }
+
+    details {
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 253, 248, .72);
+    }
+
+    summary { color: var(--blue); cursor: pointer; font-weight: 800; }
+    details p, details ul { margin: 12px 0 0; color: var(--muted); font-size: .91rem; }
+    details ul { padding-left: 20px; }
+
+    footer { margin-top: 36px; color: var(--muted); font-size: .86rem; }
+    footer code { color: var(--orange-dark); }
+
+    .empty { display: none; padding: 28px; color: var(--muted); text-align: center; }
+
+    @media (max-width: 760px) {
+      .page { width: min(100% - 24px, 1540px); padding-top: 12px; }
+      .hero { border-radius: 20px; }
+      .summary, .notes { grid-template-columns: 1fr; }
+      .content { padding-top: 40px; }
+      .section-heading { display: block; }
+      .section-heading p { margin-top: 10px; }
+      .result-count { width: 100%; margin-left: 0; }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --ink: #e9e2d6;
+        --muted: #abb0ad;
+        --paper: #171d20;
+        --paper-strong: #20282b;
+        --line: #3d4545;
+        --line-strong: #5b5d55;
+        --sand: #51452f;
+        --sand-light: #302c24;
+        --orange: #e28a4d;
+        --orange-dark: #f1a56c;
+        --blue: #b9d4d9;
+        --blue-soft: #293d42;
+        --shadow: 0 18px 45px rgba(0, 0, 0, .25);
+      }
+      body { background: radial-gradient(circle at 86% 4%, #3e3525, transparent 28rem), var(--paper); }
+      .hero { background: linear-gradient(135deg, rgba(32, 40, 43, .96), rgba(48, 44, 36, .92)); }
+      .lede, td { color: #c4c2b9; }
+      .stat, .search, .filter, details { background: rgba(32, 40, 43, .82); }
+      tbody tr:nth-child(even) td, tbody tr:nth-child(even) td:first-child { background: rgba(81, 69, 47, .22); }
+      tbody tr:hover td, tbody tr:hover td:first-child { background: #3c3529; }
+      td:first-child { background: var(--paper-strong); }
+      tbody tr:nth-child(even) td:last-child { background: rgba(81, 69, 47, .22); }
+      tbody tr:hover td:last-child { background: #3c3529; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">OpenDUNE · Dune II reference</p>
+      <h1>Units of Arrakis</h1>
+      <p class="lede">A complete, source-backed reference to every unit type in the OpenDUNE engine — from the humble Soldier to the Death Hand, Sandworm, and the projectiles that make them dangerous.</p>
+      <div class="summary" aria-label="Unit summary">
+        <div class="stat"><strong>27</strong><span>engine unit types</span></div>
+        <div class="stat"><strong>18</strong><span>campaign / field units</span></div>
+        <div class="stat"><strong>9</strong><span>internal weapons &amp; objects</span></div>
+      </div>
+    </header>
+
+    <section class="content" aria-labelledby="table-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Complete unit list</p>
+          <h2 id="table-title">Know your forces</h2>
+        </div>
+        <p>Use the filters or search across names, roles, movement types, weapons, access, and notes. On smaller screens, swipe the table horizontally.</p>
+      </div>
+
+      <div class="toolbar" aria-label="Unit table controls">
+        <label class="search-label" for="unit-search" hidden>Search units</label>
+        <input class="search" id="unit-search" type="search" placeholder="Search units, roles, weapons, houses…" autocomplete="off">
+        <button class="filter active" type="button" data-filter="all">All</button>
+        <button class="filter" type="button" data-filter="field">Field units</button>
+        <button class="filter" type="button" data-filter="internal">Internal types</button>
+        <span class="result-count" id="result-count" aria-live="polite">27 of 27 shown</span>
+      </div>
+
+      <div class="table-shell">
+        <div class="sticky-header" id="sticky-header" aria-hidden="true"></div>
+        <div class="table-scroll">
+          <table id="units-table">
+          <colgroup>
+            <col class="id"><col class="unit"><col class="role"><col class="movement">
+            <col class="number"><col class="number"><col class="number"><col class="weapon">
+            <col class="number"><col class="rate"><col class="rate"><col class="number"><col class="access"><col class="notes">
+          </colgroup>
+          <caption>Stats reflect the OpenDUNE <code>UnitInfo</code> records. Rate of fire and DPS are sustained estimates at normal game speed; see the calculation note below.</caption>
+          <thead>
+            <tr>
+              <th scope="col">ID</th>
+              <th scope="col">Unit</th>
+              <th scope="col">Category / role</th>
+              <th scope="col">Movement</th>
+              <th scope="col">HP</th>
+              <th scope="col">Cost</th>
+              <th scope="col">Build time</th>
+              <th scope="col">Weapon / projectile</th>
+              <th scope="col">Damage</th>
+              <th scope="col">Rate of fire*</th>
+              <th scope="col">Est. DPS*</th>
+              <th scope="col">Range</th>
+              <th scope="col">Houses / access</th>
+              <th scope="col">Key characteristics</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-kind="field" data-search="carryall transport winged none all support transport automatically carries harvesters pickup selectable">
+              <td class="num">0</td><td><span class="unit-name">Carryall</span></td><td><span class="pill">Transport</span></td><td>Winged</td><td class="num">100</td><td class="num">800</td><td class="num">64</td><td>None</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td>All; support transport</td><td>Automatically carries harvesters and other pickup-capable units; cannot be directly selected.</td>
+            </tr>
+            <tr data-kind="field" data-search="ornithopter thopter air attack winged missile trooper atreides ordos fremen sardaukar mercenary ix upgrade fires twice explodes air">
+              <td class="num">1</td><td><span class="unit-name">Ornithopter</span> <span class="muted">('Thopter)</span></td><td><span class="pill">Air attack unit</span></td><td>Winged</td><td class="num">25</td><td class="num">600</td><td class="num">96</td><td>Missile Trooper</td><td class="num">50</td><td class="num">2.29/s</td><td class="num">114.3</td><td class="num">50</td><td>Atreides, Ordos, Fremen, Sardaukar, Mercenary; House of Ix, upgrade 1</td><td>Fires twice; explodes on death; can target air units.</td>
+            </tr>
+            <tr data-kind="field" data-search="infantry light infantry squad foot bullet atreides ordos fremen sardaukar mercenary upgrade fires twice basic">
+              <td class="num">2</td><td><span class="unit-name">Infantry</span></td><td><span class="pill">Light infantry squad</span></td><td>Foot</td><td class="num">50</td><td class="num">100</td><td class="num">32</td><td>Bullet</td><td class="num">3</td><td class="num">2.53/s</td><td class="num">7.6</td><td class="num">2</td><td>Atreides, Ordos, Fremen, Sardaukar, Mercenary; upgrade 1</td><td>Fires twice; basic foot unit.</td>
+            </tr>
+            <tr data-kind="field" data-search="troopers heavy infantry squad foot bullet harkonnen ordos fremen sardaukar mercenary upgrade air">
+              <td class="num">3</td><td><span class="unit-name">Troopers</span></td><td><span class="pill">Heavy infantry squad</span></td><td>Foot</td><td class="num">110</td><td class="num">200</td><td class="num">56</td><td>Bullet</td><td class="num">5</td><td class="num">2.29/s</td><td class="num">11.4</td><td class="num">5</td><td>Harkonnen, Ordos, Fremen, Sardaukar, Mercenary; upgrade 1</td><td>Fires twice; can target air units; tougher and longer-ranged than Infantry.</td>
+            </tr>
+            <tr data-kind="field" data-search="soldier light infantry soldier foot bullet all wobble">
+              <td class="num">4</td><td><span class="unit-name">Soldier</span></td><td><span class="pill">Light infantry soldier</span></td><td>Foot</td><td class="num">20</td><td class="num">60</td><td class="num">32</td><td>Bullet</td><td class="num">3</td><td class="num">1.33/s</td><td class="num">4.0</td><td class="num">2</td><td>All</td><td>Does not have the squad's two-shot flag; can wobble on suitable terrain.</td>
+            </tr>
+            <tr data-kind="field" data-search="trooper heavy infantry soldier foot bullet harkonnen ordos sardaukar mercenary air wobble">
+              <td class="num">5</td><td><span class="unit-name">Trooper</span></td><td><span class="pill">Heavy infantry soldier</span></td><td>Foot</td><td class="num">45</td><td class="num">100</td><td class="num">56</td><td>Bullet</td><td class="num">5</td><td class="num">1.20/s</td><td class="num">6.0</td><td class="num">5</td><td>Harkonnen, Ordos, Sardaukar, Mercenary</td><td>Can target air units; can wobble on suitable terrain.</td>
+            </tr>
+            <tr data-kind="field" data-search="saboteur special infiltrator foot bullet sabotage ordos fast structure">
+              <td class="num">6</td><td><span class="unit-name">Saboteur</span></td><td><span class="pill">Special infiltrator</span></td><td>Foot</td><td class="num">10</td><td class="num">120</td><td class="num">48</td><td>Bullet / sabotage</td><td class="num">2</td><td class="num">1.33/s</td><td class="num">2.7</td><td class="num">2</td><td>Ordos; special unit</td><td>Fast; has a Sabotage command; intended to destroy structures.</td>
+            </tr>
+            <tr data-kind="field" data-search="launcher artillery tracked rocket harkonnen atreides fremen sardaukar mercenary upgrade air fires twice">
+              <td class="num">7</td><td><span class="unit-name">Launcher</span></td><td><span class="pill">Long-range artillery</span></td><td>Tracked</td><td class="num">100</td><td class="num">450</td><td class="num">72</td><td>Rocket</td><td class="num">75</td><td class="num">0.98/s</td><td class="num">73.5</td><td class="num">9</td><td>Harkonnen, Atreides, Fremen, Sardaukar, Mercenary; upgrade 2</td><td>Fires twice; explodes on death; can target air units; leaves tracked marks.</td>
+            </tr>
+            <tr data-kind="field" data-search="deviator gas artillery tracked grocket rocket deviator ordos ix deviates explodes">
+              <td class="num">8</td><td><span class="unit-name">Deviator</span></td><td><span class="pill">Gas artillery</span></td><td>Tracked</td><td class="num">120</td><td class="num">750</td><td class="num">80</td><td>GRocket / deviator gas</td><td class="num">0</td><td class="num">0.33/s</td><td class="num">0 (control)</td><td class="num">7</td><td>Ordos; House of Ix</td><td>Applies area deviation, not HP damage; the GRocket template's 75 is not used for this attack.</td>
+            </tr>
+            <tr data-kind="field" data-search="tank main battle tracked bullet all turret explodes marks">
+              <td class="num">9</td><td><span class="unit-name">Tank</span></td><td><span class="pill">Main battle tank</span></td><td>Tracked</td><td class="num">200</td><td class="num">300</td><td class="num">64</td><td>Bullet</td><td class="num">25</td><td class="num">0.75/s</td><td class="num">18.8</td><td class="num">4</td><td>All</td><td>Turreted; explodes on death; leaves tracked marks.</td>
+            </tr>
+            <tr data-kind="field" data-search="siege tank heavy tracked bullet all upgrade turret fires twice explodes marks">
+              <td class="num">10</td><td><span class="unit-name">Siege Tank</span></td><td><span class="pill">Heavy tank</span></td><td>Tracked</td><td class="num">300</td><td class="num">600</td><td class="num">96</td><td>Bullet</td><td class="num">30</td><td class="num">1.30/s</td><td class="num">38.9</td><td class="num">5</td><td>All; upgrade 3</td><td>Turreted; fires twice; explodes on death; leaves tracked marks.</td>
+            </tr>
+            <tr data-kind="field" data-search="devastator super heavy tank tracked bullet harkonnen fremen sardaukar mercenary ix turret fires twice self destruct">
+              <td class="num">11</td><td><span class="unit-name">Devastator</span></td><td><span class="pill">Super-heavy tank</span></td><td>Tracked</td><td class="num">400</td><td class="num">800</td><td class="num">104</td><td>Bullet</td><td class="num">40</td><td class="num">1.17/s</td><td class="num">46.8</td><td class="num">5</td><td>Harkonnen, Fremen, Sardaukar, Mercenary; House of Ix</td><td>Turreted; fires twice; explodes on death; has a self-destruct command.</td>
+            </tr>
+            <tr data-kind="field" data-search="sonic tank sonic weapon tracked sonic blast atreides fremen sardaukar mercenary ix protected explodes">
+              <td class="num">12</td><td><span class="unit-name">Sonic Tank</span></td><td><span class="pill">Sonic weapon tank</span></td><td>Tracked</td><td class="num">110</td><td class="num">600</td><td class="num">104</td><td>Sonic Blast</td><td class="num">60</td><td class="num">0.75/s</td><td class="num">special†</td><td class="num">8</td><td>Atreides, Fremen, Sardaukar, Mercenary; House of Ix</td><td>Sonic wave damages each tile it crosses in pulses; protected from sonic-blast damage; explodes on death.</td>
+            </tr>
+            <tr data-kind="field" data-search="trike light attack vehicle wheeled bullet atreides fremen sardaukar mercenary fires twice fast explodes">
+              <td class="num">13</td><td><span class="unit-name">Trike</span></td><td><span class="pill">Light attack vehicle</span></td><td>Wheeled</td><td class="num">100</td><td class="num">150</td><td class="num">40</td><td>Bullet</td><td class="num">5</td><td class="num">2.29/s</td><td class="num">11.4</td><td class="num">3</td><td>Atreides, Fremen, Sardaukar, Mercenary</td><td>Fires twice; fast and maneuverable; explodes on death.</td>
+            </tr>
+            <tr data-kind="field" data-search="raider trike fast attack vehicle wheeled bullet ordos fremen sardaukar mercenary fires twice">
+              <td class="num">14</td><td><span class="unit-name">Raider Trike</span></td><td><span class="pill">Fast attack vehicle</span></td><td>Wheeled</td><td class="num">80</td><td class="num">150</td><td class="num">40</td><td>Bullet</td><td class="num">5</td><td class="num">2.29/s</td><td class="num">11.4</td><td class="num">3</td><td>Ordos, Fremen, Sardaukar, Mercenary</td><td>Faster than the Trike; fires twice; explodes on death.</td>
+            </tr>
+            <tr data-kind="field" data-search="quad heavy attack vehicle wheeled bullet all upgrade fires twice explodes">
+              <td class="num">15</td><td><span class="unit-name">Quad</span></td><td><span class="pill">Heavy attack vehicle</span></td><td>Wheeled</td><td class="num">130</td><td class="num">200</td><td class="num">48</td><td>Bullet</td><td class="num">7</td><td class="num">2.29/s</td><td class="num">16.0</td><td class="num">3</td><td>All; upgrade 1</td><td>Fires twice; explodes on death.</td>
+            </tr>
+            <tr data-kind="field" data-search="harvester spice harvester harvester none all refinery carryall explodes">
+              <td class="num">16</td><td><span class="unit-name">Harvester</span></td><td><span class="pill">Spice harvester</span></td><td>Harvester</td><td class="num">150</td><td class="num">300</td><td class="num">64</td><td>None</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td>All; refinery support</td><td>Collects spice and returns it to a Refinery; can be carried by a Carryall; explodes on death.</td>
+            </tr>
+            <tr data-kind="field" data-search="mcv mobile construction vehicle tracked none all upgrade deploy construction yard explodes">
+              <td class="num">17</td><td><span class="unit-name">MCV</span></td><td><span class="pill">Mobile construction vehicle</span></td><td>Tracked</td><td class="num">150</td><td class="num">900</td><td class="num">80</td><td>None</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td>All; upgrade 1</td><td>Deploys into a Construction Yard; explodes on death.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="death hand house superweapon projectile winged warhead harkonnen internal missile">
+              <td class="num">18</td><td><span class="unit-name">Death Hand</span></td><td><span class="pill">Superweapon projectile</span></td><td>Winged</td><td class="num">70</td><td class="num">—</td><td class="num">—</td><td>Death Hand warhead</td><td class="num">100</td><td class="num">—</td><td class="num">—</td><td class="num">15</td><td>Harkonnen; internal weapon</td><td>House missile object; not a normal selectable or buildable unit.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="rocket launcher projectile winged explosive rocket internal inaccurate sand animated">
+              <td class="num">19</td><td><span class="unit-name">Rocket</span></td><td><span class="pill">Launcher projectile</span></td><td>Winged</td><td class="num">70</td><td class="num">—</td><td class="num">—</td><td>Explosive rocket</td><td class="num">75</td><td class="num">—</td><td class="num">—</td><td class="num">8</td><td>Internal weapon</td><td>Inaccurate; creates an impact on sand; animated projectile.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="arocket turret advanced rocket projectile winged explosive accurate long range sand internal">
+              <td class="num">20</td><td><span class="unit-name">ARocket</span></td><td><span class="pill">Advanced rocket projectile</span></td><td>Winged</td><td class="num">70</td><td class="num">—</td><td class="num">—</td><td>Explosive rocket</td><td class="num">75</td><td class="num">—</td><td class="num">—</td><td class="num">60</td><td>Internal weapon</td><td>Accurate, long-range rocket; creates an impact on sand; animated projectile.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="grocket deviator projectile winged gas inaccurate internal effect">
+              <td class="num">21</td><td><span class="unit-name">GRocket</span></td><td><span class="pill">Deviator projectile</span></td><td>Winged</td><td class="num">70</td><td class="num">—</td><td class="num">—</td><td>Deviator gas</td><td class="num">75†</td><td class="num">—</td><td class="num">—</td><td class="num">7</td><td>Internal weapon</td><td>Its static 75 is not passed by the Deviator; impact applies deviation, not direct HP damage.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="minirocket missile trooper projectile winged mini rocket internal animated short range explosion">
+              <td class="num">22</td><td><span class="unit-name">MiniRocket</span></td><td><span class="pill">Missile Trooper projectile</span></td><td>Winged</td><td class="num">70</td><td class="num">—</td><td class="num">—</td><td>Mini-rocket</td><td class="num">0</td><td class="num">—</td><td class="num">—</td><td class="num">3</td><td>Internal weapon</td><td>Animated short-range projectile; damage is applied through its explosion/effect handling.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="bullet standard projectile winged internal short lived impact">
+              <td class="num">23</td><td><span class="unit-name">Bullet</span></td><td><span class="pill">Standard projectile</span></td><td>Winged</td><td class="num">1</td><td class="num">—</td><td class="num">—</td><td>Bullet</td><td class="num">0</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td>Internal weapon</td><td>Short-lived projectile; explodes on impact.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="sonic blast sonic tank effect winged sonic wave area protected internal">
+              <td class="num">24</td><td><span class="unit-name">Sonic Blast</span></td><td><span class="pill">Sonic Tank effect</span></td><td>Winged</td><td class="num">1</td><td class="num">—</td><td class="num">—</td><td>Sonic wave</td><td class="num">25</td><td class="num">—</td><td class="num">special†</td><td class="num">10</td><td>Internal weapon / effect</td><td>Area effect; ignores units with sonic protection.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="sandworm native creature hazard slither swallow bite fremen scenario sand three eat cannot deviated">
+              <td class="num">25</td><td><span class="unit-name">Sandworm</span></td><td><span class="pill">Native creature / hazard</span></td><td>Slither</td><td class="num">1000</td><td class="num">—</td><td class="num">—</td><td>Swallow / bite</td><td class="num">300</td><td class="num">special</td><td class="num">special</td><td class="num">—</td><td>Fremen scenario unit</td><td>Can swallow units on sand; starts with three units to eat; cannot be deviated.</td>
+            </tr>
+            <tr class="internal" data-kind="internal" data-search="frigate transport starport winged none system object delivery ship internal">
+              <td class="num">26</td><td><span class="unit-name">Frigate</span></td><td><span class="pill">Transport / Starport object</span></td><td>Winged</td><td class="num">100</td><td class="num">—</td><td class="num">—</td><td>None</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td>Starport system object</td><td>Represents the ship that delivers Starport orders; not a normal combat unit.</td>
+            </tr>
+          </tbody>
+          </table>
+        </div>
+        <div class="empty" id="empty-state">No units match that search.</div>
+      </div>
+
+      <div class="notes">
+        <details open>
+          <summary>How to read the stats</summary>
+          <ul>
+            <li><strong>Cost</strong> and <strong>Build time</strong> are the engine's <code>ObjectInfo</code> values. Build time is not seconds.</li>
+            <li><strong>Range</strong> is the engine's <code>fireDistance</code> value.</li>
+            <li><strong>Damage</strong> is the listed unit or projectile's <code>damage</code> value. A unit can launch a projectile with its own damage value.</li>
+            <li><strong>Rate of fire</strong> and <strong>Est. DPS</strong> assume normal speed (120 game ticks per second), sustained firing, a full-health unit, every shot hitting, and no travel time or target-specific effects. The engine adds a negligible 0–1 tick random variation.</li>
+            <li>For a normal weapon, rate = <code>60 / fireDelay</code> shots/s. For a two-shot weapon, rate = <code>240 / (2 × fireDelay + 5)</code> shots/s; the five-tick delay is the short gap between paired shots. DPS is rate × direct damage.</li>
+            <li><strong>† Special effects:</strong> Deviator damage is zero because its gas only applies deviation. Sonic waves damage each crossed tile in pulses, so a single target's DPS depends on the path and cannot be represented by one honest fixed value.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>House availability</summary>
+          <p>House access is transcribed from the engine's availability flags. <strong>All</strong> means Harkonnen, Atreides, Ordos, Fremen, Sardaukar, and Mercenary. Internal weapon types are not buildable units even when their house mask is <code>All</code>.</p>
+        </details>
+        <details>
+          <summary>Source files</summary>
+          <p>Unit enumeration: <a href="src/unit.h">src/unit.h</a>. Unit records: <a href="src/table/unitinfo.c">src/table/unitinfo.c</a>. Movement names: <a href="src/table/movementtype.c">src/table/movementtype.c</a>. House and structure flags: <a href="src/house.h">src/house.h</a> and <a href="src/structure.h">src/structure.h</a>.</p>
+        </details>
+      </div>
+
+      <footer>OpenDUNE / Dune II · static reference page · <a href="units.md">View the Markdown source</a></footer>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const rows = [...document.querySelectorAll('#units-table tbody tr')];
+      const buttons = [...document.querySelectorAll('.filter')];
+      const search = document.querySelector('#unit-search');
+      const count = document.querySelector('#result-count');
+      const empty = document.querySelector('#empty-state');
+      const tableScroll = document.querySelector('.table-scroll');
+      const sourceTable = document.querySelector('#units-table');
+      const stickyHeader = document.querySelector('#sticky-header');
+      let filter = 'all';
+
+      // Keep the header outside the horizontal scroll container so it can
+      // remain pinned to the viewport while the table body moves underneath.
+      const stickyTable = sourceTable.cloneNode(true);
+      stickyTable.id = 'units-sticky-table';
+      stickyTable.setAttribute('aria-hidden', 'true');
+      stickyTable.querySelector('caption').remove();
+      stickyTable.querySelector('tbody').remove();
+      stickyHeader.appendChild(stickyTable);
+      tableScroll.addEventListener('scroll', () => {
+        stickyTable.style.transform = `translateX(-${tableScroll.scrollLeft}px)`;
+      }, { passive: true });
+
+      function update() {
+        const query = search.value.trim().toLowerCase();
+        let visible = 0;
+        rows.forEach(row => {
+          const matchesKind = filter === 'all' || row.dataset.kind === filter;
+          const matchesSearch = !query || row.dataset.search.includes(query);
+          const show = matchesKind && matchesSearch;
+          row.hidden = !show;
+          if (show) visible++;
+        });
+        count.textContent = `${visible} of ${rows.length} shown`;
+        empty.style.display = visible ? 'none' : 'block';
+      }
+
+      buttons.forEach(button => button.addEventListener('click', () => {
+        filter = button.dataset.filter;
+        buttons.forEach(item => item.classList.toggle('active', item === button));
+        update();
+      }));
+      search.addEventListener('input', update);
+    })();
+  </script>
+</body>
+</html>

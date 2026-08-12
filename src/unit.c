@@ -423,6 +423,21 @@ static void Unit_AttackPosition_SetAutomatic(Unit *unit, ActionType returnAction
 	s_attackPositionNextCheck[unit->o.index] = g_timerGame + (unit->o.index % 7) * 3;
 }
 
+/* A sandworm travels through sand and cannot touch rock, so a unit that engages
+ * one has exactly one safe place to do it from.  Firing back from a dune only
+ * offers the worm its next meal, and driving after one is worse still.  The
+ * restriction is deliberately independent of the House: which units bother to
+ * shoot at a worm is a matter of target priority, but where they may stand
+ * while doing it is not. */
+static bool Unit_AttackPosition_IsFiringTileAllowed(uint16 target, uint16 packed)
+{
+	const Unit *targetUnit = Tools_Index_GetUnit(target);
+
+	if (targetUnit == NULL || targetUnit->o.type != UNIT_SANDWORM) return true;
+
+	return !g_table_landscapeInfo[Map_GetLandscapeType(packed)].isSand;
+}
+
 /* Estimate the fastest reachable firing tile with exactly the same terrain,
  * movement speed and route calculation used by firing-position reservations. */
 static bool Unit_AttackPosition_EstimateTravel(Unit *unit, uint16 target, uint32 *travelTicks)
@@ -485,6 +500,7 @@ static bool Unit_AttackPosition_EstimateTravel(Unit *unit, uint16 target, uint32
 			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
 			packed = Tile_PackXY(x, y);
 			if (!Map_IsValidPosition(packed) || Object_GetByPackedTile(packed) != NULL) continue;
+			if (!Unit_AttackPosition_IsFiringTileAllowed(target, packed)) continue;
 			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
 			if (!Script_Unit_HasRoute(unit, packedSource, packed, &ticks)) continue;
 
@@ -613,6 +629,7 @@ static void Unit_AttackPosition_Update(Unit *unit)
 			packed = Tile_PackXY(x, y);
 			if (!Map_IsValidPosition(packed) || packed == packedSource) continue;
 			if (Object_GetByPackedTile(packed) != NULL) continue;
+			if (!Unit_AttackPosition_IsFiringTileAllowed(unit->targetAttack, packed)) continue;
 			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
 			if (!Script_Unit_HasRoute(unit, packedSource, packed, &travelTicks)) continue;
 
@@ -649,12 +666,26 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	if (bestPacked == 0) {
 		if (refreshedOldETA != 0) s_attackPositionETA[unit->o.index] = refreshedOldETA;
 		else {
+			const Unit *targetUnit = Tools_Index_GetUnit(unit->targetAttack);
+
 			Unit_AttackPosition_Clear(unit);
-			/* All viable firing spots may already be reserved.  Keep turreted
-			 * units advancing toward the target instead of leaving targetMove
-			 * at zero; the next tactical pass can then assign an opened slot. */
-			if (fallbackPacked != 0) Unit_SetDestination(unit, Tools_Index_Encode(fallbackPacked, IT_TILE));
-			else if (ui->o.flags.hasTurret) Unit_SetDestination(unit, unit->targetAttack);
+			if (targetUnit != NULL && targetUnit->o.type == UNIT_SANDWORM) {
+				/* No rock in reach: hold instead of rolling onto the sand after
+				 * the worm.  currentDestination stays untouched so the step in
+				 * progress can finish; dropping targetMove is what stops the
+				 * chase, including the target the guard scripts write there
+				 * themselves for turretless units. */
+				unit->targetMove = 0;
+				unit->route[0] = 0xFF;
+				Unit_Autonomy_ReturnToPost(unit);
+			} else if (fallbackPacked != 0) {
+				/* All viable firing spots may already be reserved.  Keep the
+				 * unit advancing toward the target instead of leaving targetMove
+				 * at zero; the next tactical pass can assign an opened slot. */
+				Unit_SetDestination(unit, Tools_Index_Encode(fallbackPacked, IT_TILE));
+			} else if (ui->o.flags.hasTurret) {
+				Unit_SetDestination(unit, unit->targetAttack);
+			}
 		}
 		return;
 	}
@@ -693,10 +724,23 @@ static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
 
 static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 {
+	uint16 fireDistance;
+
 	if (s_manualHunt[unit->o.index]) return 63;
+
+	/* The radius is measured from the post, and a unit stops as soon as its
+	 * target is within its own weapon range, so what it really controls is how
+	 * far the unit may leave the post: radius minus fireDistance.  A flat
+	 * radius therefore meant something different for every unit, and for Rocket
+	 * Troopers (range 5, radius 5) it meant zero - they only ever acquired what
+	 * they could already shoot and never took a step.  Both modes are now
+	 * defined by that margin instead: Guard leaves the post by at most five
+	 * tiles whatever the unit carries, Area Guard keeps its wider fixed area. */
+	fireDistance = g_table_unitInfo[unit->o.type].fireDistance;
+
 	switch (unit->actionID) {
-		case ACTION_GUARD:      return 5;
-		case ACTION_AREA_GUARD: return 14;
+		case ACTION_GUARD:      return max(5, fireDistance + 5);
+		case ACTION_AREA_GUARD: return max(14, fireDistance + 5);
 		case ACTION_HUNT:       return 63;
 		default:                return 0;
 	}
@@ -940,11 +984,38 @@ static void Unit_Autonomy_BeginAttack(Unit *unit, uint16 target)
 	Unit_SetTarget(unit, target);
 }
 
+/* True when the unit is aimed at a sandworm it may not approach: out of range,
+ * and no rock tile in weapon reach to take it under fire from.  Standing on
+ * sand is not in itself a reason to move - a worm already within range is shot
+ * at from where the unit stands, exactly as the guard scripts would. */
+static bool Unit_Autonomy_SandwormOutOfReach(Unit *unit)
+{
+	const Unit *target = Tools_Index_GetUnit(unit->targetAttack);
+
+	if (target == NULL || target->o.type != UNIT_SANDWORM) return false;
+	if (s_manualHunt[unit->o.index] || unit->actionID == ACTION_HUNT) return false;
+
+	return !Unit_AttackPosition_EstimateTravel(unit, unit->targetAttack, NULL);
+}
+
 static void Unit_Autonomy_Update(Unit *unit)
 {
 	uint16 target;
 
 	if (!Unit_Autonomy_IsCombatUnit(unit)) return;
+
+	/* Guard and Area Guard never walk into the sand after a worm.  This runs
+	 * ahead of the sortie bookkeeping below because the chase can equally be
+	 * started by the original script, which writes the worm straight into
+	 * targetMove for every unit without a turret. */
+	if (Unit_Autonomy_SandwormOutOfReach(unit)) {
+		Unit_AttackPosition_Clear(unit);
+		unit->targetMove = 0;
+		unit->route[0] = 0xFF;
+		Unit_Autonomy_ReturnToPost(unit);
+		return;
+	}
+
 	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_ENGAGING) {
 		/* Original Guard / Area Guard scripts can fight without changing their
 		 * action ID.  A live target keeps the sortie active regardless of whether
@@ -1226,15 +1297,31 @@ void Unit_Harvester_BeginOrder(Unit *unit, ActionType action)
 	tracker->refineryStalledSince = 0;
 }
 
+/* Abandon the computed route, but never while the unit is between two tiles.
+ *
+ * currentDestination is the tile the current step is aimed at.  Clearing it
+ * mid-step makes Unit_Move() measure progress against tile (0,0) instead: the
+ * arrival test fires on the very next tick and Unit_SetSpeed(unit, 0) strands
+ * the harvester at a half-tile offset, typically right in the refinery doorway.
+ * Letting the step finish costs one tile - the arrival code clears
+ * currentDestination itself, and Script_Unit_CalculateRoute() refuses to
+ * re-path before that in any case. */
+static void Unit_Harvester_StopRoute(Unit *unit)
+{
+	unit->route[0] = 0xFF;
+	if (unit->speed != 0) return;
+
+	unit->currentDestination.x = 0;
+	unit->currentDestination.y = 0;
+}
+
 /** Drop any order state that keeps a harvester waiting instead of driving. */
 static void Unit_Harvester_ClearOrder(Unit *unit)
 {
 	Unit_Harvester_CancelPickup(unit);
 	Object_Script_Variable4_Clear(&unit->o);
 	unit->targetMove = 0;
-	unit->currentDestination.x = 0;
-	unit->currentDestination.y = 0;
-	unit->route[0] = 0xFF;
+	Unit_Harvester_StopRoute(unit);
 }
 
 /** Send the harvester to a spice tile as a fresh Harvest order. */
@@ -1435,9 +1522,7 @@ static void Unit_Harvester_RecoverRefinery(Unit *unit)
 	 * carryall and the harvester reserved, which is how a blocked entrance used
 	 * to consume every transport in the house and park the harvesters for good.
 	 * originEncoded is left alone as well; it belongs to the original script. */
-	unit->route[0] = 0xFF;
-	unit->currentDestination.x = 0;
-	unit->currentDestination.y = 0;
+	Unit_Harvester_StopRoute(unit);
 }
 
 /* Watchdog for a loaded harvester.  Whatever left it without an order - a
@@ -1656,9 +1741,13 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 	Unit_SetAction(unit, action);
 
 	if (action == ACTION_MOVE) {
-		/* A player-directed move relocates the default Area Guard post. The
-		 * completion hook below replaces this with the exact arrival tile. */
+		/* A player-directed move relocates the post; the completion hook replaces
+		 * this with the exact arrival tile.  It also decides what the unit does
+		 * once it is there: a Move is how the player places a unit somewhere, so
+		 * it settles into the tight Guard, while an Attack order leaves it in the
+		 * wide Area Guard where the fight was. */
 		Unit_SetGuardPosition(unit, packed);
+		Unit_SetGuardAction(unit, ACTION_GUARD);
 		Unit_SetDestination(unit, encoded);
 	} else if (action == ACTION_HARVEST) {
 		unit->harvestCenter = packed;
@@ -1674,6 +1763,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 		}
 	} else {
 		Unit_SetTarget(unit, encoded);
+		if (action == ACTION_ATTACK || action == ACTION_AMBUSH) Unit_SetGuardAction(unit, ACTION_AREA_GUARD);
 		if (action == ACTION_ATTACK) Unit_AttackPosition_SetManual(unit, true);
 		unit = Tools_Index_GetUnit(unit->targetAttack);
 		if (unit != NULL) unit->blinkCounter = 8;
@@ -2204,6 +2294,17 @@ void Unit_SetAction(Unit *u, ActionType action)
 	}
 }
 
+/* Remember the guard mode the player actually picked.  ACTION_ATTACK (0) is
+ * never a guard mode, so a zero field means "player never chose" and old saves
+ * keep the previous behaviour. */
+void Unit_SetGuardAction(Unit *u, ActionType action)
+{
+	if (u == NULL) return;
+	if (action != ACTION_GUARD && action != ACTION_AREA_GUARD) return;
+
+	u->guardAction = action;
+}
+
 /* Player combat units default to a wider local defence. Harvesters, special
  * units and AI retain their original table-driven default actions. */
 ActionType Unit_GetDefaultAction(const Unit *u)
@@ -2214,6 +2315,14 @@ ActionType Unit_GetDefaultAction(const Unit *u)
 	ui = &g_table_unitInfo[u->o.type];
 	if (u->o.houseID == g_playerHouseID && ui->flags.isNormalUnit && ui->flags.isGroundUnit && ui->fireDistance != 0 &&
 		(ui->movementType == MOVEMENT_FOOT || ui->movementType == MOVEMENT_TRACKED || ui->movementType == MOVEMENT_WHEELED)) {
+		/* An explicit order outranks the fork's wider default.  The original
+		 * attack script ends a finished fight with SetAction(ACTION_MOVE) when
+		 * targetMove is still set (UNIT.EMC word 238), and the move script exits
+		 * through SetActionDefault, which lands here.  Every unit that had to
+		 * close in on its target - anything whose range is below its guard
+		 * radius - therefore came back from its first sortie promoted from
+		 * Guard to Area Guard, while units that fired from the spot kept Guard. */
+		if (u->guardAction == ACTION_GUARD || u->guardAction == ACTION_AREA_GUARD) return (ActionType)u->guardAction;
 		return ACTION_AREA_GUARD;
 	}
 
@@ -2325,8 +2434,30 @@ ActionType Unit_GetDefaultActionAfterCompletion(Unit *u)
 		return action;
 	}
 
-	if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID &&
-		(u->actionID == ACTION_MOVE || (u->actionID == ACTION_ATTACK && s_attackPositionManual[u->o.index] && s_autonomousPost[u->o.index].state != AUTONOMOUS_POST_ENGAGING))) {
+	if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID && u->actionID == ACTION_MOVE) {
+		uint16 packed = Tile_PackTile(u->o.position);
+
+		/* Not every completed Move is a player order.  The original attack
+		 * script ends a finished fight with SetAction(ACTION_MOVE) (UNIT.EMC
+		 * word 238), and the sortie can already have lost its ENGAGING mark by
+		 * then - Unit_Autonomy_ReturnToPost() clears the post before it decides
+		 * how to return, and its Unit_SetAction() is deferred into nextActionID
+		 * while the unit is still between two tiles.  Re-anchoring there moved
+		 * the post a couple of tiles forward after every skirmish, which is how
+		 * a defensive line walked into the enemy over a few waves.
+		 *
+		 * A player Move anchors the post on its destination tile when the order
+		 * is given (UnitSelection_ResetOrder), so arriving at one's own post is
+		 * the signature of a real order; this then only refines the post to the
+		 * tile actually reached.  Anything that ends far from the post is combat
+		 * movement and leaves the post alone. */
+		if (!Map_IsValidPosition(u->guardPosition) || Tile_GetDistancePacked(packed, u->guardPosition) <= 2) {
+			Unit_SetGuardPosition(u, packed);
+		}
+	} else if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID && u->actionID == ACTION_ATTACK &&
+		s_attackPositionManual[u->o.index] && s_autonomousPost[u->o.index].state != AUTONOMOUS_POST_ENGAGING) {
+		/* A player-issued Attack is a manual order: where it ends is the new
+		 * post, exactly as before. */
 		Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
 	}
 
@@ -3788,6 +3919,19 @@ uint16 UnitSelection_GetActionCount(ActionType action)
 }
 
 /** Map the eight compact group-command rows to their command categories. */
+/* Translation between a unit's command table and the player's action panel.
+ * The table's Guard is offered as Area Guard: plain Guard is what a unit falls
+ * back to by itself after a Move, so the command is worth more to the player as
+ * the wide defensive mode.  Shift asks for the narrow one, the same way it asks
+ * for Ambush behind Attack.  The keyboard shortcut stays with the table entry,
+ * so the command is still G and does not collide with Attack. */
+ActionType UnitSelection_GetPanelAction(ActionType action, bool narrow)
+{
+	if (action == ACTION_GUARD) return narrow ? ACTION_GUARD : ACTION_AREA_GUARD;
+
+	return action;
+}
+
 ActionType UnitSelection_GetActionForSlot(uint16 slot)
 {
 	static const ActionType actions[] = {
@@ -3924,7 +4068,10 @@ bool UnitSelection_BeginAction(ActionType action)
 		unit->targetAttack = 0;
 		unit->targetMove = 0;
 		unit->route[0] = 0xFF;
-		if (unitAction == ACTION_GUARD || unitAction == ACTION_AREA_GUARD) Unit_SetGuardPosition(unit, Tile_PackTile(unit->o.position));
+		if (unitAction == ACTION_GUARD || unitAction == ACTION_AREA_GUARD) {
+			Unit_SetGuardPosition(unit, Tile_PackTile(unit->o.position));
+			Unit_SetGuardAction(unit, unitAction);
+		}
 		Unit_SetAction(unit, unitAction);
 	}
 

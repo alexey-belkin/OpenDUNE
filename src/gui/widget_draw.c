@@ -66,7 +66,7 @@ void GUI_Widget_TextButton_Draw(Widget *w)
 			ActionType special = UnitSelection_GetSpecialAction();
 			label = (special == ACTION_INVALID) ? "SPECIAL" : GUI_String_Get_ByIndex(g_table_actionInfo[special].stringID);
 		} else if (action != ACTION_INVALID) {
-			label = GUI_String_Get_ByIndex(g_table_actionInfo[action].stringID);
+			label = GUI_String_Get_ByIndex(g_table_actionInfo[UnitSelection_GetPanelAction(action, false)].stringID);
 		}
 
 		snprintf(groupLabel, sizeof(groupLabel), "%s %u/%u", label, count, g_unitSelectionCount);
@@ -794,7 +794,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 							if (groupAction == ACTION_INVALID) continue;
 
 							buttons[i]->offsetY = 47 + i * 11;
-							buttons[i]->stringID = (groupAction == ACTION_MAX) ? STR_NULL : g_table_actionInfo[groupAction].stringID;
+							buttons[i]->stringID = (groupAction == ACTION_MAX) ? STR_NULL : g_table_actionInfo[UnitSelection_GetPanelAction(groupAction, false)].stringID;
 							buttons[i]->shortcut = 0;
 							buttons[i]->shortcut2 = 0;
 							GUI_Widget_MakeVisible(buttons[i]);
@@ -811,20 +811,26 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 					if (isNotPlayerOwned && o->type != UNIT_HARVESTER) actions = g_table_actionsAI;
 
 					for (i = 0; i < 4; i++) {
-						buttons[i]->stringID = g_table_actionInfo[actions[i]].stringID;
-						buttons[i]->shortcut = GUI_Widget_GetShortcut(String_Get_ByIndex(buttons[i]->stringID)[0]);
+						/* The player's Guard command is presented as Area Guard, but
+						 * its shortcut still comes from the table entry: Area Guard
+						 * would otherwise claim the A of Attack. */
+						uint16 tableStringID = g_table_actionInfo[actions[i]].stringID;
+						ActionType panelAction = (actions == oi->actionsPlayer) ? UnitSelection_GetPanelAction((ActionType)actions[i], false) : (ActionType)actions[i];
+
+						buttons[i]->stringID = g_table_actionInfo[panelAction].stringID;
+						buttons[i]->shortcut = GUI_Widget_GetShortcut(String_Get_ByIndex(tableStringID)[0]);
 						buttons[i]->shortcut2 = buttons[i]->shortcut;
 
 						if (g_config.language == LANGUAGE_FRENCH) {
-							if (buttons[i]->stringID == STR_MOVE) buttons[i]->shortcut2 = 0x27;	/* L key */
-							else if (buttons[i]->stringID == STR_RETURN) buttons[i]->shortcut2 = 0x13;	/* E key */
+							if (tableStringID == STR_MOVE) buttons[i]->shortcut2 = 0x27;	/* L key */
+							else if (tableStringID == STR_RETURN) buttons[i]->shortcut2 = 0x13;	/* E key */
 						} else if (g_config.language == LANGUAGE_GERMAN) {
-							if (buttons[i]->stringID == STR_GUARD) buttons[i]->shortcut2 = 0x17;	/* U key */
+							if (tableStringID == STR_GUARD) buttons[i]->shortcut2 = 0x17;	/* U key */
 						}
 
 						GUI_Widget_MakeVisible(buttons[i]);
 
-						if (actions[i] == actionCurrent) {
+						if (actions[i] == actionCurrent || panelAction == actionCurrent) {
 							GUI_Widget_MakeSelected(buttons[i], false);
 						} else {
 							GUI_Widget_MakeNormal(buttons[i], false);

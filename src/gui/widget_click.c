@@ -281,9 +281,11 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 		action = UnitSelection_GetActionForSlot(slot);
 		if (action == ACTION_INVALID) return true;
 
-		if (g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39))) {
-			if (action == ACTION_GUARD) action = ACTION_AREA_GUARD;
-			else if (action == ACTION_ATTACK) action = ACTION_AMBUSH;
+		{
+			bool narrow = g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39));	/* LSHIFT or RSHIFT */
+
+			action = UnitSelection_GetPanelAction(action, narrow);
+			if (narrow && action == ACTION_ATTACK) action = ACTION_AMBUSH;
 		}
 
 		GUI_Widget_MakeSelected(w, false);
@@ -307,10 +309,13 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 
 	action = actions[w->index - 8];
 	if (g_dune2_enhanced) {
-		if (Input_Test(0x2c) || Input_Test(0x39)) {	/* LSHIFT or RSHIFT is pressed */
-			if (action == ACTION_GUARD) action = ACTION_AREA_GUARD;   /* AREA GUARD instead of GUARD */
-			else if (action == ACTION_ATTACK) action = ACTION_AMBUSH; /* AMBUSH instead of ATTACK */
-		}
+		bool narrow = (Input_Test(0x2c) || Input_Test(0x39)) != 0;	/* LSHIFT or RSHIFT is pressed */
+
+		/* The AI command list keeps its literal meaning; only what the player is
+		 * offered for their own units is translated. */
+		if (actions == ui->o.actionsPlayer) action = UnitSelection_GetPanelAction(action, narrow);
+		if (narrow && action == ACTION_ATTACK) action = ACTION_AMBUSH; /* AMBUSH instead of ATTACK */
+
 		Debug("GUI_Widget_TextButton_Click(%p index=%d) action=%d\n", w, w->index, action);
 	}
 
@@ -347,7 +352,10 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 	u->targetAttack = 0;
 	u->targetMove = 0;
 	u->route[0] = 0xFF;
-	if (action == ACTION_GUARD || action == ACTION_AREA_GUARD) Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
+	if (action == ACTION_GUARD || action == ACTION_AREA_GUARD) {
+		Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
+		Unit_SetGuardAction(u, action);
+	}
 
 	Unit_SetAction(u, action);
 

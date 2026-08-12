@@ -152,6 +152,7 @@ typedef struct Unit {
 	uint16 targetAttack;                                    /*!< Target to attack (encoded index). */
 	uint16 targetMove;                                      /*!< Target to move to (encoded index). */
 	uint16 guardPosition;                                   /*!< Tile the unit returns to after autonomous defence. */
+	uint16 guardAction;                                     /*!< Guard mode the player last ordered; 0 when never ordered. */
 	uint16 harvestCenter;                                   /*!< Player-selected spice field centre for a Harvester. */
 	uint8  harvestHoldPosition;                              /*!< Explicit player Move: wait here instead of resuming harvest. */
 	uint16 repairReturnPosition;                             /*!< Tile a repaired vehicle should return to when it is safe. */
@@ -260,6 +261,8 @@ extern bool Unit_Autonomy_ReturnToPost(Unit *unit);
 extern ActionType Unit_GetDefaultAction(const Unit *u);
 extern ActionType Unit_GetDefaultActionAfterCompletion(Unit *u);
 extern void Unit_SetGuardPosition(Unit *u, uint16 packed);
+extern void Unit_SetGuardAction(Unit *u, ActionType action);
+extern ActionType UnitSelection_GetPanelAction(ActionType action, bool narrow);
 extern void Unit_GetStatusText(const Unit *u, char *state, char *detail, uint16 length);
 extern uint16 Unit_AddToTeam(Unit *u, struct Team *t);
 extern uint16 Unit_RemoveFromTeam(Unit *u);

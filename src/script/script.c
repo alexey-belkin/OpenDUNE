@@ -283,6 +283,12 @@ void Script_Load(ScriptEngine *script, uint8 typeID)
 	if (script->scriptInfo == NULL) return;
 	scriptInfo = script->scriptInfo;
 
+	/* The bytecode may not be loaded yet: the headless self-tests drive real
+	 * objects before GameLoop_Main() reads UNIT.EMC, and a lethal shot there
+	 * reaches Unit_SetAction(ACTION_DIE).  Without the table there is nothing
+	 * to enter, which is exactly what an unloaded scriptInfo already means. */
+	if (scriptInfo->start == NULL || scriptInfo->offsets == NULL || typeID >= scriptInfo->offsetsCount) return;
+
 	Script_Reset(script, scriptInfo);
 
 	script->script = scriptInfo->start + scriptInfo->offsets[typeID];
