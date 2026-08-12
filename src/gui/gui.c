@@ -2264,11 +2264,10 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 {
 	Screen oldScreenID;
 
-	/* Targeting is a modal UI state, not a new selection.  Restore the primary
-	 * display unit from the persistent selection group when closing it. */
-	if (selectionType == SELECTIONTYPE_UNIT) UnitSelection_Reconcile();
-
-	if (selectionType == SELECTIONTYPE_UNIT && g_unitSelected == NULL) {
+	/* A target-command snapshot is restored only after the selection mode has
+	 * actually become UNIT below.  Restoring it here, while the old Target UI
+	 * is still active, lets legacy redraw code erase it again. */
+	if (selectionType == SELECTIONTYPE_UNIT && g_unitSelected == NULL && !UnitSelection_HasTargetingSnapshot()) {
 		selectionType = SELECTIONTYPE_STRUCTURE;
 	}
 
@@ -2348,7 +2347,7 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 			g_textDisplayNeedsUpdate = true;
 		}
 
-		switch (g_selectionType) {
+			switch (g_selectionType) {
 			case SELECTIONTYPE_MENTAT:
 				if (oldSelectionType != SELECTIONTYPE_INTRO) {
 					g_cursorSpriteID = 0;
@@ -2378,6 +2377,9 @@ void GUI_ChangeSelectionType(uint16 selectionType)
 				break;
 
 			case SELECTIONTYPE_UNIT:
+				/* Targeting is modal UI, not a new selection.  Rebuild the
+				 * persistent group now that the Unit panel owns the state. */
+				UnitSelection_Reconcile();
 				GUI_Widget_ActionPanel_Draw(true);
 
 				Timer_SetTimer(TIMER_GAME, true);

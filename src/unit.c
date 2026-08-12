@@ -2769,6 +2769,11 @@ void UnitSelection_AbortTargeting(void)
 	s_unitTargetSelectionCount = 0;
 }
 
+bool UnitSelection_HasTargetingSnapshot(void)
+{
+	return s_unitTargetSelectionActive;
+}
+
 /* Begin the target-command selection transaction.  Both the group command
  * panel and legacy single-unit panel use this entry point. */
 void UnitSelection_BeginTargeting(void)
