@@ -291,6 +291,7 @@ extern void UnitSelection_BeginTargeting(void);
 extern void UnitSelection_SelectSingle(Unit *unit);
 extern void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive);
 extern bool UnitSelection_IsSelected(const Unit *unit);
+extern int UnitSelection_RunRegressionTest(void);
 extern uint16 UnitSelection_GetActionCount(ActionType action);
 extern ActionType UnitSelection_GetActionForSlot(uint16 slot);
 extern ActionType UnitSelection_GetSpecialAction(void);

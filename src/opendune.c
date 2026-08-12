@@ -53,6 +53,7 @@
 #include "inifile.h"
 #include "input/input.h"
 #include "input/mouse.h"
+#include "load.h"
 #include "map.h"
 #include "pool/pool.h"
 #include "pool/house.h"
@@ -101,6 +102,10 @@ uint32 g_readBufferSize = 0;
 static bool  s_debugForceWin = false; /*!< When true, you immediately win the level. */
 
 static uint8 s_enableLog = 0; /*!< 0 = off, 1 = record game, 2 = playback game (stored in 'dune.log'). */
+static bool s_selectionSelfTest = false;
+static int s_selectionSelfTestResult = -1;
+
+static void PrintToConsole(const char *str);
 
 uint16 g_validateStrictIfZero = 0; /*!< 0 = strict validation, basically: no-cheat-mode. */
 bool g_running = true; /*!< true if game needs to keep running; false to stop the game. */
@@ -1005,6 +1010,38 @@ static void GameLoop_Main(void)
 
 	GUI_Mouse_Show_Safe();
 
+	if (s_selectionSelfTest) {
+		static const char *saves[] = { "_SAVE004.DAT", "_SAVE003.DAT", "_SAVE002.DAT", "_SAVE001.DAT", "_SAVE000.DAT" };
+		uint16 tested = 0;
+		uint16 i;
+
+		for (i = 0; i < lengthof(saves); i++) {
+			int result;
+
+			if (!SaveGame_LoadFile(saves[i])) continue;
+			g_selectionType = SELECTIONTYPE_UNIT;
+			g_selectionTypeNew = SELECTIONTYPE_UNIT;
+			result = UnitSelection_RunRegressionTest();
+			if (result == 0) {
+				s_selectionSelfTestResult = 0;
+				break;
+			}
+			if (result == 1) tested++;
+		}
+		if (tested != 0 && s_selectionSelfTestResult != 0) s_selectionSelfTestResult = 1;
+		if (s_selectionSelfTestResult == 1) {
+			char message[64];
+
+			snprintf(message, sizeof(message), "selection-self-test: PASS (%u saves)", tested);
+			PrintToConsole(message);
+		} else if (s_selectionSelfTestResult == -1) {
+			PrintToConsole("selection-self-test: SKIP (no save with two movable combat units)");
+		} else {
+			PrintToConsole("selection-self-test: FAIL");
+		}
+		return;
+	}
+
 	/* Let players skip the intro immediately, including on their first launch. */
 	g_canSkipIntro = true;
 
@@ -1349,8 +1386,12 @@ int main(int argc, char **argv)
 #endif /* DOS */
 	CrashLog_Init();
 
-	VARIABLE_NOT_USED(argc);
-	VARIABLE_NOT_USED(argv);
+	{
+		int i;
+		for (i = 1; i < argc; i++) {
+			if (strcmp(argv[i], "--selection-self-test") == 0) s_selectionSelfTest = true;
+		}
+	}
 
 	/* Load opendune.ini file */
 	Load_IniFile();
@@ -1420,7 +1461,7 @@ int main(int argc, char **argv)
 	PrepareEnd();
 	Free_IniFile();
 
-	return 0;
+	return s_selectionSelfTest && s_selectionSelfTestResult != 1 ? 1 : 0;
 }
 
 /**

@@ -59,7 +59,6 @@ static bool s_unitTargetSelectionActive = false;
 static uint16 s_unitOrderCount = 0;
 static ActionType s_unitOrderAction = ACTION_INVALID;
 static bool s_unitOrderAirTransit = false;
-static bool s_unitSelectionChanging = false;
 
 /* Runtime-only tactical state.  The actual route remains owned by the unit
  * script, so save-game layouts and the normal movement system stay intact. */
@@ -2313,7 +2312,7 @@ bool Unit_Move(Unit *unit, uint16 distance)
 
 		/* Driving over a foot unit */
 		if (u != NULL && g_table_unitInfo[u->o.type].movementType == MOVEMENT_FOOT && u->o.flags.s.allocated) {
-			if (u == g_unitSelected) Unit_Select(NULL);
+			if (UnitSelection_IsSelected(u)) UnitSelection_Remove(u);
 
 			Unit_UntargetMe(u);
 			u->o.script.variables[1] = 1;
@@ -2710,9 +2709,7 @@ void UnitSelection_Remove(Unit *unit)
 		g_unitSelected = NULL;
 		GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
 	} else {
-		s_unitSelectionChanging = true;
 		Unit_Select(Unit_Get_ByIndex(s_unitSelection[0]));
-		s_unitSelectionChanging = false;
 	}
 	GUI_Widget_ActionPanel_Draw(true);
 }
@@ -2729,13 +2726,11 @@ void UnitSelection_Reconcile(void)
 	 * changed by old widget code during a target command, whereas this snapshot
 	 * represents precisely the units that received the order. */
 	if (s_unitTargetSelectionActive) {
-		s_unitSelectionChanging = true;
 		UnitSelection_ClearInternal();
 		for (i = 0; i < s_unitTargetSelectionCount; i++) {
 			Unit *unit = Unit_Get_ByIndex(s_unitTargetSelection[i]);
 			if (UnitSelection_IsControllable(unit)) UnitSelection_Add(unit);
 		}
-		s_unitSelectionChanging = false;
 		s_unitTargetSelectionActive = false;
 		s_unitTargetSelectionCount = 0;
 		i = 0;
@@ -2757,9 +2752,7 @@ void UnitSelection_Reconcile(void)
 	if (primary == NULL) return;
 	if (UnitSelection_Contains(g_unitSelected)) return;
 
-	s_unitSelectionChanging = true;
 	Unit_Select(primary);
-	s_unitSelectionChanging = false;
 }
 
 /* Called when a target modal is abandoned for a non-unit selection mode. */
@@ -2784,11 +2777,9 @@ void UnitSelection_BeginTargeting(void)
 /** Select exactly one controllable unit. */
 void UnitSelection_SelectSingle(Unit *unit)
 {
-	s_unitSelectionChanging = true;
 	UnitSelection_ClearInternal();
 	UnitSelection_Add(unit);
 	Unit_Select(unit);
-	s_unitSelectionChanging = false;
 
 	GUI_Widget_ActionPanel_Draw(true);
 }
@@ -2808,7 +2799,6 @@ void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
 	Structure *selectedStructure = NULL;
 	uint16 i;
 
-	s_unitSelectionChanging = true;
 	if (!additive) UnitSelection_ClearInternal();
 
 	for (i = 0; i < UNIT_INDEX_MAX; i++) {
@@ -2856,7 +2846,6 @@ void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
 	}
 
 	Unit_Select(primary);
-	s_unitSelectionChanging = false;
 	if (selectedStructure != NULL) Map_SetSelection(Tile_PackTile(selectedStructure->o.position));
 
 	GUI_Widget_ActionPanel_Draw(true);
@@ -2866,6 +2855,72 @@ void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
 bool UnitSelection_IsSelected(const Unit *unit)
 {
 	return unit != NULL && (unit == g_unitSelected || UnitSelection_Contains(unit));
+}
+
+/* Noninteractive regression test used by --selection-self-test.  It runs on
+ * real units loaded from a save and checks the exact failure mode that used to
+ * collapse groups after M/A: changing the primary display unit, issuing a
+ * targeted Move, and issuing a targeted Attack must all preserve membership. */
+int UnitSelection_RunRegressionTest(void)
+{
+	uint16 expected[UNIT_SELECTION_MAX];
+	PoolFindStruct find;
+	Unit *primary = NULL;
+	uint16 expectedCount = 0;
+	uint16 packed;
+	uint16 i;
+
+	UnitSelection_ClearInternal();
+	find.houseID = HOUSE_INVALID;
+	find.type = 0xFFFF;
+	find.index = 0xFFFF;
+	while (expectedCount < UNIT_SELECTION_MAX) {
+		Unit *unit = Unit_Find(&find);
+
+		if (unit == NULL) break;
+		if (!UnitSelection_IsControllable(unit)) continue;
+		UnitSelection_Add(unit);
+		expected[expectedCount++] = unit->o.index;
+		if (primary == NULL && UnitSelection_UnitHasAction(unit, ACTION_MOVE) && UnitSelection_UnitHasAction(unit, ACTION_ATTACK)) primary = unit;
+	}
+	if (expectedCount < 2 || primary == NULL) return -1;
+
+	Unit_Select(primary);
+	if (g_unitSelectionCount != expectedCount) return 0;
+	for (i = 0; i < expectedCount; i++) {
+		if (!UnitSelection_Contains(Unit_Get_ByIndex(expected[i]))) return 0;
+	}
+
+	/* Legacy callers may update or clear the portrait/status primary at any
+	 * time.  Neither operation is allowed to mutate persistent membership. */
+	Unit_Select(Unit_Get_ByIndex(expected[expectedCount - 1]));
+	Unit_Select(NULL);
+	Unit_Select(primary);
+	if (g_unitSelectionCount != expectedCount) return 0;
+	for (i = 0; i < expectedCount; i++) {
+		if (!UnitSelection_Contains(Unit_Get_ByIndex(expected[i]))) return 0;
+	}
+
+	packed = Tile_PackTile(primary->o.position);
+	for (i = 0; i < 2; i++) {
+		ActionType action = i == 0 ? ACTION_MOVE : ACTION_ATTACK;
+		uint16 j;
+
+		if (!UnitSelection_BeginAction(action)) return 0;
+		g_unitActive = g_unitSelected;
+		g_activeAction = action;
+		GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
+		UnitSelection_ApplyPendingAction(packed);
+		g_unitActive = NULL;
+		g_activeAction = ACTION_INVALID;
+		GUI_ChangeSelectionType(SELECTIONTYPE_UNIT);
+		if (g_unitSelectionCount != expectedCount) return 0;
+		for (j = 0; j < expectedCount; j++) {
+			if (!UnitSelection_Contains(Unit_Get_ByIndex(expected[j]))) return 0;
+		}
+	}
+
+	return 1;
 }
 
 /** Return how many selected units can execute a command category. */
@@ -3082,9 +3137,14 @@ void UnitSelection_CancelPendingAction(void)
 }
 
 /**
- * Selects the given unit.
+ * Select the primary unit displayed by the UI.
  *
- * @param unit The Unit to select.
+ * Group membership is owned exclusively by UnitSelection_SelectSingle(),
+ * UnitSelection_SelectBox(), UnitSelection_Remove(), and UnitSelection_Clear().
+ * Keeping it out of this legacy display function prevents unrelated status
+ * updates and mode transitions from collapsing a group to one unit.
+ *
+ * @param unit The Unit to display as primary.
  */
 void Unit_Select(Unit *unit)
 {
@@ -3094,11 +3154,6 @@ void Unit_Select(Unit *unit)
 
 	if (unit != NULL && (unit->o.seenByHouses & (1 << g_playerHouseID)) == 0 && !g_debugGame) {
 		unit = NULL;
-	}
-
-	if (!s_unitSelectionChanging) {
-		UnitSelection_ClearInternal();
-		UnitSelection_Add(unit);
 	}
 
 	if (unit == g_unitSelected) {
@@ -3614,17 +3669,10 @@ void Unit_EnterStructure(Unit *unit, Structure *s)
 {
 	const StructureInfo *si;
 	const UnitInfo *ui;
+	bool selectStructure;
 
 	if (unit == NULL || s == NULL) return;
-
-	if (unit == g_unitSelected) {
-		/* ENHANCEMENT -- When a Unit enters a Structure, the last tile the Unit was on becomes selected rather than the entire Structure. */
-		if (g_dune2_enhanced) {
-			Map_SetSelection(Tile_PackTile(s->o.position));
-		} else {
-			Unit_Select(NULL);
-		}
-	}
+	selectStructure = g_dune2_enhanced && unit == g_unitSelected && g_unitSelectionCount <= 1;
 
 	ui = &g_table_unitInfo[unit->o.type];
 	si = &g_table_structureInfo[s->o.type];
@@ -3636,6 +3684,9 @@ void Unit_EnterStructure(Unit *unit, Structure *s)
 
 	unit->o.seenByHouses |= s->o.seenByHouses;
 	Unit_Hide(unit);
+	/* Preserve surviving group members.  Select the destination structure only
+	 * when this was the sole selected unit. */
+	if (selectStructure) Map_SetSelection(Tile_PackTile(s->o.position));
 
 	if (House_AreAllied(s->o.houseID, Unit_GetHouseID(unit))) {
 		Structure_SetState(s, si->o.flags.busyStateIsIncoming ? STRUCTURE_STATE_READY : STRUCTURE_STATE_BUSY);
@@ -3875,23 +3926,26 @@ uint16 Unit_FindBestTargetEncoded(Unit *unit, uint16 mode)
  */
 void Unit_RemovePlayer(Unit *unit)
 {
+	bool wasPrimary;
+
 	if (unit == NULL) return;
 	if (Unit_GetHouseID(unit) != g_playerHouseID) return;
 	if (!unit->o.flags.s.allocated) return;
 
+	wasPrimary = unit == g_unitSelected;
 	unit->o.flags.s.allocated = false;
 	Unit_RemoveFromTeam(unit);
+	UnitSelection_Remove(unit);
 
-	if (unit != g_unitSelected) return;
+	if (!wasPrimary) return;
 
 	if (g_selectionType == SELECTIONTYPE_TARGET) {
 		g_unitActive = NULL;
 		g_activeAction = 0xFFFF;
 
-		GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
+		GUI_ChangeSelectionType(g_unitSelectionCount != 0 ? SELECTIONTYPE_UNIT : SELECTIONTYPE_STRUCTURE);
 	}
 
-	Unit_Select(NULL);
 }
 
 /**

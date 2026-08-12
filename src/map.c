@@ -133,10 +133,11 @@ void Map_SetSelection(uint16 packed)
 			u = Unit_Get_ByPackedTile(packed);
 			if (u != NULL) {
 				if (u->o.type != UNIT_CARRYALL) {
-					Unit_Select(u);
+					UnitSelection_SelectSingle(u);
 				}
 			} else {
 				if (g_unitSelected != NULL) {
+					UnitSelection_Clear();
 					Unit_Select(NULL);
 				}
 			}
