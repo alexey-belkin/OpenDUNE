@@ -284,7 +284,6 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 	if (click && g_selectionType == SELECTIONTYPE_TARGET) {
 		Unit *u;
 		ActionType action;
-		uint16 encoded;
 
 		GUI_DisplayText(NULL, -1);
 
@@ -308,38 +307,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 		action = g_activeAction;
 
-		Unit_BeginManualOrder(u);
-		Unit_SetManualHunt(u, false);
-		Unit_AttackPosition_SetManual(u, false);
-		Object_Script_Variable4_Clear(&u->o);
-		u->targetAttack   = 0;
-		u->targetMove     = 0;
-		u->route[0] = 0xFF;
-
-		if (action != ACTION_MOVE && action != ACTION_HARVEST) {
-			encoded = Tools_Index_Encode(Unit_FindTargetAround(packed), IT_TILE);
-		} else {
-			encoded = Tools_Index_Encode(packed, IT_TILE);
-		}
-
-		Unit_SetAction(u, action);
-
-		if (action == ACTION_MOVE) {
-			if (u->o.type == UNIT_HARVESTER) u->harvestHoldPosition = 1;
-			Unit_SetGuardPosition(u, packed);
-			Unit_SetDestination(u, encoded);
-		} else if (action == ACTION_HARVEST) {
-			u->harvestHoldPosition = 0;
-			u->harvestCenter = packed;
-			u->targetMove = encoded;
-		} else {
-			Unit *target;
-
-			Unit_SetTarget(u, encoded);
-			if (action == ACTION_ATTACK) Unit_AttackPosition_SetManual(u, true);
-			target = Tools_Index_GetUnit(u->targetAttack);
-			if (target != NULL) target->blinkCounter = 8;
-		}
+		UnitSelection_IssueOrder(u, action, packed);
 
 		if (g_enableVoices == 0) {
 			Driver_Sound_Play(36, 0xFF);

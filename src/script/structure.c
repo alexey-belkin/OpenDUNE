@@ -249,35 +249,24 @@ uint16 Script_Structure_Unknown0C5A(ScriptEngine *script)
 
 	u = Unit_Get_ByIndex(s->o.linkedID);
 
-	/* A player harvester with a reachable explored field waits inside the
-	 * refinery for carryall transport instead of being released to drive there.
-	 * This makes the selected harvesting area take priority whenever aircraft
-	 * are available. */
-	if (s->o.type == STRUCTURE_REFINERY && u->o.type == UNIT_HARVESTER && s->o.houseID == g_playerHouseID && Unit_Harvester_FindPreferredSpice(u) != 0) {
-		Unit *carryall;
+	/* A finished unit may be flown out instead of driving out of the bay: a
+	 * harvester back to its working area, a repaired vehicle back to the tile it
+	 * was collected from.
+	 *
+	 * The unit is only held back once a transport has actually been booked.
+	 * Waiting for a busy carryall used to keep the unit inside, which leaves
+	 * o.linkedID set and therefore marks the whole refinery as unavailable - one
+	 * occupied carryall was enough to freeze every harvester in the house. */
+	if (s->o.script.variables[4] == 0 && s->o.houseID == g_playerHouseID
+		&& ((s->o.type == STRUCTURE_REFINERY && u->o.type == UNIT_HARVESTER && Unit_Harvester_FindPreferredSpice(u) != 0)
+			|| (s->o.type == STRUCTURE_REPAIR && u->o.type != UNIT_HARVESTER && u->repairReturnPosition != 0))) {
+		uint16 encoded = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
+		Unit *carryall = Unit_CallUnitByType(UNIT_CARRYALL, s->o.houseID, encoded, false);
 
-		if (s->o.script.variables[4] != 0) return 0;
-		carryall = Unit_CallUnitByType(UNIT_CARRYALL, s->o.houseID, Tools_Index_Encode(s->o.index, IT_STRUCTURE), false);
-		if (carryall == NULL) {
-			if (Unit_IsTypeOnMap(s->o.houseID, UNIT_CARRYALL)) return 0;
-		} else {
-			Object_Script_Variable4_Set(&s->o, Tools_Index_Encode(carryall->o.index, IT_UNIT));
-			return 0;
-		}
-	}
-
-	/* Repairs normally release their unit directly at the bay door.  Hold it
-	 * here until a carryall can pick it up, so the repair-return policy in the
-	 * transport script can take it back to its recorded pickup tile. */
-	if (s->o.type == STRUCTURE_REPAIR && u->o.type != UNIT_HARVESTER && u->repairReturnPosition != 0) {
-		Unit *carryall;
-
-		if (s->o.script.variables[4] != 0) return 0;
-		carryall = Unit_CallUnitByType(UNIT_CARRYALL, s->o.houseID, Tools_Index_Encode(s->o.index, IT_STRUCTURE), false);
-		if (carryall == NULL) {
-			if (Unit_IsTypeOnMap(s->o.houseID, UNIT_CARRYALL)) return 0;
-		} else {
-			Object_Script_Variable4_Set(&s->o, Tools_Index_Encode(carryall->o.index, IT_UNIT));
+		if (carryall != NULL) {
+			/* Link both sides: a one-sided reservation survives the carryall and
+			 * would keep the refinery marked as reserved for the rest of the game. */
+			Object_Script_Variable4_Link(encoded, Tools_Index_Encode(carryall->o.index, IT_UNIT));
 			return 0;
 		}
 	}

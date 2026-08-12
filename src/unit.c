@@ -329,15 +329,35 @@ static AutonomousPost s_autonomousPost[UNIT_INDEX_MAX];
 static bool s_manualOrderStarting[UNIT_INDEX_MAX];
 static bool s_manualHunt[UNIT_INDEX_MAX];
 static uint32 s_autonomyNextCheck[UNIT_INDEX_MAX];
-static uint32 s_harvesterNextCheck[UNIT_INDEX_MAX];
-static uint16 s_harvesterLastPosition[UNIT_INDEX_MAX];
-static uint32 s_harvesterLastProgress[UNIT_INDEX_MAX];
-static uint16 s_harvesterRefineryTarget[UNIT_INDEX_MAX];
-static uint32 s_harvesterRefineryStalledSince[UNIT_INDEX_MAX];
+
+/* Per-harvester bookkeeping.  It is deliberately kept out of struct Unit: none
+ * of it needs to survive a save game, and all of it is reset by
+ * Unit_Harvester_ResetState() when an index is handed to a new unit. */
+typedef struct HarvesterTracker {
+	uint32 nextCheck;                /*!< Throttle for the periodic maintenance pass. */
+	uint16 lastPosition;             /*!< Packed tile seen at the previous check. */
+	uint32 lastProgress;             /*!< Game time the unit last changed tile. */
+	uint16 refineryTarget;           /*!< Encoded refinery the return trip is aimed at. */
+	uint32 refineryStalledSince;     /*!< Game time the approach stopped making progress. */
+	uint32 airliftDeadline;          /*!< Game time the wait for a carryall gives up. */
+	uint32 liftCheck;                /*!< Throttle for the "is a carryall free now?" retry. */
+	uint16 spiceCache;               /*!< Memo for Unit_Harvester_FindPreferredSpice(). */
+	uint16 spiceCacheCenter;         /*!< harvestCenter the memo was computed for. */
+	uint32 spiceCacheUntil;          /*!< Game time the memo expires. */
+	bool   forcedReturn;             /*!< Player pressed Return: unload even when not full. */
+} HarvesterTracker;
+
+static HarvesterTracker s_harvester[UNIT_INDEX_MAX];
 static uint16 s_houseThreatTarget[HOUSE_MAX];
 static uint32 s_houseThreatUntil[HOUSE_MAX];
 
 static void Unit_AirTransit_Update(Unit *unit);
+
+static void Unit_Harvester_ResetState(uint16 index)
+{
+	if (index >= UNIT_INDEX_MAX) return;
+	memset(&s_harvester[index], 0, sizeof(s_harvester[index]));
+}
 
 static void Unit_Autonomy_ClearPost(Unit *unit)
 {
@@ -961,6 +981,46 @@ void Unit_Autonomy_ReportThreat(uint8 houseID, uint16 attacker, uint16 packed)
 	s_houseThreatUntil[houseID] = g_timerGame + 180;
 }
 
+/* ---------------------------------------------------------------------------
+ * Harvester logic
+ *
+ * The original UNIT.EMC script owns the harvester.  Its cycle is:
+ *
+ *   ACTION_HARVEST   drive to targetMove, then call Script_Unit_Harvest() until
+ *                    amount reaches 100.
+ *   full             call Script_Unit_CallUnitByType(CARRYALL).  When a
+ *                    transport is returned the script *parks and waits* for the
+ *                    pickup; otherwise it reads Script_Unit_GetInfo(0x06)
+ *                    (originEncoded, refreshed through Unit_FindClosestRefinery)
+ *                    and drives home as ACTION_MOVE with targetMove set to the
+ *                    refinery structure.
+ *   at the refinery  Unit_EnterStructure() hides the unit; the structure script
+ *                    unloads it and releases it again through
+ *                    Script_Structure_Unknown0C5A().
+ *
+ * Everything below only supplements that script, so it has to respect who owns
+ * which field.  Violating this is what produced the "full harvester parks and
+ * never unloads" failures:
+ *
+ *   targetMove             The active order.  A structure index means "returning
+ *                          to the refinery", a tile means "going to spice".
+ *   o.script.variables[4]  A *mutual* reservation, only ever manipulated through
+ *                          Object_Script_Variable4_{Link,Set,Clear}.
+ *                          harvester <-> carryall = "pickup booked, stand still";
+ *                          harvester <-> refinery = "entrance reserved";
+ *                          refinery  <-> carryall = "transport inbound".
+ *                          A non-zero value on a harvester means it deliberately
+ *                          does nothing, so it may only be set when the other
+ *                          side really can finish the job.
+ *   originEncoded          Long-term home refinery.  A preference recomputed on
+ *                          demand by the script, never an instruction.
+ *   harvestCenter          Player-selected working area (ours).
+ *   harvestHoldPosition    Explicit player Move: stay put (ours).
+ *   airTransitDestination  One-shot airlift request (ours).  It is consumed on
+ *                          arrival, on filling up and on any new order; a sticky
+ *                          value made every later trip hijack a carryall.
+ * ------------------------------------------------------------------------- */
+
 static void Unit_Harvester_AddCandidate(uint16 *candidates, uint32 *scores, uint16 *count, uint16 target, uint32 score)
 {
 	uint16 i;
@@ -1031,31 +1091,51 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 }
 
 /* Prefer the user-selected harvesting area, but never leave a player harvester
- * idle when another explored spice field is reachable. */
+ * idle when another explored spice field is reachable.
+ *
+ * The search sweeps the whole map and runs the pathfinder over its best
+ * candidates, and it is also reached from script context (the carryall pickup
+ * and the refinery release).  The result is therefore memoised per unit for a
+ * short while; the memo is dropped as soon as the working area changes. */
 uint16 Unit_Harvester_FindPreferredSpice(Unit *unit)
 {
+	HarvesterTracker *tracker;
 	uint16 packed;
 	uint16 target;
 
-	if (unit == NULL || unit->o.type != UNIT_HARVESTER) return 0;
+	if (unit == NULL || unit->o.type != UNIT_HARVESTER || unit->o.index >= UNIT_INDEX_MAX) return 0;
+	tracker = &s_harvester[unit->o.index];
+	if (tracker->spiceCacheUntil > g_timerGame && tracker->spiceCacheCenter == unit->harvestCenter) return tracker->spiceCache;
+
 	packed = Tile_PackTile(unit->o.position);
-	if (Map_IsValidPosition(unit->harvestCenter) && Unit_Harvester_FindSpice(unit, unit->harvestCenter, 12, &target)) return target;
-	if (!Unit_Harvester_FindSpice(unit, packed, 0, &target)) return 0;
+	if (!Map_IsValidPosition(unit->harvestCenter) || !Unit_Harvester_FindSpice(unit, unit->harvestCenter, 12, &target)) {
+		if (!Unit_Harvester_FindSpice(unit, packed, 0, &target)) target = 0;
+	}
+
+	tracker->spiceCache = target;
+	tracker->spiceCacheCenter = unit->harvestCenter;
+	tracker->spiceCacheUntil = g_timerGame + 30;
 
 	return target;
 }
 
 /* A refinery can become occupied after a harvester has already routed to its
  * entrance.  It must satisfy precisely the same acceptance conditions as the
- * Carryall pickup script; a clear linkedID alone is not sufficient. */
-static bool Unit_Harvester_RefineryAccepts(const Structure *refinery)
+ * Carryall pickup script; a clear linkedID alone is not sufficient.
+ *
+ * A door reservation held by the asking harvester itself still counts as
+ * available.  Ignoring that made a queued harvester classify its own booking as
+ * "occupied" and start hunting for transport it did not need. */
+static bool Unit_Harvester_RefineryAccepts(const Structure *refinery, const Unit *unit)
 {
-	return refinery != NULL
-		&& refinery->o.type == STRUCTURE_REFINERY
-		&& refinery->o.hitpoints != 0
-		&& refinery->state == STRUCTURE_STATE_IDLE
-		&& refinery->o.linkedID == 0xFF
-		&& refinery->o.script.variables[4] == 0;
+	if (refinery == NULL
+		|| refinery->o.type != STRUCTURE_REFINERY
+		|| refinery->o.hitpoints == 0
+		|| refinery->state != STRUCTURE_STATE_IDLE
+		|| refinery->o.linkedID != 0xFF) return false;
+
+	if (refinery->o.script.variables[4] == 0) return true;
+	return unit != NULL && refinery->o.script.variables[4] == Tools_Index_Encode(unit->o.index, IT_UNIT);
 }
 
 static Structure *Unit_Harvester_FindAvailableRefinery(Unit *unit, const Structure *exclude)
@@ -1072,7 +1152,7 @@ static Structure *Unit_Harvester_FindAvailableRefinery(Unit *unit, const Structu
 		uint16 distance;
 
 		if (candidate == NULL) break;
-		if (candidate == exclude || !Unit_Harvester_RefineryAccepts(candidate)) continue;
+		if (candidate == exclude || !Unit_Harvester_RefineryAccepts(candidate, unit)) continue;
 		distance = Tile_GetDistance(unit->o.position, candidate->o.position);
 		if (best != NULL && distance >= bestDistance) continue;
 		best = candidate;
@@ -1108,15 +1188,6 @@ static bool Unit_Harvester_HasCarryallReservation(const Unit *unit)
 	return false;
 }
 
-static bool Unit_Harvester_RequestPickup(Unit *unit)
-{
-	uint16 encoded;
-
-	if (Unit_Harvester_HasCarryallReservation(unit)) return true;
-	encoded = Tools_Index_Encode(unit->o.index, IT_UNIT);
-	return Unit_CallUnitByType(UNIT_CARRYALL, Unit_GetHouseID(unit), encoded, false) != NULL;
-}
-
 static void Unit_Harvester_CancelPickup(Unit *unit)
 {
 	PoolFindStruct find;
@@ -1135,6 +1206,151 @@ static void Unit_Harvester_CancelPickup(Unit *unit)
 	}
 }
 
+/* A new player order replaces every harvester intent the previous one left
+ * behind.  A stale airlift booking in particular used to survive across orders
+ * and hijack the unit's next trip.  Pass ACTION_INVALID for orders that are not
+ * one of the four harvester commands. */
+void Unit_Harvester_BeginOrder(Unit *unit, ActionType action)
+{
+	HarvesterTracker *tracker;
+
+	if (unit == NULL || unit->o.type != UNIT_HARVESTER || unit->o.index >= UNIT_INDEX_MAX) return;
+
+	unit->harvestHoldPosition = (action == ACTION_MOVE) ? 1 : 0;
+	unit->airTransitDestination = 0;
+
+	tracker = &s_harvester[unit->o.index];
+	tracker->forcedReturn = (action == ACTION_RETURN);
+	tracker->nextCheck = 0;
+	tracker->refineryTarget = 0;
+	tracker->refineryStalledSince = 0;
+}
+
+/** Drop any order state that keeps a harvester waiting instead of driving. */
+static void Unit_Harvester_ClearOrder(Unit *unit)
+{
+	Unit_Harvester_CancelPickup(unit);
+	Object_Script_Variable4_Clear(&unit->o);
+	unit->targetMove = 0;
+	unit->currentDestination.x = 0;
+	unit->currentDestination.y = 0;
+	unit->route[0] = 0xFF;
+}
+
+/** Send the harvester to a spice tile as a fresh Harvest order. */
+static void Unit_Harvester_GoToSpice(Unit *unit, uint16 spice)
+{
+	unit->harvestCenter = spice;
+	Unit_SetAction(unit, ACTION_HARVEST);
+	Unit_SetDestination(unit, Tools_Index_Encode(spice, IT_TILE));
+	s_harvester[unit->o.index].nextCheck = g_timerGame + 90;
+}
+
+/* The airlift booked by a Harvest order is a single delivery to the chosen
+ * field, not a standing preference.  Keeping it set made Unit_AirTransit_Update
+ * reserve a carryall on every later trip: a full harvester then parked as
+ * "awaiting pickup" and Script_Unit_Pickup flew it back onto the spice it had
+ * just emptied instead of to the refinery. */
+static void Unit_Harvester_UpdateAirlift(Unit *unit)
+{
+	HarvesterTracker *tracker = &s_harvester[unit->o.index];
+	uint16 destination = unit->airTransitDestination;
+
+	if (destination == 0) {
+		tracker->airliftDeadline = 0;
+		return;
+	}
+
+	/* The request is spent once it is meaningless: the unit arrived by itself,
+	 * it filled up on the way, or the player replaced the order with a Move. */
+	if (!Map_IsValidPosition(destination) || unit->amount >= 100 || unit->harvestHoldPosition != 0
+		|| Tile_GetDistancePacked(Tile_PackTile(unit->o.position), destination) <= 2) {
+		unit->airTransitDestination = 0;
+		tracker->airliftDeadline = 0;
+		return;
+	}
+
+	if (tracker->airliftDeadline == 0) tracker->airliftDeadline = g_timerGame + 600;
+	if (Unit_Harvester_HasCarryallReservation(unit)) return;
+
+	/* Waiting only pays while transport can realistically arrive.  With no
+	 * carryall at all, or once the wait has run long, take the ground route the
+	 * order would originally have used: an idle harvester earns nothing. */
+	if (Unit_IsTypeOnMap(Unit_GetHouseID(unit), UNIT_CARRYALL) && tracker->airliftDeadline > g_timerGame) return;
+
+	unit->airTransitDestination = 0;
+	tracker->airliftDeadline = 0;
+	Unit_Harvester_GoToSpice(unit, destination);
+}
+
+/* Mirrors the filter in Unit_CallUnitByType(): a carryall with no cargo and no
+ * current assignment.  Checking before booking lets the caller decide whether
+ * it is worth giving up a refinery-door reservation for the flight. */
+static bool Unit_Harvester_HasFreeCarryall(uint8 houseID)
+{
+	PoolFindStruct find;
+	Unit *transport;
+
+	find.type = UNIT_CARRYALL;
+	find.houseID = houseID;
+	find.index = 0xFFFF;
+	while ((transport = Unit_Find(&find)) != NULL) {
+		if (transport->o.linkedID != 0xFF || transport->targetMove != 0) continue;
+		return true;
+	}
+
+	return false;
+}
+
+/* Below this many tiles a flight saves nothing: the carryall spends longer
+ * approaching and unloading than the harvester needs to drive. */
+#define HARVESTER_AIRLIFT_MIN_DISTANCE 7
+
+/* UNIT.EMC asks for transport exactly once, at the moment the return trip
+ * starts (word 932).  If every carryall happened to be busy in that single
+ * instant the script fell through to GoToClosestStructure() and walked the
+ * entire way, even when a transport became free a second later.  Retry while
+ * the remaining trip is still long enough to be worth a flight. */
+static void Unit_Harvester_RetryLift(Unit *unit)
+{
+	HarvesterTracker *tracker = &s_harvester[unit->o.index];
+	uint16 destination;
+
+	if (unit->harvestHoldPosition != 0 || unit->airTransitDestination != 0) return;
+	if (unit->o.script.variables[4] != 0 && Unit_Harvester_HasCarryallReservation(unit)) return;
+	if (tracker->liftCheck > g_timerGame) return;
+	tracker->liftCheck = g_timerGame + 60;
+
+	destination = Tools_Index_GetPackedTile(unit->targetMove);
+	if (!Map_IsValidPosition(destination)) return;
+	if (Tile_GetDistancePacked(Tile_PackTile(unit->o.position), destination) <= HARVESTER_AIRLIFT_MIN_DISTANCE) return;
+	if (!Unit_Harvester_HasFreeCarryall(Unit_GetHouseID(unit))) return;
+
+	if (unit->amount < 100) {
+		/* Outbound: the destination is a spice tile, which is precisely what the
+		 * one-shot airlift request already expresses.  Unit_AirTransit_Update()
+		 * books the transport on this same pass. */
+		if (Tools_Index_GetType(unit->targetMove) != IT_TILE) return;
+		unit->airTransitDestination = destination;
+		tracker->airliftDeadline = 0;
+		return;
+	}
+
+	{
+		/* Homebound: Script_Unit_Pickup() picks the refinery itself, but only
+		 * considers one with a clear reservation.  Our own door booking would
+		 * hide the very refinery we are heading for, so release it - exactly what
+		 * the original script does at word 906 when it gives up on transport. */
+		Structure *refinery = Unit_Harvester_FindAvailableRefinery(unit, NULL);
+
+		if (refinery == NULL) return;
+		if (refinery->o.script.variables[4] != 0) Object_Script_Variable4_Clear(&unit->o);
+		Unit_CallUnitByType(UNIT_CARRYALL, Unit_GetHouseID(unit), Tools_Index_Encode(unit->o.index, IT_UNIT), false);
+	}
+	/* The harvester deliberately keeps driving.  The transport intercepts it on
+	 * the way, so a booking that falls through costs nothing. */
+}
+
 /* The original script may start an unload trip before the cargo is full.  For
  * player harvesters, a reachable spice tile takes priority until 100%; only a
  * truly exhausted working area is allowed to trigger an early unload. */
@@ -1143,151 +1359,179 @@ static bool Unit_Harvester_ContinueUntilFull(Unit *unit)
 	Structure *refinery;
 	uint16 spice;
 
-	if (unit == NULL || unit->amount >= 100) return false;
+	if (unit->amount >= 100) return false;
+	/* An explicit Return order and an explicit Move order both outrank the
+	 * automatic top-up: the player asked for something specific. */
+	if (s_harvester[unit->o.index].forcedReturn || unit->harvestHoldPosition != 0) return false;
 	refinery = Tools_Index_GetStructure(unit->targetMove);
 	if (refinery == NULL || refinery->o.type != STRUCTURE_REFINERY) return false;
 
 	spice = Unit_Harvester_FindPreferredSpice(unit);
 	if (spice == 0) return false;
 
-	Unit_Harvester_CancelPickup(unit);
-	Object_Script_Variable4_Clear(&unit->o);
-	unit->targetMove = 0;
-	unit->currentDestination.x = 0;
-	unit->currentDestination.y = 0;
-	unit->route[0] = 0xFF;
-	unit->harvestCenter = spice;
-	Unit_SetAction(unit, ACTION_HARVEST);
-	Unit_SetDestination(unit, Tools_Index_Encode(spice, IT_TILE));
-	s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
+	Unit_Harvester_ClearOrder(unit);
+	Unit_Harvester_GoToSpice(unit, spice);
 	return true;
 }
 
+/* A refinery can become occupied after a harvester has already routed to its
+ * entrance, and the original script then keeps pushing into the closed door
+ * forever.  Watch a real return trip for lack of progress and re-route it.
+ *
+ * Only an active move-to-refinery order counts.  originEncoded looks like a
+ * refinery for every harvester because Script_Unit_GetInfo(0x06) refreshes it
+ * on demand, so treating it as an order made this run against a harvester that
+ * was merely standing on spice, cancelling its harvest every three seconds. */
 static void Unit_Harvester_RecoverRefinery(Unit *unit)
 {
+	HarvesterTracker *tracker = &s_harvester[unit->o.index];
 	Structure *refinery;
+	Structure *alternate;
 	uint16 destination;
 	uint16 packed;
 
-	if (unit->o.type != UNIT_HARVESTER || unit->o.flags.s.isNotOnMap) return;
 	refinery = Tools_Index_GetStructure(unit->targetMove);
-	if (refinery == NULL && Tools_Index_GetType(unit->originEncoded) == IT_STRUCTURE) {
-		refinery = Tools_Index_GetStructure(unit->originEncoded);
-	}
 	if (refinery == NULL || refinery->o.type != STRUCTURE_REFINERY) {
-		s_harvesterRefineryTarget[unit->o.index] = 0;
-		s_harvesterRefineryStalledSince[unit->o.index] = 0;
+		tracker->refineryTarget = 0;
+		tracker->refineryStalledSince = 0;
 		return;
 	}
 
 	destination = Tools_Index_Encode(refinery->o.index, IT_STRUCTURE);
 	packed = Tile_PackTile(unit->o.position);
-	if (s_harvesterRefineryTarget[unit->o.index] != destination) {
-		s_harvesterRefineryTarget[unit->o.index] = destination;
-		s_harvesterLastPosition[unit->o.index] = packed;
-		s_harvesterRefineryStalledSince[unit->o.index] = g_timerGame;
+	if (tracker->refineryTarget != destination) {
+		tracker->refineryTarget = destination;
+		tracker->lastPosition = packed;
+		tracker->refineryStalledSince = g_timerGame;
 		return;
 	}
 
 	/* Any forward movement means the entrance queue is still working. */
-	if (s_harvesterLastPosition[unit->o.index] != packed) {
-		s_harvesterLastPosition[unit->o.index] = packed;
-		s_harvesterRefineryStalledSince[unit->o.index] = g_timerGame;
-		return;
-	}
-	if (s_harvesterRefineryStalledSince[unit->o.index] == 0) {
-		s_harvesterRefineryStalledSince[unit->o.index] = g_timerGame;
+	if (tracker->lastPosition != packed || tracker->refineryStalledSince == 0) {
+		tracker->lastPosition = packed;
+		tracker->refineryStalledSince = g_timerGame;
 		return;
 	}
 
-	/* Give a normal entrance approach time to resolve traffic.  Never reissue an
-	 * order into an unavailable door: choose a ready refinery, otherwise book a
-	 * Carryall so the harvester leaves the blocked entrance and is delivered by
-	 * the normal transport logic. */
-	if (s_harvesterRefineryStalledSince[unit->o.index] + 180 > g_timerGame) return;
-	{
-		Structure *alternate = Unit_Harvester_RefineryAccepts(refinery) ? refinery : Unit_Harvester_FindAvailableRefinery(unit, refinery);
-		bool pickupRequested = false;
+	/* Give a normal entrance approach time to resolve traffic before doing
+	 * anything, and never reissue an order into an unavailable door. */
+	if (tracker->refineryStalledSince + 180 > g_timerGame) return;
 
-		unit->route[0] = 0xFF;
-		unit->currentDestination.x = 0;
-		unit->currentDestination.y = 0;
-		unit->targetMove = 0;
-		Object_Script_Variable4_Clear(&unit->o);
-		if (alternate != NULL) {
-			Unit_SetDestination(unit, Tools_Index_Encode(alternate->o.index, IT_STRUCTURE));
-		} else {
-			pickupRequested = Unit_Harvester_RequestPickup(unit);
-			/* Keep the refinery as the long-term origin.  If no transport is
-			 * presently free, retry the booking rather than walking back into the
-			 * occupied entrance. */
-			unit->originEncoded = destination;
-		}
-		s_harvesterRefineryStalledSince[unit->o.index] = pickupRequested ? g_timerGame + 180 : g_timerGame;
+	tracker->refineryStalledSince = g_timerGame;
+
+	alternate = Unit_Harvester_RefineryAccepts(refinery, unit) ? refinery : Unit_Harvester_FindAvailableRefinery(unit, refinery);
+	if (alternate != NULL && alternate != refinery) {
+		Unit_Harvester_ClearOrder(unit);
+		Unit_SetDestination(unit, Tools_Index_Encode(alternate->o.index, IT_STRUCTURE));
+		return;
 	}
+
+	/* Either our own refinery is ready and something is merely standing in the
+	 * way, or every refinery is busy and this is an ordinary queue.  Recompute
+	 * the route and stay in line.
+	 *
+	 * This deliberately books no transport.  Script_Unit_Pickup() refuses to
+	 * lift a harvester while no refinery can receive it and then keeps both the
+	 * carryall and the harvester reserved, which is how a blocked entrance used
+	 * to consume every transport in the house and park the harvesters for good.
+	 * originEncoded is left alone as well; it belongs to the original script. */
+	unit->route[0] = 0xFF;
+	unit->currentDestination.x = 0;
+	unit->currentDestination.y = 0;
 }
 
+/* Watchdog for a loaded harvester.  Whatever left it without an order - a
+ * released carryall booking, a destroyed refinery, a save from an older build -
+ * a full harvester must never simply stand on the sand.  This mirrors what the
+ * original script does when Script_Unit_CallUnitByType() gives it no transport:
+ * take the closest refinery and drive there as ACTION_MOVE. */
+static void Unit_Harvester_RecoverFullCargo(Unit *unit)
+{
+	HarvesterTracker *tracker = &s_harvester[unit->o.index];
+	Structure *refinery;
+
+	if (unit->targetMove != 0 || unit->currentDestination.x != 0 || unit->currentDestination.y != 0) return;
+	if (Unit_Harvester_HasCarryallReservation(unit)) return;
+	if (tracker->nextCheck > g_timerGame) return;
+	tracker->nextCheck = g_timerGame + 90;
+
+	refinery = Unit_Harvester_FindAvailableRefinery(unit, NULL);
+	if (refinery == NULL) {
+		/* Everything is busy: queue at the nearest refinery that still stands. */
+		Unit_FindClosestRefinery(unit);
+		refinery = Tools_Index_GetStructure(unit->originEncoded);
+		if (refinery == NULL || refinery->o.type != STRUCTURE_REFINERY) return;
+	}
+
+	Unit_SetAction(unit, ACTION_MOVE);
+	Unit_SetDestination(unit, Tools_Index_Encode(refinery->o.index, IT_STRUCTURE));
+}
+
+/* Periodic maintenance for player harvesters, on top of the legacy script.
+ * Everything here is a recovery path: it may only act when the script has left
+ * the unit with nothing useful to do. */
 static void Unit_Harvester_Update(Unit *unit)
 {
+	HarvesterTracker *tracker;
 	uint16 packed;
 	uint16 target;
 	uint16 type;
 
 	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID) return;
-	if (unit->o.flags.s.isNotOnMap) return;
+	if (unit->o.flags.s.isNotOnMap || unit->o.index >= UNIT_INDEX_MAX) return;
+	tracker = &s_harvester[unit->o.index];
+
+	/* An unloaded harvester has served its Return order. */
+	if (unit->amount == 0) tracker->forcedReturn = false;
+
+	Unit_Harvester_UpdateAirlift(unit);
 	if (Unit_Harvester_ContinueUntilFull(unit)) return;
 	Unit_Harvester_RecoverRefinery(unit);
-	/* A full harvester's only job is to reach its refinery; it must still run
-	 * the recovery above, but it must not search for more spice meanwhile. */
-	if (unit->amount >= 100) return;
-	/* A chosen harvesting point waits for an existing carryall.  Should the
-	 * last transport be destroyed, immediately fall back to the same normal
-	 * route the order would originally have used. */
-	if (unit->airTransitDestination != 0 && Map_IsValidPosition(unit->airTransitDestination)) {
-		if (Unit_IsTypeOnMap(Unit_GetHouseID(unit), UNIT_CARRYALL)) return;
-		unit->targetMove = Tools_Index_Encode(unit->airTransitDestination, IT_TILE);
-		unit->airTransitDestination = 0;
+	Unit_Harvester_RetryLift(unit);
+
+	/* A full harvester's only job is to reach its refinery.  It still needs the
+	 * recovery above, but it must not go looking for more spice. */
+	if (unit->amount >= 100) {
+		Unit_Harvester_RecoverFullCargo(unit);
+		return;
 	}
+	/* Waiting for the airlift that a Harvest order booked. */
+	if (unit->airTransitDestination != 0) return;
+
 	/* Only an explicit Move-to-wait order may leave a partially empty player
 	 * harvester parked.  Do not force Harvest before a reachable field exists:
 	 * the original harvest script correctly changes itself back to Stop when it
 	 * has no route, which otherwise made the two actions oscillate every tick. */
 	if (unit->actionID != ACTION_HARVEST) {
-		if (unit->harvestHoldPosition != 0 || s_harvesterNextCheck[unit->o.index] > g_timerGame) return;
-		s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
+		if (unit->harvestHoldPosition != 0 || tracker->nextCheck > g_timerGame) return;
+		tracker->nextCheck = g_timerGame + 90;
 
 		packed = Tile_PackTile(unit->o.position);
 		type = Map_GetLandscapeType(packed);
-		if (type != LST_SPICE && type != LST_THICK_SPICE) {
-			target = Unit_Harvester_FindPreferredSpice(unit);
-			if (target == 0) return;
-			unit->harvestCenter = target;
+		if (type == LST_SPICE || type == LST_THICK_SPICE) {
 			Unit_SetAction(unit, ACTION_HARVEST);
-			Unit_SetDestination(unit, Tools_Index_Encode(target, IT_TILE));
 			return;
 		}
 
-		Unit_SetAction(unit, ACTION_HARVEST);
+		target = Unit_Harvester_FindPreferredSpice(unit);
+		if (target != 0) Unit_Harvester_GoToSpice(unit, target);
 		return;
 	}
-	if (s_harvesterNextCheck[unit->o.index] > g_timerGame) return;
-	s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
+
+	if (tracker->nextCheck > g_timerGame) return;
+	tracker->nextCheck = g_timerGame + 90;
 
 	packed = Tile_PackTile(unit->o.position);
-	if (s_harvesterLastPosition[unit->o.index] != packed || s_harvesterLastProgress[unit->o.index] == 0) {
-		s_harvesterLastPosition[unit->o.index] = packed;
-		s_harvesterLastProgress[unit->o.index] = g_timerGame;
+	if (tracker->lastPosition != packed || tracker->lastProgress == 0) {
+		tracker->lastPosition = packed;
+		tracker->lastProgress = g_timerGame;
 	}
 
 	/* A valid route is left alone.  A route that has made no progress for six
 	 * checks is abandoned so a fresh reachable spice field can be selected. */
 	if (unit->targetMove != 0 || unit->currentDestination.x != 0 || unit->currentDestination.y != 0) {
-		if (unit->o.script.variables[4] != 0 || s_harvesterLastProgress[unit->o.index] + 540 > g_timerGame) return;
-		Object_Script_Variable4_Clear(&unit->o);
-		unit->targetMove = 0;
-		unit->currentDestination.x = 0;
-		unit->currentDestination.y = 0;
-		unit->route[0] = 0xFF;
+		if (unit->o.script.variables[4] != 0 || tracker->lastProgress + 540 > g_timerGame) return;
+		Unit_Harvester_ClearOrder(unit);
 	}
 
 	type = Map_GetLandscapeType(packed);
@@ -1397,7 +1641,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 	Unit_BeginManualOrder(unit);
 	Unit_SetManualHunt(unit, false);
 	Unit_AttackPosition_SetManual(unit, false);
-	if (unit->o.type == UNIT_HARVESTER) unit->harvestHoldPosition = (action == ACTION_MOVE);
+	Unit_Harvester_BeginOrder(unit, action);
 	Object_Script_Variable4_Clear(&unit->o);
 	unit->targetAttack = 0;
 	unit->targetMove = 0;
@@ -1434,6 +1678,16 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 		unit = Tools_Index_GetUnit(unit->targetAttack);
 		if (unit != NULL) unit->blinkCounter = 8;
 	}
+}
+
+/* Single entry point for a targeted player order, shared by the group commands
+ * and by the classic one-unit action panel.  Keeping the viewport's own copy of
+ * this sequence around meant a single harvester and a selected group of
+ * harvesters obeyed subtly different Harvest orders. */
+void UnitSelection_IssueOrder(Unit *unit, ActionType action, uint16 packed)
+{
+	if (unit == NULL || action == ACTION_INVALID) return;
+	UnitSelection_ResetOrder(unit, action, packed);
 }
 
 uint16 g_dirtyUnitCount = 0;
@@ -1826,6 +2080,9 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 	u->guardPosition = (position.x == 0xFFFF && position.y == 0xFFFF) ? 0 : Tile_PackTile(position);
 	u->harvestCenter = (typeID == UNIT_HARVESTER && position.x != 0xFFFF && position.y != 0xFFFF) ? Tile_PackTile(position) : 0;
 	u->harvestHoldPosition = 0;
+	/* Pool indices are reused, so the previous owner's timers and stall
+	 * counters must not leak into this unit. */
+	Unit_Harvester_ResetState(u->o.index);
 	u->repairReturnPosition = 0;
 	u->airTransitDestination = 0;
 	u->amount        = 0;
@@ -2010,7 +2267,7 @@ void Unit_GetStatusText(const Unit *u, char *state, char *detail, uint16 length)
 			structure = Tools_Index_GetStructure(u->originEncoded);
 		}
 		if (structure != NULL && structure->o.type == STRUCTURE_REFINERY) {
-			snprintf(state, length, Unit_Harvester_RefineryAccepts(structure) ? "TO REF" : "WAIT REF");
+			snprintf(state, length, Unit_Harvester_RefineryAccepts(structure, u) ? "TO REF" : "WAIT REF");
 			snprintf(detail, length, "CARGO %u%%", u->amount);
 			return;
 		}
@@ -2355,7 +2612,7 @@ uint16 Unit_FindClosestRefinery(Unit *unit)
 	while (true) {
 		s2 = Structure_Find(&find);
 		if (s2 == NULL) break;
-		if (!Unit_Harvester_RefineryAccepts(s2)) continue;
+		if (!Unit_Harvester_RefineryAccepts(s2, unit)) continue;
 		d = Tile_GetDistance(unit->o.position, s2->o.position);
 		if (mind != 0 && d >= mind) continue;
 		mind = d;
@@ -3663,6 +3920,7 @@ bool UnitSelection_BeginAction(ActionType action)
 		Object_Script_Variable4_Clear(&unit->o);
 		Unit_BeginManualOrder(unit);
 		Unit_SetManualHunt(unit, false);
+		Unit_Harvester_BeginOrder(unit, unitAction);
 		unit->targetAttack = 0;
 		unit->targetMove = 0;
 		unit->route[0] = 0xFF;
@@ -3692,6 +3950,7 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 			if (!UnitSelection_CanAirTransit(unit)) continue;
 			Unit_SetManualHunt(unit, false);
 			Unit_AttackPosition_SetManual(unit, false);
+			Unit_Harvester_BeginOrder(unit, ACTION_INVALID);
 			Object_Script_Variable4_Clear(&unit->o);
 			unit->targetAttack = 0;
 			unit->targetMove = 0;
@@ -4192,6 +4451,8 @@ static void Unit_AirTransit_Update(Unit *unit)
 
 	if (unit->airTransitDestination == 0 || !Map_IsValidPosition(unit->airTransitDestination)) return;
 	if (!UnitSelection_CanAirTransit(unit) || unit->o.script.variables[4] != 0) return;
+	/* A loaded harvester belongs to the refinery, never to an airlift order. */
+	if (unit->o.type == UNIT_HARVESTER && unit->amount >= 100) return;
 
 	encoded = Tools_Index_Encode(unit->o.index, IT_UNIT);
 	carryall = Unit_CallUnitByType(UNIT_CARRYALL, Unit_GetHouseID(unit), encoded, false);

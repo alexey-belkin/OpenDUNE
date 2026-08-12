@@ -299,9 +299,14 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 			if (!u2->o.flags.s.allocated) return 0;
 			airDestination = u2->airTransitDestination;
 
+			/* An explicit Air Transit bypasses refinery/repair routing and
+			 * carries this unit directly to the player-selected landing tile.
+			 * A loaded harvester is excluded: its cargo has to reach a refinery,
+			 * and flying it back onto the spice field it had just emptied is
+			 * exactly how a full harvester ended up parked forever. */
+			if (u2->o.type == UNIT_HARVESTER && u2->amount >= 100) airDestination = 0;
+
 			if (airDestination != 0 && Map_IsValidPosition(airDestination)) {
-				/* An explicit Air Transit bypasses refinery/repair routing and
-				 * carries this unit directly to the player-selected landing tile. */
 				u->o.linkedID = u2->o.index & 0xFF;
 				u->o.flags.s.inTransport = true;
 				Object_Script_Variable4_Clear(&u->o);
@@ -340,7 +345,15 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 				s = s2;
 			}
 
-			if (s == NULL) return 0;
+			if (s == NULL) {
+				/* Nothing can receive this unit right now.  Release the transport
+				 * instead of holding the booking: the reservation is mutual, so a
+				 * carryall waiting here also keeps its passenger in the "awaiting
+				 * pickup" state, which parks a full harvester indefinitely. */
+				Object_Script_Variable4_Clear(&u->o);
+				u->targetMove = 0;
+				return 0;
+			}
 
 			/* Pickup the unit */
 			u->o.linkedID = u2->o.index & 0xFF;

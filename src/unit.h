@@ -302,6 +302,8 @@ extern uint16 UnitSelection_GetActionCount(ActionType action);
 extern ActionType UnitSelection_GetActionForSlot(uint16 slot);
 extern ActionType UnitSelection_GetSpecialAction(void);
 extern void UnitSelection_IssueDefaultOrder(uint16 packed);
+extern void UnitSelection_IssueOrder(struct Unit *unit, ActionType action, uint16 packed);
+extern void Unit_Harvester_BeginOrder(struct Unit *unit, ActionType action);
 extern void UnitSelection_OrderHunt(void);
 extern bool UnitSelection_BeginAirTransit(void);
 extern bool UnitSelection_BeginAction(ActionType action);
