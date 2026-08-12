@@ -899,6 +899,21 @@ static void InGame_Numpad_Move(uint16 key)
 	}
 }
 
+/* Keyboard commands must not depend on which variant of the action panel is
+ * visible.  The group panel deliberately has no widget shortcuts, while the
+ * legacy single-unit panel owns them; routing here gives both the same target
+ * transaction and therefore the same persistent selection semantics. */
+static bool InGame_BeginSelectedAction(ActionType action)
+{
+	if (g_selectionType != SELECTIONTYPE_UNIT || g_unitSelectionCount == 0) return false;
+	if (!UnitSelection_BeginAction(action)) return false;
+
+	g_unitActive = g_unitSelected;
+	g_activeAction = action;
+	GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
+	return true;
+}
+
 /**
  * Main game loop.
  */
@@ -1091,6 +1106,15 @@ static void GameLoop_Main(void)
 
 		key = GUI_Widget_HandleEvents(g_widgetLinkedListHead);
 		GUI_Widget_Viewport_HandleEdgeScroll();
+		/* Group buttons have no widget shortcuts, so handle the physical M/A
+		 * keys here.  Single-unit widgets may consume the same key first; in
+		 * that case they have already switched out of UNIT and this is a no-op. */
+		if ((((key & 0x7FFF) == GUI_Widget_GetShortcut('M')) || Input_Test(GUI_Widget_GetShortcut('M')) != 0) && InGame_BeginSelectedAction(ACTION_MOVE)) {
+			key = 0;
+		}
+		if ((((key & 0x7FFF) == GUI_Widget_GetShortcut('A')) || Input_Test(GUI_Widget_GetShortcut('A')) != 0) && InGame_BeginSelectedAction(ACTION_ATTACK)) {
+			key = 0;
+		}
 		/* T = Hunt.  Polling the physical key also covers keys consumed by a
 		 * sidebar widget before this general in-game shortcut sees them. */
 		if (((key & 0x7FFF) == 0x0015 || Input_Test(0x15) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
