@@ -64,6 +64,8 @@ static uint32 s_attackPositionETA[UNIT_INDEX_MAX];
 static uint32 s_attackPositionNextCheck[UNIT_INDEX_MAX];
 static bool s_autonomousAttack[UNIT_INDEX_MAX];
 static ActionType s_autonomousReturnAction[UNIT_INDEX_MAX];
+static bool s_autonomousReturning[UNIT_INDEX_MAX];
+static ActionType s_autonomousPostReturnAction[UNIT_INDEX_MAX];
 static bool s_manualHunt[UNIT_INDEX_MAX];
 static uint32 s_autonomyNextCheck[UNIT_INDEX_MAX];
 static uint32 s_harvesterNextCheck[UNIT_INDEX_MAX];
@@ -616,7 +618,11 @@ bool Unit_Autonomy_ReturnToPost(Unit *unit)
 
 	Unit_SetAction(unit, ACTION_MOVE);
 	Unit_SetDestination(unit, Tools_Index_Encode(anchor, IT_TILE));
-	unit->nextActionID = returnAction;
+	/* Do not use nextActionID here: it is consumed before the movement script
+	 * creates currentDestination, which used to cancel this return immediately.
+	 * The completion hook restores the original guard mode after arrival. */
+	s_autonomousReturning[unit->o.index] = true;
+	s_autonomousPostReturnAction[unit->o.index] = returnAction;
 	return true;
 }
 
@@ -741,7 +747,7 @@ uint16 Unit_Harvester_FindPreferredSpice(Unit *unit)
 	uint16 packed;
 	uint16 target;
 
-	if (unit == NULL || unit->o.type != UNIT_HARVESTER || unit->o.flags.s.isNotOnMap) return 0;
+	if (unit == NULL || unit->o.type != UNIT_HARVESTER) return 0;
 	packed = Tile_PackTile(unit->o.position);
 	if (Map_IsValidPosition(unit->harvestCenter) && Unit_Harvester_FindSpice(unit, unit->harvestCenter, 12, &target)) return target;
 	if (!Unit_Harvester_FindSpice(unit, packed, 0, &target)) return 0;
@@ -757,6 +763,14 @@ static void Unit_Harvester_Update(Unit *unit)
 
 	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID || unit->amount >= 100) return;
 	if (unit->o.flags.s.isNotOnMap) return;
+	/* A chosen harvesting point waits for an existing carryall.  Should the
+	 * last transport be destroyed, immediately fall back to the same normal
+	 * route the order would originally have used. */
+	if (unit->airTransitDestination != 0 && Map_IsValidPosition(unit->airTransitDestination)) {
+		if (Unit_IsTypeOnMap(Unit_GetHouseID(unit), UNIT_CARRYALL)) return;
+		unit->targetMove = Tools_Index_Encode(unit->airTransitDestination, IT_TILE);
+		unit->airTransitDestination = 0;
+	}
 	/* Only an explicit Move-to-wait order may leave a partially empty player
 	 * harvester parked.  All other idle states recover into Harvest. */
 	if (unit->actionID != ACTION_HARVEST) {
@@ -874,6 +888,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 {
 	uint16 encoded;
 
+	s_autonomousReturning[unit->o.index] = false;
 	Unit_SetManualHunt(unit, false);
 	Unit_AttackPosition_SetManual(unit, false);
 	if (unit->o.type == UNIT_HARVESTER) unit->harvestHoldPosition = (action == ACTION_MOVE);
@@ -897,7 +912,16 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 		Unit_SetDestination(unit, encoded);
 	} else if (action == ACTION_HARVEST) {
 		unit->harvestCenter = packed;
-		unit->targetMove = encoded;
+		/* A Harvest order also books an automatic airlift when a carryall is
+		 * available.  A busy carryall keeps the harvester waiting rather than
+		 * sending it on a long ground detour; ground travel is the fallback only
+		 * when the house has no carryall at all. */
+		unit->airTransitDestination = packed;
+		if (Unit_IsTypeOnMap(Unit_GetHouseID(unit), UNIT_CARRYALL)) {
+			unit->targetMove = 0;
+		} else {
+			unit->targetMove = encoded;
+		}
 	} else {
 		Unit_SetTarget(unit, encoded);
 		if (action == ACTION_ATTACK) Unit_AttackPosition_SetManual(unit, true);
@@ -1438,6 +1462,12 @@ void Unit_SetGuardPosition(Unit *u, uint16 packed)
  * its existing post, so reacting to a threat never drifts the unit's area. */
 ActionType Unit_GetDefaultActionAfterCompletion(Unit *u)
 {
+	if (u != NULL && s_autonomousReturning[u->o.index]) {
+		ActionType action = s_autonomousPostReturnAction[u->o.index];
+		s_autonomousReturning[u->o.index] = false;
+		return action;
+	}
+
 	if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID &&
 		(u->actionID == ACTION_MOVE || (u->actionID == ACTION_ATTACK && s_attackPositionManual[u->o.index] && !s_autonomousAttack[u->o.index]))) {
 		Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
@@ -2652,6 +2682,26 @@ void UnitSelection_Remove(Unit *unit)
 	GUI_Widget_ActionPanel_Draw(true);
 }
 
+/* Command transitions must not discard the visible group.  Reassert its
+ * primary unit after issuing an order, while preserving every member index. */
+static void UnitSelection_EnsurePrimary(void)
+{
+	Unit *primary = NULL;
+	uint16 i;
+
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		if (!UnitSelection_IsControllable(unit)) continue;
+		primary = unit;
+		break;
+	}
+	if (primary == NULL) return;
+
+	s_unitSelectionChanging = true;
+	Unit_Select(primary);
+	s_unitSelectionChanging = false;
+}
+
 /** Select exactly one controllable unit. */
 void UnitSelection_SelectSingle(Unit *unit)
 {
@@ -2810,6 +2860,7 @@ void UnitSelection_IssueDefaultOrder(uint16 packed)
 
 		if (action != ACTION_INVALID) UnitSelection_ResetOrder(unit, action, packed);
 	}
+	UnitSelection_EnsurePrimary();
 }
 
 /* Hunt is intentionally a keyboard-only advanced order: it applies only to
@@ -2834,6 +2885,7 @@ void UnitSelection_OrderHunt(void)
 		Unit_SetAction(unit, ACTION_AREA_GUARD);
 		Unit_SetManualHunt(unit, true);
 	}
+	UnitSelection_EnsurePrimary();
 
 	GUI_Widget_ActionPanel_Draw(true);
 }
@@ -2887,6 +2939,7 @@ bool UnitSelection_BeginAction(ActionType action)
 		if (unitAction == ACTION_INVALID || !UnitSelection_UnitHasAction(unit, unitAction)) continue;
 
 		Object_Script_Variable4_Clear(&unit->o);
+		s_autonomousReturning[unit->o.index] = false;
 		Unit_SetManualHunt(unit, false);
 		unit->targetAttack = 0;
 		unit->targetMove = 0;
@@ -2895,6 +2948,7 @@ bool UnitSelection_BeginAction(ActionType action)
 		Unit_SetAction(unit, unitAction);
 	}
 
+	UnitSelection_EnsurePrimary();
 	GUI_Widget_ActionPanel_Draw(true);
 	return false;
 }
@@ -2921,10 +2975,12 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 			unit->targetAttack = 0;
 			unit->targetMove = 0;
 			unit->route[0] = 0xFF;
+			s_autonomousReturning[unit->o.index] = false;
 			unit->airTransitDestination = packed;
 			Unit_SetAction(unit, ACTION_STOP);
 		}
 		UnitSelection_CancelPendingAction();
+		UnitSelection_EnsurePrimary();
 		GUI_Widget_ActionPanel_Draw(true);
 		return;
 	}
@@ -2937,6 +2993,7 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 	}
 
 	UnitSelection_CancelPendingAction();
+	UnitSelection_EnsurePrimary();
 }
 
 void UnitSelection_CancelPendingAction(void)

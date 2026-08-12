@@ -249,6 +249,23 @@ uint16 Script_Structure_Unknown0C5A(ScriptEngine *script)
 
 	u = Unit_Get_ByIndex(s->o.linkedID);
 
+	/* A player harvester with a reachable explored field waits inside the
+	 * refinery for carryall transport instead of being released to drive there.
+	 * This makes the selected harvesting area take priority whenever aircraft
+	 * are available. */
+	if (s->o.type == STRUCTURE_REFINERY && u->o.type == UNIT_HARVESTER && s->o.houseID == g_playerHouseID && Unit_Harvester_FindPreferredSpice(u) != 0) {
+		Unit *carryall;
+
+		if (s->o.script.variables[4] != 0) return 0;
+		carryall = Unit_CallUnitByType(UNIT_CARRYALL, s->o.houseID, Tools_Index_Encode(s->o.index, IT_STRUCTURE), false);
+		if (carryall == NULL) {
+			if (Unit_IsTypeOnMap(s->o.houseID, UNIT_CARRYALL)) return 0;
+		} else {
+			Object_Script_Variable4_Set(&s->o, Tools_Index_Encode(carryall->o.index, IT_UNIT));
+			return 0;
+		}
+	}
+
 	/* Repairs normally release their unit directly at the bay door.  Hold it
 	 * here until a carryall can pick it up, so the repair-return policy in the
 	 * transport script can take it back to its recorded pickup tile. */
@@ -257,9 +274,12 @@ uint16 Script_Structure_Unknown0C5A(ScriptEngine *script)
 
 		if (s->o.script.variables[4] != 0) return 0;
 		carryall = Unit_CallUnitByType(UNIT_CARRYALL, s->o.houseID, Tools_Index_Encode(s->o.index, IT_STRUCTURE), false);
-		if (carryall == NULL) return 0;
-		Object_Script_Variable4_Set(&s->o, Tools_Index_Encode(carryall->o.index, IT_UNIT));
-		return 0;
+		if (carryall == NULL) {
+			if (Unit_IsTypeOnMap(s->o.houseID, UNIT_CARRYALL)) return 0;
+		} else {
+			Object_Script_Variable4_Set(&s->o, Tools_Index_Encode(carryall->o.index, IT_UNIT));
+			return 0;
+		}
 	}
 
 	if (g_table_unitInfo[u->o.type].movementType == MOVEMENT_WINGER && Unit_SetPosition(u, s->o.position)) {
