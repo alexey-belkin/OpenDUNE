@@ -772,10 +772,26 @@ static void Unit_Harvester_Update(Unit *unit)
 		unit->airTransitDestination = 0;
 	}
 	/* Only an explicit Move-to-wait order may leave a partially empty player
-	 * harvester parked.  All other idle states recover into Harvest. */
+	 * harvester parked.  Do not force Harvest before a reachable field exists:
+	 * the original harvest script correctly changes itself back to Stop when it
+	 * has no route, which otherwise made the two actions oscillate every tick. */
 	if (unit->actionID != ACTION_HARVEST) {
-		if (unit->harvestHoldPosition != 0) return;
+		if (unit->harvestHoldPosition != 0 || s_harvesterNextCheck[unit->o.index] > g_timerGame) return;
+		s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
+
+		packed = Tile_PackTile(unit->o.position);
+		type = Map_GetLandscapeType(packed);
+		if (type != LST_SPICE && type != LST_THICK_SPICE) {
+			target = Unit_Harvester_FindPreferredSpice(unit);
+			if (target == 0) return;
+			unit->harvestCenter = target;
+			Unit_SetAction(unit, ACTION_HARVEST);
+			Unit_SetDestination(unit, Tools_Index_Encode(target, IT_TILE));
+			return;
+		}
+
 		Unit_SetAction(unit, ACTION_HARVEST);
+		return;
 	}
 	if (s_harvesterNextCheck[unit->o.index] > g_timerGame) return;
 	s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
