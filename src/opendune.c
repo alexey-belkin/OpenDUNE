@@ -60,6 +60,7 @@
 #include "pool/unit.h"
 #include "pool/structure.h"
 #include "pool/team.h"
+#include "rev.h"
 #include "scenario.h"
 #include "sprites.h"
 #include "string.h"
@@ -71,11 +72,6 @@
 #include "tools.h"
 #include "unit.h"
 #include "video/video.h"
-
-#ifdef TOS
-#include "rev.h"
-#endif
-
 
 const char *window_caption = "OpenDUNE - v0.9";
 
@@ -771,6 +767,7 @@ static void GameLoop_GameIntroAnimationMenu(void)
 	}
 
 	if (drawMenu) {
+		char buildLabel[32];
 		uint16 i;
 
 		g_widgetProperties[21].height = 0;
@@ -814,6 +811,8 @@ static void GameLoop_GameIntroAnimationMenu(void)
 
 		GUI_SetPaletteAnimated(g_palette1, 30);
 
+		snprintf(buildLabel, sizeof(buildLabel), "BUILD %s", g_opendune_revision);
+		GUI_DrawText_Wrapper(buildLabel, 1, 192, 133, 0, 0x231, 0x39);
 		GUI_DrawText_Wrapper("V1.07", 319, 192, 133, 0, 0x231, 0x39);
 		GUI_DrawText_Wrapper(NULL, 0, 0, 0, 0, 0x22);
 
