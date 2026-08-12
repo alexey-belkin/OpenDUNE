@@ -340,6 +340,7 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 		return true;
 	}
 
+	Unit_BeginManualOrder(u);
 	Unit_SetManualHunt(u, false);
 	Object_Script_Variable4_Clear(&u->o);
 	u->targetAttack = 0;

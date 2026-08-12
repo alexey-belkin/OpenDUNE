@@ -324,6 +324,9 @@ typedef struct AutonomousPost {
 } AutonomousPost;
 
 static AutonomousPost s_autonomousPost[UNIT_INDEX_MAX];
+/* Set only by the player-order entry points.  It separates an explicit Attack
+ * from a legacy Guard script switching itself to Attack. */
+static bool s_manualOrderStarting[UNIT_INDEX_MAX];
 static bool s_manualHunt[UNIT_INDEX_MAX];
 static uint32 s_autonomyNextCheck[UNIT_INDEX_MAX];
 static uint32 s_harvesterNextCheck[UNIT_INDEX_MAX];
@@ -342,6 +345,13 @@ static void Unit_Autonomy_ClearPost(Unit *unit)
 	s_autonomousPost[unit->o.index].anchor = 0;
 	s_autonomousPost[unit->o.index].action = ACTION_INVALID;
 	s_autonomousPost[unit->o.index].state = AUTONOMOUS_POST_NONE;
+}
+
+void Unit_BeginManualOrder(Unit *unit)
+{
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
+	s_manualOrderStarting[unit->o.index] = true;
+	Unit_Autonomy_ClearPost(unit);
 }
 
 static const int8 s_firingPositionDirectionX[16] = {4, 4, 3, 2, 0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4};
@@ -916,9 +926,11 @@ static void Unit_Autonomy_Update(Unit *unit)
 
 	if (!Unit_Autonomy_IsCombatUnit(unit)) return;
 	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_ENGAGING) {
-		if (unit->actionID == ACTION_ATTACK && Tools_Index_IsValid(unit->targetAttack)) return;
-		/* The legacy attack script is also allowed to finish an attack by
-		 * switching action first.  In either ordering, return to the post. */
+		/* Original Guard / Area Guard scripts can fight without changing their
+		 * action ID.  A live target keeps the sortie active regardless of whether
+		 * that script currently says Guard, Move or Attack. */
+		if (Tools_Index_IsValid(unit->targetAttack)) return;
+		/* Both the old and new scripts clear the target when combat is over. */
 		Unit_Autonomy_ReturnToPost(unit);
 		return;
 	}
@@ -1034,9 +1046,18 @@ uint16 Unit_Harvester_FindPreferredSpice(Unit *unit)
 }
 
 /* A refinery can become occupied after a harvester has already routed to its
- * entrance.  The original scripts then keep the old structure target forever.
- * Pick a free refinery first, so a blocked entrance is a temporary queue, not
- * a permanent deadlock. */
+ * entrance.  It must satisfy precisely the same acceptance conditions as the
+ * Carryall pickup script; a clear linkedID alone is not sufficient. */
+static bool Unit_Harvester_RefineryAccepts(const Structure *refinery)
+{
+	return refinery != NULL
+		&& refinery->o.type == STRUCTURE_REFINERY
+		&& refinery->o.hitpoints != 0
+		&& refinery->state == STRUCTURE_STATE_IDLE
+		&& refinery->o.linkedID == 0xFF
+		&& refinery->o.script.variables[4] == 0;
+}
+
 static Structure *Unit_Harvester_FindAvailableRefinery(Unit *unit, const Structure *exclude)
 {
 	PoolFindStruct find;
@@ -1051,7 +1072,7 @@ static Structure *Unit_Harvester_FindAvailableRefinery(Unit *unit, const Structu
 		uint16 distance;
 
 		if (candidate == NULL) break;
-		if (candidate == exclude || candidate->o.hitpoints == 0 || candidate->o.linkedID != 0xFF) continue;
+		if (candidate == exclude || !Unit_Harvester_RefineryAccepts(candidate)) continue;
 		distance = Tile_GetDistance(unit->o.position, candidate->o.position);
 		if (best != NULL && distance >= bestDistance) continue;
 		best = candidate;
@@ -1059,6 +1080,41 @@ static Structure *Unit_Harvester_FindAvailableRefinery(Unit *unit, const Structu
 	}
 
 	return best;
+}
+
+static bool Unit_Harvester_HasCarryallReservation(const Unit *unit)
+{
+	PoolFindStruct find;
+	Unit *transport;
+	uint16 encoded;
+
+	if (unit == NULL) return false;
+	encoded = Tools_Index_Encode(unit->o.index, IT_UNIT);
+
+	/* A harvester may hold the old-style backlink, but normal Carryall requests
+	 * store the reservation on the transport itself.  Recognise both forms. */
+	if (unit->o.script.variables[4] != 0) {
+		transport = Tools_Index_GetUnit(unit->o.script.variables[4]);
+		if (transport != NULL && transport->o.type == UNIT_CARRYALL) return true;
+	}
+
+	find.type = UNIT_CARRYALL;
+	find.houseID = unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID;
+	find.index = 0xFFFF;
+	while ((transport = Unit_Find(&find)) != NULL) {
+		if (transport->targetMove == encoded || transport->o.script.variables[4] == encoded) return true;
+	}
+
+	return false;
+}
+
+static bool Unit_Harvester_RequestPickup(Unit *unit)
+{
+	uint16 encoded;
+
+	if (Unit_Harvester_HasCarryallReservation(unit)) return true;
+	encoded = Tools_Index_Encode(unit->o.index, IT_UNIT);
+	return Unit_CallUnitByType(UNIT_CARRYALL, Unit_GetHouseID(unit), encoded, false) != NULL;
 }
 
 static void Unit_Harvester_RecoverRefinery(Unit *unit)
@@ -1069,6 +1125,9 @@ static void Unit_Harvester_RecoverRefinery(Unit *unit)
 
 	if (unit->o.type != UNIT_HARVESTER || unit->o.flags.s.isNotOnMap) return;
 	refinery = Tools_Index_GetStructure(unit->targetMove);
+	if (refinery == NULL && Tools_Index_GetType(unit->originEncoded) == IT_STRUCTURE) {
+		refinery = Tools_Index_GetStructure(unit->originEncoded);
+	}
 	if (refinery == NULL || refinery->o.type != STRUCTURE_REFINERY) {
 		s_harvesterRefineryTarget[unit->o.index] = 0;
 		s_harvesterRefineryStalledSince[unit->o.index] = 0;
@@ -1095,12 +1154,15 @@ static void Unit_Harvester_RecoverRefinery(Unit *unit)
 		return;
 	}
 
-	/* Give a normal entrance approach time to resolve traffic, then redirect to
-	 * a vacant refinery.  If none exists, reset the route periodically so the
-	 * refinery script can claim the entrance as soon as it becomes free. */
+	/* Give a normal entrance approach time to resolve traffic.  Never reissue an
+	 * order into an unavailable door: choose a ready refinery, otherwise book a
+	 * Carryall so the harvester leaves the blocked entrance and is delivered by
+	 * the normal transport logic. */
 	if (s_harvesterRefineryStalledSince[unit->o.index] + 180 > g_timerGame) return;
 	{
-		Structure *alternate = Unit_Harvester_FindAvailableRefinery(unit, refinery);
+		Structure *alternate = Unit_Harvester_RefineryAccepts(refinery) ? refinery : Unit_Harvester_FindAvailableRefinery(unit, refinery);
+		bool pickupRequested = false;
+
 		unit->route[0] = 0xFF;
 		unit->currentDestination.x = 0;
 		unit->currentDestination.y = 0;
@@ -1109,9 +1171,13 @@ static void Unit_Harvester_RecoverRefinery(Unit *unit)
 		if (alternate != NULL) {
 			Unit_SetDestination(unit, Tools_Index_Encode(alternate->o.index, IT_STRUCTURE));
 		} else {
-			Unit_SetDestination(unit, destination);
+			pickupRequested = Unit_Harvester_RequestPickup(unit);
+			/* Keep the refinery as the long-term origin.  If no transport is
+			 * presently free, retry the booking rather than walking back into the
+			 * occupied entrance. */
+			unit->originEncoded = destination;
 		}
-		s_harvesterRefineryStalledSince[unit->o.index] = g_timerGame;
+		s_harvesterRefineryStalledSince[unit->o.index] = pickupRequested ? g_timerGame + 180 : g_timerGame;
 	}
 }
 
@@ -1281,7 +1347,7 @@ static void UnitSelection_ResetOrder(Unit *unit, ActionType action, uint16 packe
 {
 	uint16 encoded;
 
-	Unit_Autonomy_ClearPost(unit);
+	Unit_BeginManualOrder(unit);
 	Unit_SetManualHunt(unit, false);
 	Unit_AttackPosition_SetManual(unit, false);
 	if (unit->o.type == UNIT_HARVESTER) unit->harvestHoldPosition = (action == ACTION_MOVE);
@@ -1785,10 +1851,25 @@ bool Unit_IsTypeOnMap(uint8 houseID, uint8 typeID)
 void Unit_SetAction(Unit *u, ActionType action)
 {
 	const ActionInfo *ai;
+	bool manualOrder;
+	bool preserveDefensivePost;
 
 	if (u == NULL) return;
 	if (u->actionID == ACTION_DESTRUCT || u->actionID == ACTION_DIE || action == ACTION_INVALID) return;
-	if (action != ACTION_ATTACK) Unit_AttackPosition_SetManual(u, false);
+	manualOrder = s_manualOrderStarting[u->o.index];
+	s_manualOrderStarting[u->o.index] = false;
+
+	/* Legacy Guard scripts often switch to Move/Attack themselves.  Treat that
+	 * as the same defensive sortie as a target found by the autonomous layer. */
+	if (!manualOrder && s_autonomousPost[u->o.index].state == AUTONOMOUS_POST_NONE
+		&& (u->actionID == ACTION_GUARD || u->actionID == ACTION_AREA_GUARD)
+		&& (action == ACTION_ATTACK || (action == ACTION_MOVE && Tools_Index_IsValid(u->targetAttack)))
+		&& Unit_Autonomy_IsCombatUnit(u)) {
+		Unit_AttackPosition_SetAutomatic(u, u->actionID);
+	}
+
+	preserveDefensivePost = !manualOrder && s_autonomousPost[u->o.index].state == AUTONOMOUS_POST_ENGAGING;
+	if (action != ACTION_ATTACK && !preserveDefensivePost) Unit_AttackPosition_SetManual(u, false);
 
 	ai = &g_table_actionInfo[action];
 
@@ -1881,14 +1962,22 @@ void Unit_GetStatusText(const Unit *u, char *state, char *detail, uint16 length)
 
 	if (u->o.type == UNIT_HARVESTER) {
 		structure = Tools_Index_GetStructure(u->targetMove);
+		if (structure == NULL && Tools_Index_GetType(u->originEncoded) == IT_STRUCTURE) {
+			structure = Tools_Index_GetStructure(u->originEncoded);
+		}
 		if (structure != NULL && structure->o.type == STRUCTURE_REFINERY) {
-			snprintf(state, length, structure->o.linkedID == 0xFF ? "TO REF" : "WAIT REF");
+			snprintf(state, length, Unit_Harvester_RefineryAccepts(structure) ? "TO REF" : "WAIT REF");
 			snprintf(detail, length, "CARGO %u%%", u->amount);
 			return;
 		}
-		if (u->o.script.variables[4] != 0 || u->airTransitDestination != 0) {
+		if (Unit_Harvester_HasCarryallReservation(u) || u->airTransitDestination != 0) {
 			snprintf(state, length, "WAIT PICKUP");
 			snprintf(detail, length, "CARGO %u%%", u->amount);
+			return;
+		}
+		if (u->amount >= 100) {
+			snprintf(state, length, "RETURNING");
+			snprintf(detail, length, "CARGO 100%%");
 			return;
 		}
 		if (u->actionID == ACTION_HARVEST) {
@@ -2222,9 +2311,7 @@ uint16 Unit_FindClosestRefinery(Unit *unit)
 	while (true) {
 		s2 = Structure_Find(&find);
 		if (s2 == NULL) break;
-		/* Prefer an actually vacant refinery.  A BUSY refinery is normally the
-		 * one processing another harvester and was the source of entrance jams. */
-		if (s2->o.linkedID != 0xFF) continue;
+		if (!Unit_Harvester_RefineryAccepts(s2)) continue;
 		d = Tile_GetDistance(unit->o.position, s2->o.position);
 		if (mind != 0 && d >= mind) continue;
 		mind = d;
@@ -2571,6 +2658,15 @@ void Unit_SetTarget(Unit *unit, uint16 encoded)
 
 	if (Tools_Index_Encode(unit->o.index, IT_UNIT) == encoded) {
 		encoded = Tools_Index_Encode(Tile_PackTile(unit->o.position), IT_TILE);
+	}
+
+	/* Some original Guard scripts acquire a target without first calling
+	 * Unit_SetAction(ACTION_ATTACK).  Snapshot their post at target acquisition
+	 * so their later movement cannot become a permanent formation drift. */
+	if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_NONE
+		&& (unit->actionID == ACTION_GUARD || unit->actionID == ACTION_AREA_GUARD)
+		&& Unit_Autonomy_IsCombatUnit(unit)) {
+		Unit_AttackPosition_SetAutomatic(unit, unit->actionID);
 	}
 
 	unit->targetAttack = encoded;
@@ -3521,7 +3617,7 @@ bool UnitSelection_BeginAction(ActionType action)
 		if (unitAction == ACTION_INVALID || !UnitSelection_UnitHasAction(unit, unitAction)) continue;
 
 		Object_Script_Variable4_Clear(&unit->o);
-		Unit_Autonomy_ClearPost(unit);
+		Unit_BeginManualOrder(unit);
 		Unit_SetManualHunt(unit, false);
 		unit->targetAttack = 0;
 		unit->targetMove = 0;

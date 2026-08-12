@@ -254,6 +254,7 @@ extern uint8 Unit_MovementStringToType(const char *name);
 extern struct Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, int8 orientation);
 extern bool Unit_IsTypeOnMap(uint8 houseID, uint8 typeID);
 extern void Unit_SetAction(Unit *u, ActionType action);
+extern void Unit_BeginManualOrder(Unit *u);
 extern void Unit_SetManualHunt(Unit *u, bool enabled);
 extern bool Unit_Autonomy_ReturnToPost(Unit *unit);
 extern ActionType Unit_GetDefaultAction(const Unit *u);

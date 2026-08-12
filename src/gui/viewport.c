@@ -308,6 +308,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 		action = g_activeAction;
 
+		Unit_BeginManualOrder(u);
 		Unit_SetManualHunt(u, false);
 		Unit_AttackPosition_SetManual(u, false);
 		Object_Script_Variable4_Clear(&u->o);
