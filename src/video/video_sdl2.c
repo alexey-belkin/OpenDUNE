@@ -27,6 +27,16 @@
 #define DUNE_ICON_DIR "./"
 #endif
 
+/* On macOS, exclusive SDL fullscreen can own the display space and make
+ * application switching unreliable while the game is blocked in an error
+ * dialog.  Desktop fullscreen stays visually fullscreen but leaves global
+ * shortcuts such as Command-Tab under Cocoa's control. */
+#ifdef OSX
+#define VIDEO_FULLSCREEN_FLAGS SDL_WINDOW_FULLSCREEN_DESKTOP
+#else
+#define VIDEO_FULLSCREEN_FLAGS SDL_WINDOW_FULLSCREEN
+#endif
+
 static VideoScaleFilter s_scale_filter;
 
 /** The the magnification of the screen. 2 means 640x400, 3 means 960x600, etc. */
@@ -317,7 +327,7 @@ bool Video_Init(int screen_magnification, VideoScaleFilter filter)
 	}
 
 	if (IniFile_GetInteger("fullscreen", 1) != 0) {
-		window_flags |= SDL_WINDOW_FULLSCREEN;
+		window_flags |= VIDEO_FULLSCREEN_FLAGS;
 		s_full_screen = true;
 	}
 
@@ -659,10 +669,13 @@ void Video_Tick(void)
 			{
 				unsigned int sym = event.key.keysym.sym;
 				uint8 code = 0;
+				/* Let macOS retain Command shortcuts; the game has no commands
+				 * bound to them and must never consume Command-Tab. */
+				if ((event.key.keysym.mod & KMOD_GUI) != 0) continue;
 				if ((sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT)) || sym == SDLK_F11) {
 					/* ALT-ENTER was pressed */
 					if (keyup) continue;	/* ignore key-up */
-					if (SDL_SetWindowFullscreen(s_window, s_full_screen ? 0 : SDL_WINDOW_FULLSCREEN) < 0) {
+					if (SDL_SetWindowFullscreen(s_window, s_full_screen ? 0 : VIDEO_FULLSCREEN_FLAGS) < 0) {
 						Warning("Failed to toggle full screen : %s\n", SDL_GetError());
 					}
 					s_full_screen = !s_full_screen;
