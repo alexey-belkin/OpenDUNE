@@ -1117,6 +1117,52 @@ static bool Unit_Harvester_RequestPickup(Unit *unit)
 	return Unit_CallUnitByType(UNIT_CARRYALL, Unit_GetHouseID(unit), encoded, false) != NULL;
 }
 
+static void Unit_Harvester_CancelPickup(Unit *unit)
+{
+	PoolFindStruct find;
+	Unit *transport;
+	uint16 encoded;
+
+	if (unit == NULL) return;
+	encoded = Tools_Index_Encode(unit->o.index, IT_UNIT);
+	find.type = UNIT_CARRYALL;
+	find.houseID = Unit_GetHouseID(unit);
+	find.index = 0xFFFF;
+	while ((transport = Unit_Find(&find)) != NULL) {
+		if (transport->targetMove != encoded && transport->o.script.variables[4] != encoded) continue;
+		Object_Script_Variable4_Clear(&transport->o);
+		transport->targetMove = 0;
+	}
+}
+
+/* The original script may start an unload trip before the cargo is full.  For
+ * player harvesters, a reachable spice tile takes priority until 100%; only a
+ * truly exhausted working area is allowed to trigger an early unload. */
+static bool Unit_Harvester_ContinueUntilFull(Unit *unit)
+{
+	Structure *refinery;
+	uint16 spice;
+
+	if (unit == NULL || unit->amount >= 100) return false;
+	refinery = Tools_Index_GetStructure(unit->targetMove);
+	if (refinery == NULL || refinery->o.type != STRUCTURE_REFINERY) return false;
+
+	spice = Unit_Harvester_FindPreferredSpice(unit);
+	if (spice == 0) return false;
+
+	Unit_Harvester_CancelPickup(unit);
+	Object_Script_Variable4_Clear(&unit->o);
+	unit->targetMove = 0;
+	unit->currentDestination.x = 0;
+	unit->currentDestination.y = 0;
+	unit->route[0] = 0xFF;
+	unit->harvestCenter = spice;
+	Unit_SetAction(unit, ACTION_HARVEST);
+	Unit_SetDestination(unit, Tools_Index_Encode(spice, IT_TILE));
+	s_harvesterNextCheck[unit->o.index] = g_timerGame + 90;
+	return true;
+}
+
 static void Unit_Harvester_RecoverRefinery(Unit *unit)
 {
 	Structure *refinery;
@@ -1189,6 +1235,7 @@ static void Unit_Harvester_Update(Unit *unit)
 
 	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID) return;
 	if (unit->o.flags.s.isNotOnMap) return;
+	if (Unit_Harvester_ContinueUntilFull(unit)) return;
 	Unit_Harvester_RecoverRefinery(unit);
 	/* A full harvester's only job is to reach its refinery; it must still run
 	 * the recovery above, but it must not search for more spice meanwhile. */
@@ -1944,11 +1991,8 @@ void Unit_GetStatusText(const Unit *u, char *state, char *detail, uint16 length)
 	detail[0] = '\0';
 	if (u == NULL) return;
 
-	if (u->o.flags.s.inTransport) {
-		snprintf(state, length, "AIRLIFT");
-		snprintf(detail, length, "IN TRANSIT");
-		return;
-	}
+	/* The legacy harvest animation also sets inTransport, so it is not a
+	 * reliable indication of actual Carryall transit for a visible unit. */
 	if (s_autonomousPost[u->o.index].state == AUTONOMOUS_POST_ENGAGING) {
 		snprintf(state, length, "DEFENDING");
 		snprintf(detail, length, "POST %u,%u", Tile_GetPackedX(s_autonomousPost[u->o.index].anchor), Tile_GetPackedY(s_autonomousPost[u->o.index].anchor));
