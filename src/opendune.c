@@ -1232,15 +1232,13 @@ static void GameLoop_Main(void)
 
 	if (s_enableLog != 0) Mouse_SetMouseMode(INPUT_MOUSE_MODE_NORMAL, "DUNE.LOG");
 
-	GUI_Mouse_Hide_Safe();
-
+	/* The original DOS-style dissolve writes random 8-pixel strips while the
+	 * desktop fullscreen Space is being torn down.  macOS can snapshot that
+	 * intermediate frame, leaving a ghost image after the process has exited.
+	 * Present one complete black frame instead of animating the final teardown. */
 	Widget_SetCurrentWidget(0);
-
-	GFX_Screen_SetActive(SCREEN_1);
-
-	GFX_ClearScreen(SCREEN_1);
-
-	GUI_Screen_FadeIn(g_curWidgetXBase, g_curWidgetYBase, g_curWidgetXBase, g_curWidgetYBase, g_curWidgetWidth, g_curWidgetHeight, SCREEN_1, SCREEN_0);
+	GFX_ClearScreen(SCREEN_0);
+	Video_Tick();
 }
 
 /**

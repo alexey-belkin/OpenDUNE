@@ -1,6 +1,7 @@
 /** @file src/gui/widget_draw.c %Widget drawing routines. */
 
 #include <stdio.h>
+#include <string.h>
 #include "types.h"
 
 #include "font.h"
@@ -459,6 +460,8 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 	static uint16 displayedMissileCountdown = 0;
 	static uint16 displayedUpgradeTime      = 0xFFFF;
 	static uint16 displayedStarportTime     = 0xFFFF;
+	static char displayedUnitState[20] = "";
+	static char displayedUnitDetail[20] = "";
 
 	uint16 actionType = 0;
 	Structure *s = NULL;
@@ -482,13 +485,19 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 
 			if (actionType == displayedActionType && !forceDraw) actionType = 0;
 		} else {
+			char unitState[20];
+			char unitDetail[20];
+
 			u = g_unitSelected;
+			Unit_GetStatusText(u, unitState, unitDetail, sizeof(unitState));
 
 			if (forceDraw
 				|| u->o.index     != displayedIndex
 				|| u->o.hitpoints != displayedHitpoints
 				|| u->o.houseID   != displayedHouseID
-				|| u->actionID    != displayedActiveAction) {
+				|| u->actionID    != displayedActiveAction
+				|| strcmp(unitState, displayedUnitState) != 0
+				|| strcmp(unitDetail, displayedUnitDetail) != 0) {
 					actionType = 2; /* Unit */
 			}
 		}
@@ -538,6 +547,7 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 			displayedActiveAction     = u->actionID;
 			displayedMissileCountdown = 0xFFFF;
 			displayedHouseID          = u->o.houseID;
+			Unit_GetStatusText(u, displayedUnitState, displayedUnitDetail, sizeof(displayedUnitState));
 			break;
 
 		case 3: /* Structure */
@@ -819,6 +829,17 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 						} else {
 							GUI_Widget_MakeNormal(buttons[i], false);
 						}
+					}
+					/* Individual units retain their portrait and health bar.  The free
+					 * space below the four commands carries the live state and its
+					 * most useful context (post, destination or harvester cargo). */
+					{
+						char state[20];
+						char detail[20];
+
+						Unit_GetStatusText(u, state, detail, sizeof(state));
+						GUI_DrawText_Wrapper(state, 258, 123, 29, 0, 0x11);
+						GUI_DrawText_Wrapper(detail, 258, 131, 29, 0, 0x11);
 					}
 				} break;
 

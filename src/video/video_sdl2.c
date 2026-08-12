@@ -427,6 +427,15 @@ void Video_Uninit(void)
 	}
 
 	if (s_window) {
+		/* Leave desktop fullscreen before destroying the Cocoa window.  This
+		 * gives WindowServer a complete final surface to retire instead of a
+		 * half-dissolved fullscreen snapshot. */
+		if (s_full_screen) {
+			SDL_SetWindowFullscreen(s_window, 0);
+			s_full_screen = false;
+			SDL_PumpEvents();
+		}
+		SDL_HideWindow(s_window);
 		SDL_DestroyWindow(s_window);
 		s_window = NULL;
 	}

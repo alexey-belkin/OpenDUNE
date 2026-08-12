@@ -259,6 +259,7 @@ extern bool Unit_Autonomy_ReturnToPost(Unit *unit);
 extern ActionType Unit_GetDefaultAction(const Unit *u);
 extern ActionType Unit_GetDefaultActionAfterCompletion(Unit *u);
 extern void Unit_SetGuardPosition(Unit *u, uint16 packed);
+extern void Unit_GetStatusText(const Unit *u, char *state, char *detail, uint16 length);
 extern uint16 Unit_AddToTeam(Unit *u, struct Team *t);
 extern uint16 Unit_RemoveFromTeam(Unit *u);
 extern struct Team *Unit_GetTeam(Unit *u);
