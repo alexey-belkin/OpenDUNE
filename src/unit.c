@@ -2044,6 +2044,75 @@ static void Unit_Harvester_RecoverFullCargo(Unit *unit)
 /* Periodic maintenance for player harvesters, on top of the legacy script.
  * Everything here is a recovery path: it may only act when the script has left
  * the unit with nothing useful to do. */
+/**
+ * Clear the way: engage whatever is in front of this unit, every tick.
+ *
+ * The team script is not a place to do this from.  Script_Team_Unknown0788() is
+ * an opcode TEAM.EMC calls when it (re)issues an order, and measured over a
+ * whole match that is 186 times -- about once every six hundred ticks.  Anything
+ * hung off it is not a behaviour, it is an occasional nudge, which is why
+ * oncoming units and turrets went unengaged however the targeting there was
+ * written.  The player's equivalent runs here, on the unit tick, and is what
+ * makes a guarding unit answer for its ground; this is that, for an AI unit on
+ * the march.
+ *
+ * The judgement is entirely Unit_Autonomy_FindTargetWithin() -- the player's own
+ * sweep.  All this adds is when to ask, what radius to ask for, and what to do
+ * when the way is clear again.
+ */
+static void Unit_Skirmish_ClearTheWay(Unit *unit)
+{
+	const UnitInfo *ui = &g_table_unitInfo[unit->o.type];
+	uint16 reach = ui->fireDistance;
+	uint16 target;
+
+	if (!Skirmish_IsActive()) return;
+	if (Unit_GetHouseID(unit) == g_playerHouseID) return;
+	if (unit->o.index >= UNIT_INDEX_MAX || unit->o.flags.s.isNotOnMap) return;
+	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || reach == 0) return;
+	if (unit->o.type == UNIT_HARVESTER || unit->o.type == UNIT_MCV) return;
+
+	/* Only a unit that is out on a wave.
+	 *
+	 * Applied to everything, this emptied the bases: a guard that acquired an
+	 * enemy harvester wandering past left its post to chase it, alone, and the
+	 * defence dissolved one unit at a time.  Both fixed seeds ended with one
+	 * house wiped out.  Clearing the way is a marching behaviour -- what a unit
+	 * standing on its post does is the guard layer's business, not this. */
+	if (unit->team == 0) return;
+	{
+		const Team *team = Team_Get_ByIndex(unit->team - 1);
+
+		if (team == NULL || team->target == 0) return;
+	}
+
+	/* A target already taken is finished off first: re-deciding every tick is
+	 * what turned an attack into a smear.  Two tiles of slack past the search
+	 * radius so a target backing away is still pursued rather than dropped and
+	 * immediately re-acquired. */
+	if (Tools_Index_IsValid(unit->targetAttack)
+		&& Tile_GetDistance(unit->o.position, Tools_Index_GetTile(unit->targetAttack)) <= ((reach + 5) << 8)) return;
+
+	/* Weapon range plus three, so something met head-on is acquired before
+	 * either side can fire and this unit shoots first. */
+	target = Unit_Autonomy_FindTargetWithin(unit, reach + 3);
+
+	if (target != 0) {
+		Unit_SetTarget(unit, target);
+		if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
+		return;
+	}
+
+	/* Nothing near: leave the unit alone.
+	 *
+	 * Re-issuing the team's objective from here as well looked like the obvious
+	 * other half and is not: it fires for every idle member every tick, so the
+	 * cohort left one at a time as each finished its own fight, which is the
+	 * trickle the wave gate exists to stop.  Measured, it cost one house the
+	 * whole match on both fixed seeds.  Resuming the objective belongs to the
+	 * team script, which owns it. */
+}
+
 static void Unit_Harvester_Update(Unit *unit)
 {
 	HarvesterTracker *tracker;
@@ -2568,6 +2637,7 @@ void GameLoop_Unit(void)
 
 		if (tickUnknown4) {
 			Unit_Autonomy_Update(u);
+			Unit_Skirmish_ClearTheWay(u);
 			Unit_Harvester_Update(u);
 			Unit_AirTransit_Update(u);
 			Unit_AttackPosition_Update(u);
