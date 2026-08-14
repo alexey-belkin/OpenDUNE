@@ -177,8 +177,24 @@ military share**, and `House_AreAllied()` makes them permanent enemies of the
 other AI and permanent friends of the one that summoned them. A strategy that
 reaches the Palace gets a free, endlessly renewed army on top of its budget.
 
-`Skirmish_GetBystanders()` counts them; `--skirmish-self-test` prints the line at
-the end. Measured: 21 Fremen alive on the map at t400000.
+`Skirmish_GetBystanders()` counts them and `Skirmish_GetCasualties()` splits
+losses by cause; `--skirmish-self-test` prints both at the end.
+
+Finding them exposed a second bug, since fixed. `Unit_Create()` does not go
+through `Unit_SetPosition()`, so the skirmish "everybody sees everybody" line did
+not apply to units born straight onto the map -- and an unseen unit scores zero
+in `Unit_GetTargetUnitPriority()`. The Fremen were therefore invisible to the AI
+that was supposed to be shooting them. The casualty split says it plainly:
+
+| Fremen losses at t400000 | shot | crushed |
+|---|---:|---:|
+| before | 9 | 111 |
+| after | 63 | 43 |
+
+Before, nine in ten died under a passing tank rather than to a weapon, and twenty
+were alive at the end. After, they are killed about as fast as the Palace makes
+them and none survive to the end of the match. The other two Houses were around
+90% shot throughout, which is what made the Fremen figure stand out.
 
 Two consequences, both real:
 
@@ -195,6 +211,12 @@ The Palace is the last entry of the base plan but it is reached well inside the
 this is present in the results above, not merely a risk for longer matches. The
 side swap cancels the part of it that is House identity; it does not cancel the
 free units.
+
+The schedule sweep was re-run after the visibility fix and lands in the same
+place -- 25k/35k/50k at 102/108/102 points of 168, with 15k and 70k at 79 and
+every flat share between 59 and 72 -- so the conclusion above survives it. The
+free units remain a known hole in the budget model rather than a demonstrated
+distortion of this particular result.
 
 ## Caveats worth keeping in mind
 

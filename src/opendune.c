@@ -1217,6 +1217,7 @@ static void GameLoop_Main(void)
 		}
 
 		if (Skirmish_GetBystanders(line, sizeof(line))) PrintToConsole(line);
+		if (Skirmish_GetCasualties(line, sizeof(line))) PrintToConsole(line);
 
 		PrintToConsole("skirmish-self-test: DONE");
 		return;
@@ -1418,8 +1419,9 @@ static void GameLoop_Main(void)
 		/* Tab walks the spectator camera from one AI base to the next.  A match
 		 * opens on the first one and the other is in the opposite corner of a
 		 * 62x62 map, which at the start is one Construction Yard and reads as
-		 * "there is only one AI on the map". */
-		if ((key & 0x7FFF) == 0x000F && Skirmish_IsActive()) {
+		 * "there is only one AI on the map".  0x10 is Tab in OpenDUNE's internal
+		 * scancode set (s_keymapNormal[] in input.c), not the PC set's 0x0F. */
+		if ((key & 0x7FFF) == 0x0010 && Skirmish_IsActive()) {
 			uint8 tried;
 
 			for (tried = 0; tried < SKIRMISH_PLAYER_MAX; tried++) {
@@ -1438,12 +1440,18 @@ static void GameLoop_Main(void)
 
 		/* [ and ] step the simulation speed.  Event driven rather than polled:
 		 * Input_Test() is true for as long as the key is held, which would run
-		 * through the whole range in a few frames. */
-		if ((key & 0x7FFF) == 0x001A) {
+		 * through the whole range in a few frames.
+		 *
+		 * The codes are OpenDUNE's own, not the PC set: SDL hands the video layer
+		 * a PC scancode, s_keyTranslate[] turns it into the internal one, and the
+		 * two differ here.  s_keymapNormal[] in input.c is the table to read them
+		 * off -- index 0x1B is '[' and 0x1C is ']'.  Bound to the PC codes
+		 * instead, '[' ran the speed up and ']' did nothing at all. */
+		if ((key & 0x7FFF) == 0x001B) {
 			GameLoop_StepSpeed(-1);
 			key = 0;
 		}
-		if ((key & 0x7FFF) == 0x001B) {
+		if ((key & 0x7FFF) == 0x001C) {
 			GameLoop_StepSpeed(1);
 			key = 0;
 		}

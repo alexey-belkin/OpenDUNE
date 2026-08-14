@@ -2705,6 +2705,14 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 
 	Unit_UpdateMap(1, u);
 
+	/* Nobody scouts for a skirmish AI, and an unseen unit scores zero in
+	 * Unit_GetTargetUnitPriority().  Unit_SetPosition() already reveals whatever
+	 * a factory delivers, but units born straight onto the map -- the Palace
+	 * special above all -- never pass through it.  Without this the Fremen an
+	 * Atreides Palace summons walked into the enemy base unopposed and only ever
+	 * died under a passing tank: measured at 9 shot against 111 crushed. */
+	if (Skirmish_IsActive()) u->o.seenByHouses = 0xFF;
+
 	Unit_SetAction(u, (houseID == g_playerHouseID) ? Unit_GetDefaultAction(u) : ui->actionAI);
 
 	return u;
@@ -3810,6 +3818,7 @@ bool Unit_Move(Unit *unit, uint16 distance)
 
 			Unit_UntargetMe(u);
 			u->o.script.variables[1] = 1;
+			if (Skirmish_IsActive()) Skirmish_RecordKill(Unit_GetHouseID(u), true);
 			Unit_SetAction(u, ACTION_DIE);
 		} else {
 			uint16 type = Map_GetLandscapeType(packed);
@@ -4038,6 +4047,8 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 				Sound_Output_Feedback((houseID == g_playerHouseID || g_campaignID > 3) ? houseID + 14 : 13);
 			}
 		}
+
+		if (Skirmish_IsActive()) Skirmish_RecordKill(houseID, false);
 
 		Unit_SetAction(unit, ACTION_DIE);
 		return true;

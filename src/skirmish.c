@@ -121,6 +121,10 @@ static uint32 s_nextQueueSample[HOUSE_MAX];
 static uint16 s_carryallTarget[HOUSE_MAX];
 static uint32 s_tripStart[UNIT_INDEX_MAX];
 static uint16 s_starportBought[HOUSE_MAX][2];               /*!< [0] harvesters, [1] carryalls. */
+/* Losses by cause.  "Nobody is shooting at them" and "everybody is shooting at
+ * them and missing" look identical on screen; these tell them apart. */
+static uint16 s_killedByFire[HOUSE_MAX];
+static uint16 s_killedByTracks[HOUSE_MAX];
 
 /**
  * The base build order.  It is deliberately prerequisite-consistent top to
@@ -274,6 +278,8 @@ void Skirmish_Reset(void)
 	memset(s_carryallTarget, 0, sizeof(s_carryallTarget));
 	memset(s_tripStart, 0, sizeof(s_tripStart));
 	memset(s_starportBought, 0, sizeof(s_starportBought));
+	memset(s_killedByFire, 0, sizeof(s_killedByFire));
+	memset(s_killedByTracks, 0, sizeof(s_killedByTracks));
 }
 
 static SkirmishBase *Skirmish_GetBase(uint8 houseID)
@@ -1593,6 +1599,55 @@ bool Skirmish_GetTeams(uint8 index, char *buf, uint16 length)
 	}
 
 	return true;
+}
+
+/**
+ * Record a unit death, by what killed it.
+ *
+ * Only two things kill a foot unit in this game: a weapon, and a tracked vehicle
+ * driving over it.  Which of the two is doing the work is the difference between
+ * "the AI is defending" and "the AI is walking through them on its way somewhere
+ * else", and nothing on screen distinguishes them.
+ */
+void Skirmish_RecordKill(uint8 houseID, bool crushed)
+{
+	if (!s_active || houseID >= HOUSE_MAX) return;
+
+	if (crushed) {
+		s_killedByTracks[houseID]++;
+	} else {
+		s_killedByFire[houseID]++;
+	}
+}
+
+/**
+ * Losses per House, split by cause.
+ * @return False when nothing has died yet.
+ */
+bool Skirmish_GetCasualties(char *buf, uint16 length)
+{
+	uint16 used = 0;
+	uint8 i;
+
+	if (!s_active || buf == NULL || length == 0) return false;
+
+	buf[0] = '\0';
+
+	for (i = 0; i < HOUSE_MAX; i++) {
+		int written;
+
+		if (s_killedByFire[i] == 0 && s_killedByTracks[i] == 0) continue;
+		if (used + 40 >= length) break;
+
+		written = snprintf(buf + used, length - used, "%s%s lost %u shot / %u crushed",
+		                   (used == 0) ? "casualties: " : ", ",
+		                   g_table_houseInfo[i].name, s_killedByFire[i], s_killedByTracks[i]);
+
+		if (written <= 0) break;
+		used += (uint16)written;
+	}
+
+	return (used != 0);
 }
 
 /**
