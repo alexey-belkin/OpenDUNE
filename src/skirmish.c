@@ -525,6 +525,38 @@ uint16 Skirmish_GetBaseOrigin(uint8 index)
 	return s_bases[index].origin;
 }
 
+/**
+ * Where a house gathers what it is not currently attacking with.
+ *
+ * Behind its own defence line, on the two faces that look at the middle of the
+ * map -- which is where the turrets are, so a reserve standing here is standing
+ * with them rather than in the open.  Six tiles inside the plateau corner
+ * nearest the centre: clear of the wall picket in the four-tile defence band,
+ * and still on rock.
+ */
+uint16 Skirmish_GetBaseRally(uint8 houseID)
+{
+	uint8 index;
+
+	if (!s_active) return 0;
+
+	for (index = 0; index < SKIRMISH_PLAYER_MAX; index++) {
+		const SkirmishBase *b = &s_bases[index];
+		uint16 x, y;
+
+		if (b->entryCount == 0 || b->houseID != houseID) continue;
+
+		x = b->eastSide  ? (uint16)(b->rectX + SKIRMISH_BASE_DEFENCE + 2)
+		                 : (uint16)(b->rectX + SKIRMISH_BASE_WIDTH  - SKIRMISH_BASE_DEFENCE - 2);
+		y = b->southSide ? (uint16)(b->rectY + SKIRMISH_BASE_DEFENCE + 2)
+		                 : (uint16)(b->rectY + SKIRMISH_BASE_HEIGHT - SKIRMISH_BASE_DEFENCE - 2);
+
+		return Tile_PackXY(x, y);
+	}
+
+	return 0;
+}
+
 /** The House holding base slot @p index, or HOUSE_INVALID. */
 uint8 Skirmish_GetBaseHouse(uint8 index)
 {

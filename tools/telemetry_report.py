@@ -103,6 +103,7 @@ def read_match(path):
         "shareLate": late,
         "switchTick": int(meta.get("switchTick", 0)),
         "seed": int(meta.get("seed", 0)),
+        "doctrine": meta.get("doctrine", "A,A").split(","),
         "ticks": int(meta.get("ticks", ticks[-1])),
         "step": int(meta.get("step", 0)),
         "wipeout": wipe,

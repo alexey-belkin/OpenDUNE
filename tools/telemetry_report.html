@@ -204,7 +204,8 @@ function buildList(){
       + m.houses.map(h=>'<span style="color:'+houseColor(h)+'">'+ru(h)+'</span>').join('<span class="sep">—</span>')
       + '</span>'
       + '<span class="verdict">'+verdict+'</span>'
-      + '<span class="meta"><span>'+m.recorded+'</span><span>армия '+m.shares[0]+'→'+m.shareLate[0]+'% / '
+      + '<span class="meta"><span>'+m.recorded+'</span><span>доктрина '+m.doctrine[0]+' / '+m.doctrine[1]
+      + '</span><span>армия '+m.shares[0]+'→'+m.shareLate[0]+'% / '
       + m.shares[1]+'→'+m.shareLate[1]+'%</span><span>t'+(m.switchTick/1000)+'k</span><span>карта '+m.seed+'</span></span>';
 
     b.onclick=()=>{ current=m; onSides=new Set(m.houses); hoverIdx=-1; readout(-1); render(); buildList(); };

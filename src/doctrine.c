@@ -863,30 +863,19 @@ static void Doctrine_EnterPhase(DoctrineHouse *dh, uint8 phase)
 /** Where the next wave forms up: outside the base, on the side the enemy is. */
 static uint16 Doctrine_MusterPoint(uint8 houseID, uint8 enemy)
 {
-	uint16 own = 0;
-	uint16 theirs = 0;
+	uint16 rally = Skirmish_GetBaseRally(houseID);
 	uint8 index;
-	tile32 tile;
+
+	VARIABLE_NOT_USED(enemy);
+
+	if (rally != 0) return rally;
 
 	for (index = 0; index < SKIRMISH_PLAYER_MAX; index++) {
-		uint8 h = Skirmish_GetBaseHouse(index);
-
-		if (h == houseID) own = Skirmish_GetBaseOrigin(index);
-		if (h == enemy)   theirs = Skirmish_GetBaseOrigin(index);
+		if (Skirmish_GetBaseHouse(index) != houseID) continue;
+		return Skirmish_GetBaseOrigin(index);
 	}
 
-	if (own == 0) return 0;
-	if (theirs == 0) return own;
-
-	/* Four tiles, not ten: the rally has to sit inside the plateau.  Ten put it
-	 * out on open sand on the enemy's side, where the garrison stood in a heap
-	 * in front of its own defence line and was taken apart while the harvesters
-	 * it was there to protect were hunted down behind it. */
-	tile = Tile_MoveByDirection(Tile_UnpackTile(own),
-	                            Tile_GetDirection(Tile_UnpackTile(own), Tile_UnpackTile(theirs)),
-	                            4 << 8);
-
-	return Tile_PackTile(tile);
+	return 0;
 }
 
 /**
@@ -1248,6 +1237,55 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 }
 
 /**
+ * Gather everything that is not on a wave behind the defence line.
+ *
+ * This overrides ACTION_HUNT, which the engine gives every fresh AI unit and
+ * which is the whole of doctrine A's behaviour: a unit rolls out of the factory
+ * and drives at the enemy on its own.  That is why a B house was seen sending
+ * quads one at a time into a turret line -- they were not being sent, they were
+ * going by themselves, and arriving alone.
+ *
+ * Overriding it is what makes a wave possible at all.  It was removed once
+ * before, because with the wave threshold set where it was no wave ever formed
+ * and the override left the reserve inert; with waves forming it is the point.
+ * The rally is behind the house's own turrets rather than out in the open, so
+ * what accumulates there accumulates next to the guns covering it.
+ */
+static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
+{
+	PoolFindStruct find;
+
+	if (dh->musterPacked == 0) return;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+		if (s_unitOnWave[u->o.index] != 0) continue;
+		if (s_unitRole[u->o.index] == DOCTRINE_ROLE_NONE) continue;
+
+		/* Shooting at something is the job; do not interrupt it. */
+		if (Tools_Index_IsValid(u->targetAttack)) continue;
+
+		/* At the line already: hold it.  ACTION_GUARD still answers for its own
+		 * ground, and Unit_Skirmish_ClearTheWay() gives it anything in range. */
+		if (Tile_GetDistancePacked(Tile_PackTile(u->o.position), dh->musterPacked) <= 6) {
+			if (u->actionID != ACTION_GUARD) Doctrine_OrderHold(u);
+			continue;
+		}
+
+		if (u->targetMove != 0 && u->actionID == ACTION_MOVE) continue;
+
+		Doctrine_OrderMove(u, dh->musterPacked);
+	}
+}
+
+/**
  * Doctrine B touches nothing it has not committed.
  *
  * There was a garrison routine here that fetched idle reserve units back to the
@@ -1291,6 +1329,8 @@ void Doctrine_Tick(House *h)
 		case PHASE_SUPPRESS: Doctrine_PhaseSuppress(houseID, dh);        break;
 		default:             Doctrine_PhaseAssault(houseID, dh, enemy);  break;
 	}
+
+	Doctrine_Rally(houseID, dh);
 
 }
 
