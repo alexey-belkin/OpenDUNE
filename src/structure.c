@@ -25,6 +25,7 @@
 #include "pool/team.h"
 #include "pool/unit.h"
 #include "scenario.h"
+#include "doctrine.h"
 #include "skirmish.h"
 #include "sprites.h"
 #include "string.h"
@@ -1159,6 +1160,13 @@ static void Structure_Destroy(Structure *s)
 	if (g_debugScenario) {
 		Structure_Remove(s);
 		return;
+	}
+
+	/* A turret going down is the other half of the ledger: units lost to turrets
+	 * are only acceptable if turrets came down for them.  In a two-House match
+	 * the killer is the only other House. */
+	if (Skirmish_IsActive() && (s->o.type == STRUCTURE_TURRET || s->o.type == STRUCTURE_ROCKET_TURRET)) {
+		Doctrine_RecordTurretKilled(Skirmish_GetOpponent(s->o.houseID));
 	}
 
 	s->o.script.variables[0] = 1;

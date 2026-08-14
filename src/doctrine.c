@@ -83,6 +83,7 @@ typedef struct DoctrineParams {
 	uint32 graceTicks;                                      /*!< Longest a phase may wait for stragglers. */
 	uint16 escortDistance;                                  /*!< How far behind the artillery the assault stands. */
 	uint16 etaSlack;                                        /*!< Arrival-time difference treated as "together". */
+	uint16 assaultRatio;                                    /*!< Percent of the enemy's defence a wave must be worth before it goes in. */
 	uint16 garrisonCap;                                     /*!< Garrison-role units alive before the Barracks is told to stop. */
 	uint8  roleShare[DOCTRINE_ROLE_MAX];                    /*!< Army composition the factories build towards. */
 } DoctrineParams;
@@ -91,7 +92,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 	{
 		"A", "legacy: engine teams, one wave gate, fixed army mix",
 		12,
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		{ 0, 0, 0, 0 }
 	},
 	{
@@ -107,6 +108,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 		/* graceTicks */     1500,
 		/* escortDistance */ 3,
 		/* etaSlack */       600,
+		/* assaultRatio */   100,
 		/* garrisonCap */    10,
 		/* artillery, assault, raid, garrison */
 		{ 20, 45, 20, 15 }
@@ -154,6 +156,18 @@ static uint32 s_turnedBack[UNIT_INDEX_MAX];
 /* Where each unit stood at its last check, so a turret finished on top of a unit
  * is not booked as the unit walking into one. */
 static uint16 s_lastTile[UNIT_INDEX_MAX];
+/* Tick each unit was last hit by a turret, so a death can be attributed to one.
+ * Nothing in Unit_Damage() is told who fired; the bullet knows, and this is
+ * where that is written down before it is lost. */
+static uint32 s_hitByTurret[UNIT_INDEX_MAX];
+/* Units lost to turrets, split by whether they were where they were supposed to
+ * be.  The first must be zero: a unit killed by a turret outside a wave's
+ * assault was somewhere it had no business being. */
+static uint32 s_killedByTurretLoose[HOUSE_MAX];
+static uint32 s_killedByTurretAssault[HOUSE_MAX];
+/* Enemy turrets destroyed.  Against the two above it answers the only question
+ * that matters about attacking a defence line: was it paid for. */
+static uint32 s_turretsKilled[HOUSE_MAX];
 /* Harvesters lost, and enemy harvesters killed.  The two halves of "money likes
  * quiet": ours should fall, theirs should rise. */
 static uint32 s_harvesterLost[HOUSE_MAX];
@@ -182,7 +196,9 @@ typedef struct DoctrineHouse {
 	uint16 columnLength;
 	uint32 wavesLaunched;
 	uint32 wavesAborted;
+	uint32 wavesDeclined;                                   /*!< Formed, looked at the line, and went home. */
 	uint32 suppressShots;
+	uint8  enemy;
 } DoctrineHouse;
 
 static DoctrineHouse s_house[HOUSE_MAX];
@@ -293,6 +309,10 @@ void Doctrine_Reset(void)
 	memset(s_inZone, 0, sizeof(s_inZone));
 	memset(s_turnedBack, 0, sizeof(s_turnedBack));
 	memset(s_lastTile, 0, sizeof(s_lastTile));
+	memset(s_hitByTurret, 0, sizeof(s_hitByTurret));
+	memset(s_killedByTurretLoose, 0, sizeof(s_killedByTurretLoose));
+	memset(s_killedByTurretAssault, 0, sizeof(s_killedByTurretAssault));
+	memset(s_turretsKilled, 0, sizeof(s_turretsKilled));
 	memset(s_harvesterLost, 0, sizeof(s_harvesterLost));
 	memset(s_harvesterKilled, 0, sizeof(s_harvesterKilled));
 	memset(s_harvesterLostEarly, 0, sizeof(s_harvesterLostEarly));
@@ -329,6 +349,7 @@ void Doctrine_ForgetUnit(uint16 unitIndex)
 	s_unitRole[unitIndex] = DOCTRINE_ROLE_NONE;
 	s_unitOnWave[unitIndex] = 0;
 	s_inZone[unitIndex] = 0;
+	s_hitByTurret[unitIndex] = 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -405,6 +426,15 @@ static uint16 Doctrine_Speed(uint16 type)
 	uint16 speed = (uint16)((uint32)ground * ui->movingSpeedFactor / 256);
 
 	return (speed == 0) ? 1 : speed;
+}
+
+bool Doctrine_IsTurretTarget(uint16 encoded)
+{
+	const Structure *s = Tools_Index_GetStructure(encoded);
+
+	if (s == NULL) return false;
+
+	return (s->o.type == STRUCTURE_TURRET || s->o.type == STRUCTURE_ROCKET_TURRET);
 }
 
 /** Whether an encoded index names a turret. */
@@ -631,7 +661,7 @@ static uint16 Doctrine_FindLD(uint8 houseID, uint16 approach, uint16 objective)
  * take the factories when the money is gone, and only go for the Construction
  * Yard once there is nothing left to punish it.
  */
-static uint16 Doctrine_PickObjective(uint8 enemy, uint16 approach, uint16 waveCount)
+static uint16 Doctrine_PickObjective(uint8 houseID, uint8 enemy, uint16 approach, uint16 waveCount)
 {
 	static const uint8 ladder[3][4] = {
 		{ STRUCTURE_REFINERY,     STRUCTURE_INVALID,     STRUCTURE_INVALID,   STRUCTURE_INVALID },
@@ -678,8 +708,16 @@ static uint16 Doctrine_PickObjective(uint8 enemy, uint16 approach, uint16 waveCo
 
 			/* Nearest to the face we picked, not to us: the approach was chosen
 			 * for being open, and an objective on the far side would drag the
-			 * wave back around the base. */
+			 * wave back around the base.
+			 *
+			 * An objective no turret covers counts as forty tiles nearer than
+			 * one that is.  This is the flank, and it is worth walking a long way
+			 * for: taking a refinery nobody is guarding costs a drive, and taking
+			 * the one behind the line costs the wave. */
 			d = Tile_GetDistancePacked(approach, Tile_PackTile(s->o.position));
+			if (Doctrine_CoveringTurret(houseID, Tile_PackTile(s->o.position)) == 0) {
+				d = (d > 40) ? (uint16)(d - 40) : 0;
+			}
 			if (d >= bestDistance) continue;
 
 			bestDistance = d;
@@ -950,8 +988,11 @@ bool Doctrine_TurretExclusion(Unit *unit)
 		if (House_AreAllied(houseID, s->o.houseID)) continue;
 		if (s->o.flags.s.isNotOnMap) continue;
 
-		/* Its own target: being here is the point. */
-		if (Tools_Index_IsValid(unit->targetAttack)
+		/* Its own target: being here is the point.  Only a unit committed to a
+		 * wave that is in the assault may hold a turret as a target at all --
+		 * everything else that wants to be here is a unit about to die alone. */
+		if (s_unitOnWave[unit->o.index] != 0 && s_house[houseID].phase == PHASE_ASSAULT
+			&& Tools_Index_IsValid(unit->targetAttack)
 			&& Tools_Index_GetType(unit->targetAttack) == IT_STRUCTURE
 			&& Tools_Index_GetStructure(unit->targetAttack) == s) return false;
 
@@ -997,13 +1038,6 @@ bool Doctrine_TurretExclusion(Unit *unit)
 	 * at something that is not a turret.  That is a tank that drifted in chasing
 	 * a tank, taking free fire from a gun it is not even fighting, and that is
 	 * what gets pushed out and counted. */
-	if (inside && !Tools_Index_IsValid(unit->targetAttack)) {
-		if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
-		Unit_SetTarget(unit, Tools_Index_Encode(worst->o.index, IT_STRUCTURE));
-		s_inZone[unit->o.index] = 1;
-		return false;
-	}
-
 	if (inside) {
 		/* Only when the unit moved into it.  A turret finishing next to a unit
 		 * that has not moved puts it inside without it having gone anywhere, and
@@ -1059,12 +1093,14 @@ bool Doctrine_TurretExclusion(Unit *unit)
 			}
 		}
 
-		/* Nowhere clear within fourteen tiles: standing still under fire is the
-		 * worst of the options, so it takes the turret instead. */
+		/* Nowhere clear within fourteen tiles: keep walking away from the worst
+		 * of them rather than turning to fight.  One unit against a turret loses,
+		 * whatever the situation -- there is no case where that trade is worth
+		 * making alone. */
 		if (out == 0) {
-			if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
-			Unit_SetTarget(unit, Tools_Index_Encode(worst->o.index, IT_STRUCTURE));
-			return true;
+			out = Tile_PackTile(Tile_MoveByDirection(unit->o.position,
+			                                         Tile_GetDirection(worst->o.position, unit->o.position),
+			                                         (uint16)((worstReach + 2) << 8)));
 		}
 
 		if (unit->actionID != ACTION_MOVE) Unit_SetAction(unit, ACTION_MOVE);
@@ -1231,10 +1267,12 @@ static uint16 Doctrine_MarchTo(uint8 houseID, RoleGroup *g, uint16 destination, 
 
 		{
 			uint16 spot = UnitSelection_SpreadTake(u, destination);
-			uint16 cover = Doctrine_CoveringTurret(houseID, spot);
 
-			if (cover != 0) {
-				Doctrine_OrderAttack(u, cover, spot);
+			/* A march never ends inside an envelope, and never answers one by
+			 * attacking it: a single unit against a turret is a unit thrown away.
+			 * Turrets are killed by a wave in the assault or not at all. */
+			if (Doctrine_CoveringTurret(houseID, spot) != 0) {
+				Doctrine_OrderHold(u);
 				continue;
 			}
 
@@ -1319,6 +1357,52 @@ static void Doctrine_DismissWave(uint8 houseID)
 /* Doctrine B -- the phases                                                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * What the enemy has to be got through, in hitpoints: everything that shoots,
+ * plus the line itself.
+ */
+static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy)
+{
+	PoolFindStruct find;
+	uint32 total = 0;
+
+	find.houseID = enemy;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap) continue;
+		if (!g_table_unitInfo[u->o.type].o.flags.priority) continue;
+		if (g_table_unitInfo[u->o.type].fireDistance == 0) continue;
+
+		total += u->o.hitpoints;
+	}
+
+	find.houseID = enemy;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+
+		if (s == NULL) break;
+		if (Doctrine_TurretReach(s->o.type) == 0) continue;
+		if (s->o.flags.s.isNotOnMap) continue;
+
+		/* A turret is worth more than its hitpoints say: it shoots for free from
+		 * outside the reach of almost everything, so it costs more to remove than
+		 * a tank of the same size. */
+		total += (uint32)s->o.hitpoints * 2;
+	}
+
+	VARIABLE_NOT_USED(houseID);
+
+	return total;
+}
+
 static void Doctrine_EnterPhase(DoctrineHouse *dh, uint8 phase)
 {
 	dh->phase = phase;
@@ -1377,7 +1461,7 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	approach = Doctrine_PickApproach(houseID, enemy);
 	if (approach == 0) return;
 
-	objective = Doctrine_PickObjective(enemy, approach, (uint16)(reserve - keep));
+	objective = Doctrine_PickObjective(houseID, enemy, approach, (uint16)(reserve - keep));
 	if (objective == 0) return;
 
 	dh->objective = objective;
@@ -1506,6 +1590,21 @@ static void Doctrine_PhaseApproach(uint8 houseID, DoctrineHouse *dh)
 	dh->atLD = atLD;
 
 	if (contact || expired || hpAtLD * 100 >= hp * p->releasePercent) {
+		/* Assembled at the line -- now, is it worth going in?
+		 *
+		 * A wave that cannot beat what is in front of it does not improve its
+		 * chances by arriving: it feeds the turrets a vehicle at a time and the
+		 * enemy loses nothing.  Not going in is not passivity, it is the other
+		 * half of the strategy -- the raiders are out hunting harvesters, and an
+		 * enemy whose economy is being taken apart has to come out to us, where
+		 * there are no turrets. */
+		if (hp * 100 < Doctrine_DefenceStrength(houseID, dh->enemy) * p->assaultRatio) {
+			dh->wavesDeclined++;
+			Doctrine_DismissWave(houseID);
+			Doctrine_EnterPhase(dh, PHASE_MUSTER);
+			return;
+		}
+
 		Doctrine_EnterPhase(dh, PHASE_SUPPRESS);
 	}
 }
@@ -1664,7 +1763,7 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 		uint16 next = 0;
 
 		if (hp * 100 >= dh->waveHpStart * p->releasePercent) {
-			next = Doctrine_PickObjective(enemy, dh->ldPacked, count);
+			next = Doctrine_PickObjective(houseID, enemy, dh->ldPacked, count);
 		}
 
 		if (next == 0) {
@@ -1936,6 +2035,7 @@ void Doctrine_Tick(House *h)
 
 	enemy = Doctrine_EnemyOf(houseID);
 	if (enemy == HOUSE_INVALID) return;
+	dh->enemy = enemy;
 
 	Doctrine_AssignRoles(houseID);
 
@@ -2204,7 +2304,7 @@ bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
 		built[r] = (uint16)(built[r] + Skirmish_GetUnitsBuilt(houseID, i));
 	}
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         built[0], built[1], built[2], built[3],
 	         (unsigned)s_pickedRole[houseID][0], (unsigned)s_pickedRole[houseID][1],
 	         (unsigned)s_pickedRole[houseID][2], (unsigned)s_pickedRole[houseID][3],
@@ -2212,9 +2312,52 @@ bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
 	         (unsigned)s_vetoedRole[houseID][2], (unsigned)s_vetoedRole[houseID][3],
 	         (unsigned)s_turretZone[houseID], (unsigned)s_turretEntries[houseID],
 	         (unsigned)s_harvesterLost[houseID], (unsigned)s_harvesterKilled[houseID],
-	         (unsigned)s_harvesterLostEarly[houseID], near8, worst);
+	         (unsigned)s_harvesterLostEarly[houseID], near8, worst,
+	         (unsigned)s_killedByTurretLoose[houseID], (unsigned)s_killedByTurretAssault[houseID],
+	         (unsigned)s_turretsKilled[houseID]);
 
 	return true;
+}
+
+/** A bullet landed on @p victim; @p originEncoded is whatever fired it. */
+void Doctrine_RecordHit(struct Unit *victim, uint16 originEncoded)
+{
+	const Unit *bullet;
+	const Structure *turret;
+
+	if (victim == NULL || victim->o.index >= UNIT_INDEX_MAX) return;
+
+	/* The explosion carries the bullet, and the bullet carries the thing that
+	 * fired it -- see Script_Structure_Fire(), which stamps the turret onto its
+	 * missile.  Two hops, and neither of them is reachable from Unit_Damage(). */
+	bullet = Tools_Index_GetUnit(originEncoded);
+	if (bullet == NULL) return;
+
+	turret = Tools_Index_GetStructure(bullet->originEncoded);
+	if (turret == NULL) return;
+	if (turret->o.type != STRUCTURE_TURRET && turret->o.type != STRUCTURE_ROCKET_TURRET) return;
+
+	s_hitByTurret[victim->o.index] = g_timerGame;
+}
+
+/** A unit of this House died.  Book it against a turret if one had just hit it. */
+void Doctrine_RecordDeath(uint8 houseID, uint16 unitIndex)
+{
+	if (houseID >= HOUSE_MAX || unitIndex >= UNIT_INDEX_MAX) return;
+	if (s_hitByTurret[unitIndex] == 0 || s_hitByTurret[unitIndex] + 200 < g_timerGame) return;
+
+	/* On a wave, in the assault, is the only place a turret is allowed to kill
+	 * one of ours -- that is the trade the doctrine is willing to make. */
+	if (s_unitOnWave[unitIndex] != 0 && s_house[houseID].phase == PHASE_ASSAULT) {
+		s_killedByTurretAssault[houseID]++;
+	} else {
+		s_killedByTurretLoose[houseID]++;
+	}
+}
+
+void Doctrine_RecordTurretKilled(uint8 killer)
+{
+	if (killer < HOUSE_MAX) s_turretsKilled[killer]++;
 }
 
 void Doctrine_RecordHarvesterLoss(uint8 owner, uint8 killer)
@@ -2275,9 +2418,10 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 
 	dh = &s_house[houseID];
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u",
 	         dh->phase, dh->waveCount, dh->atLD, dh->columnLength,
-	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted);
+	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted,
+	         (unsigned)dh->wavesDeclined);
 
 	return true;
 }
@@ -2314,7 +2458,7 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 		role[s_unitRole[u->o.index]]++;
 	}
 
-	snprintf(buf, length, "B %s w%u/LD%u T%u a%us%ur%ug%u L%uA%u",
+	snprintf(buf, length, "B %s w%u/LD%u T%u a%us%ur%ug%u L%uA%uD%u",
 	         phaseName[dh->phase & 3], dh->waveCount, dh->atLD,
 	         /* Tiles from the rally to the nearest own turret.  A reserve that is
 	          * not standing with the guns is not covering them, and the number is
@@ -2322,7 +2466,8 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 	         min(Skirmish_GetTurretDistance(houseID, dh->musterPacked), 99),
 	         role[DOCTRINE_ROLE_ARTILLERY], role[DOCTRINE_ROLE_ASSAULT],
 	         role[DOCTRINE_ROLE_RAID], role[DOCTRINE_ROLE_GARRISON],
-	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted);
+	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted,
+	         (unsigned)dh->wavesDeclined);
 
 	return true;
 }

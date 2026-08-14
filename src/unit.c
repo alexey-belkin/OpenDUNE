@@ -2238,15 +2238,12 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	 * not "see" fired at it: measured at 210 such shots in one match. */
 	target = Unit_Autonomy_FindTargetWithin(unit, onWave ? max(reach + 3, 8) : reach, true);
 
-	/* Standing inside an envelope, the only legal target is the turret making it
-	 * one.  Handing this unit a tank to shoot at instead is what put it there and
-	 * kept it there: the sweep found something closer, the exclusion then pushed
-	 * it out, and the next sweep found the same thing again. */
-	{
-		const uint16 cover = Doctrine_CoveringTurret(Unit_GetHouseID(unit), Tile_PackTile(unit->o.position));
-
-		if (cover != 0) target = cover;
-	}
+	/* A turret is a wave's target or nobody's.  The sweep used to hand one to
+	 * whatever happened to be standing in reach, which is how a raider that had
+	 * chased a harvester to the enemy base finished its trip by driving into a
+	 * gun on its own: it reaches three tiles, the turret eight, and it dies
+	 * having accomplished nothing.  Organised or not at all. */
+	if (target != 0 && !onWave && Doctrine_IsTurretTarget(target)) target = 0;
 
 	if (target != 0) {
 		Unit_SetTarget(unit, target);
@@ -4478,6 +4475,7 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 		}
 
 		if (Skirmish_IsActive()) Skirmish_RecordKill(houseID, false);
+		if (Skirmish_IsActive()) Doctrine_RecordDeath(houseID, unit->o.index);
 		/* Both halves of "money likes quiet" in one place: whose harvester it
 		 * was, and who is the only other House on the map. */
 		if (Skirmish_IsActive() && unit->o.type == UNIT_HARVESTER) {

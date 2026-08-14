@@ -7,7 +7,9 @@
 #include "os/common.h"
 #include "os/math.h"
 
+#include "doctrine.h"
 #include "map.h"
+#include "skirmish.h"
 
 #include "animation.h"
 #include "audio/sound.h"
@@ -433,6 +435,9 @@ void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 un
 				uint16 damage = hitpoints >> (distance >> 2);
 
 				damage = Unit_CombatBalance_ApplyClassDamage(source, u, damage);
+				/* Before the damage, because the unit may not survive it: this is
+				 * the only point at which what fired is still reachable. */
+				if (Skirmish_IsActive()) Doctrine_RecordHit(u, unitOriginEncoded);
 				Unit_Damage(u, damage, 0);
 			}
 
