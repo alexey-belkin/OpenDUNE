@@ -73,6 +73,8 @@
 /** Size of the rock plateau carved out for one base. */
 #define SKIRMISH_BASE_WIDTH  20
 #define SKIRMISH_BASE_HEIGHT 16
+/** Middle of the 62x62 map, which is what a base is oriented against. */
+#define SKIRMISH_MAP_CENTER  31
 
 typedef struct SkirmishPlanEntry {
 	uint8  type;                                            /*!< StructureType to build. */
@@ -98,8 +100,15 @@ typedef struct SkirmishBase {
 	uint32 militarySpent;
 	uint32 economySpent;
 
-	/* Layout cursor, only used while building the plan. */
+	/* Which half of the map the rectangle landed in.  Everything that has a
+	 * direction -- the build order's growth, the spice seeded for this house --
+	 * is expressed against the middle of the map through these two, so all four
+	 * corners come out as mirror images of each other. */
 	uint16 rectX, rectY;
+	bool   eastSide, southSide;
+
+	/* Layout cursor, only used while building the plan.  It is base-local:
+	 * (0,0) is the corner of the rectangle facing the middle of the map. */
 	uint16 cursorX, cursorY;
 	uint16 rowHeight;
 } SkirmishBase;
@@ -451,30 +460,45 @@ static void Skirmish_CarveRock(const SkirmishBase *b)
 }
 
 /**
- * Reserve room for one structure inside the base rectangle, packing rows left
- * to right with a one tile gap so units can still move through the base.
+ * Reserve room for one structure inside the base rectangle, packing rows with a
+ * one tile gap so units can still move through the base.
+ *
+ * The packing runs in base-local coordinates and is mirrored onto the map on the
+ * way out, so every base starts at the corner of its rectangle nearest the
+ * middle of the map and grows away from it.  Without that mirroring the corner a
+ * house drew decided the match: the layout always started at the rectangle's
+ * top-left, which for a bottom-right base is the corner facing the spice in the
+ * middle and for a top-left base is the one facing away from it -- most of a
+ * base rectangle of difference in how far the first harvester has to drive,
+ * every trip, for the whole match.
  * @return The packed top-left tile, or 0xFFFF when the base is full.
  */
 static uint16 Skirmish_Layout_Next(SkirmishBase *b, uint8 type)
 {
 	const StructureInfo *si = &g_table_structureInfo[type];
 	const XYSize *size = &g_table_structure_layoutSize[si->layout];
-	uint16 packed;
+	uint16 x, y;
 
-	if (b->cursorX + size->width > b->rectX + SKIRMISH_BASE_WIDTH) {
-		b->cursorX  = b->rectX;
-		b->cursorY += b->rowHeight + 1;
+	if (b->cursorX + size->width > SKIRMISH_BASE_WIDTH) {
+		b->cursorX   = 0;
+		b->cursorY  += b->rowHeight + 1;
 		b->rowHeight = 0;
 	}
 
-	if (b->cursorY + size->height > b->rectY + SKIRMISH_BASE_HEIGHT) return 0xFFFF;
+	if (b->cursorY + size->height > SKIRMISH_BASE_HEIGHT) return 0xFFFF;
 
-	packed = Tile_PackXY(b->cursorX, b->cursorY);
+	/* A western base grows east to west, so its slots are counted back from the
+	 * eastern edge; a structure is anchored by its top-left tile, so a mirrored
+	 * slot steps back by its own size as well. */
+	x = b->eastSide ? (b->rectX + b->cursorX)
+	                : (b->rectX + SKIRMISH_BASE_WIDTH  - b->cursorX - size->width);
+	y = b->southSide ? (b->rectY + b->cursorY)
+	                 : (b->rectY + SKIRMISH_BASE_HEIGHT - b->cursorY - size->height);
 
-	b->cursorX += size->width + 1;
+	b->cursorX  += size->width + 1;
 	b->rowHeight = max(b->rowHeight, size->height);
 
-	return packed;
+	return Tile_PackXY(x, y);
 }
 
 /**
@@ -519,8 +543,8 @@ static void Skirmish_Plan_Create(SkirmishBase *b)
 {
 	uint8 i;
 
-	b->cursorX   = b->rectX;
-	b->cursorY   = b->rectY;
+	b->cursorX   = 0;
+	b->cursorY   = 0;
 	b->rowHeight = 0;
 
 	/* The Construction Yard is the only structure that exists from the start;
@@ -1152,6 +1176,12 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
 	b->rectY         = rectY;
 	b->creditsNoSilo = SKIRMISH_START_CREDITS;
 
+	/* Derived from where the rectangle landed rather than passed in, so all four
+	 * corners and the solo case come out right without the caller having to
+	 * say. */
+	b->eastSide  = (rectX + SKIRMISH_BASE_WIDTH  / 2 > SKIRMISH_MAP_CENTER);
+	b->southSide = (rectY + SKIRMISH_BASE_HEIGHT / 2 > SKIRMISH_MAP_CENTER);
+
 	if (plan != NULL) {
 		b->plan = *plan;
 	} else {
@@ -1277,17 +1307,27 @@ static bool Skirmish_StartInternal(uint8 houseID1, uint8 houseID2, uint32 seed, 
 	Skirmish_SeedSpice(60, 30);
 
 	/* Both sides need something to mine within reach of home, or the opening is
-	 * decided by which corner the generator happened to favour. */
+	 * decided by which corner the generator happened to favour.
+	 *
+	 * One field just beyond each of the two rectangle edges that face the middle
+	 * of the map, next to the corner the Construction Yard now stands on.  These
+	 * used to be offset right and down from the Yard unconditionally, which for
+	 * a bottom-right base put both fields past the map edge, where
+	 * Skirmish_SeedSpiceField() drops them without a word: that house started
+	 * every match with only whatever the generator had scattered nearby. */
 	for (i = 0; i < SKIRMISH_PLAYER_MAX; i++) {
-		uint16 originX, originY;
+		const SkirmishBase *b = &s_bases[i];
+		uint16 outerX, outerY, innerX, innerY;
 
-		if (s_bases[i].entryCount == 0) continue;
+		if (b->entryCount == 0) continue;
 
-		originX = Tile_GetPackedX(s_bases[i].origin);
-		originY = Tile_GetPackedY(s_bases[i].origin);
+		outerX = b->eastSide  ? b->rectX - 5 : b->rectX + SKIRMISH_BASE_WIDTH  + 4;
+		outerY = b->southSide ? b->rectY - 5 : b->rectY + SKIRMISH_BASE_HEIGHT + 4;
+		innerX = b->eastSide  ? b->rectX + 4 : b->rectX + SKIRMISH_BASE_WIDTH  - 5;
+		innerY = b->southSide ? b->rectY + 4 : b->rectY + SKIRMISH_BASE_HEIGHT - 5;
 
-		Skirmish_SeedSpiceField(originX + SKIRMISH_BASE_WIDTH + 4, originY + 4, 40);
-		Skirmish_SeedSpiceField(originX + 4, originY + SKIRMISH_BASE_HEIGHT + 4, 40);
+		Skirmish_SeedSpiceField(outerX, innerY, 40);
+		Skirmish_SeedSpiceField(innerX, outerY, 40);
 	}
 
 	/* The spectator sees everything: without this the whole match happens
