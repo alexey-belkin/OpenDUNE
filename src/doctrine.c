@@ -205,8 +205,12 @@ bool Doctrine_ParseArgument(const char *arg)
 	first = Doctrine_ParseName(buf);
 	if (first == DOCTRINE_INVALID) return false;
 
+	/* "--doctrine=B," is one name with a stray comma, not two.  Rejecting it
+	 * left both houses on the default, silently as far as anyone watching the
+	 * game is concerned -- the warning goes to a terminal nobody is reading
+	 * while a GUI match is on screen. */
 	second = first;
-	if (comma != NULL) {
+	if (comma != NULL && comma[1] != '\0') {
 		second = Doctrine_ParseName(comma + 1);
 		if (second == DOCTRINE_INVALID) return false;
 	}
@@ -1532,7 +1536,7 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 	if (houseID >= HOUSE_MAX || buf == NULL || length == 0) return false;
 
 	if (Doctrine_GetForHouse(houseID) == DOCTRINE_LEGACY) {
-		snprintf(buf, length, "doctrine A (legacy teams)");
+		snprintf(buf, length, "A legacy");
 		return true;
 	}
 
@@ -1553,7 +1557,7 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 		role[s_unitRole[u->o.index]]++;
 	}
 
-	snprintf(buf, length, "doctrine B %s wave %u@LD%u col%u  art%u ass%u raid%u gar%u  launched%u aborted%u",
+	snprintf(buf, length, "B %s w%u@LD%u c%u a%u/s%u/r%u/g%u L%u/A%u",
 	         phaseName[dh->phase & 3], dh->waveCount, dh->atLD, dh->columnLength,
 	         role[DOCTRINE_ROLE_ARTILLERY], role[DOCTRINE_ROLE_ASSAULT],
 	         role[DOCTRINE_ROLE_RAID], role[DOCTRINE_ROLE_GARRISON],

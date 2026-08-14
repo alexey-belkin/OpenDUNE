@@ -2226,11 +2226,10 @@ bool Skirmish_GetSummary(uint8 index, char *buf, uint16 length)
 	{
 		char doctrine[80];
 
-		if (Doctrine_UsesEngineTeams(b->houseID) || !Doctrine_GetSummary(b->houseID, doctrine, sizeof(doctrine))) {
-			strcpy(doctrine, "A");
-		}
+		if (!Doctrine_GetSummary(b->houseID, doctrine, sizeof(doctrine))) strcpy(doctrine, "?");
 
-		snprintf(buf, length, "%s mil%u%% %u/%uc %uc h%u u%u s%u@%u%% val%u %u/%u %s | %s",
+		snprintf(buf, length, "[%s] %s mil%u%% %u/%uc %uc h%u u%u s%u@%u%% val%u %u/%u %s",
+		         doctrine,
 		         g_table_houseInfo[b->houseID].name,
 		         (unsigned)((g_timerGame - g_tickScenarioStart >= b->plan.militarySwitchTick)
 		                    ? b->plan.militaryShareLate : b->plan.militaryShare),
@@ -2239,7 +2238,7 @@ bool Skirmish_GetSummary(uint8 index, char *buf, uint16 length)
 		         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER), h->unitCount,
 		         alive, (unsigned)((hitpointsMax != 0) ? hitpoints * 100 / hitpointsMax : 100),
 		         (unsigned)Skirmish_War_GetValue(index),
-		         done, b->entryCount, building, doctrine);
+		         done, b->entryCount, building);
 	}
 
 	return true;
@@ -2569,10 +2568,14 @@ void Skirmish_DrawStatusOverlay(void)
 	if (!s_active) return;
 
 	for (i = 0; i < SKIRMISH_PLAYER_MAX; i++) {
-		char line[80];
+		char line[220];
 
 		if (!Skirmish_GetSummary(i, line, sizeof(line))) continue;
 
-		GUI_DrawText_Wrapper(line, 2, 42 + i * 8, 0xFF, 0, 0x22);
+		/* Through a "%s", not as the format itself.  GUI_DrawText_Wrapper() is
+		 * printf-shaped, and the summary line contains a literal percent sign --
+		 * "mil90%" -- so passing it directly ate everything after it and the
+		 * overlay showed the House name and nothing else. */
+		GUI_DrawText_Wrapper("%s", 2, 42 + i * 8, 0xFF, 0, 0x22, line);
 	}
 }
