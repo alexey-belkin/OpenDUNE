@@ -83,6 +83,7 @@ typedef struct DoctrineParams {
 	uint32 graceTicks;                                      /*!< Longest a phase may wait for stragglers. */
 	uint16 escortDistance;                                  /*!< How far behind the artillery the assault stands. */
 	uint16 etaSlack;                                        /*!< Arrival-time difference treated as "together". */
+	uint16 garrisonCap;                                     /*!< Garrison-role units alive before the Barracks is told to stop. */
 	uint8  roleShare[DOCTRINE_ROLE_MAX];                    /*!< Army composition the factories build towards. */
 } DoctrineParams;
 
@@ -90,7 +91,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 	{
 		"A", "legacy: engine teams, one wave gate, fixed army mix",
 		12,
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		{ 0, 0, 0, 0 }
 	},
 	{
@@ -106,6 +107,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 		/* graceTicks */     1500,
 		/* escortDistance */ 3,
 		/* etaSlack */       600,
+		/* garrisonCap */    10,
 		/* artillery, assault, raid, garrison */
 		{ 20, 45, 20, 15 }
 	}
@@ -123,6 +125,12 @@ static uint8 s_unitOnWave[UNIT_INDEX_MAX];
 /** Roles a house has ever been able to build.  The share of one it cannot reach
  *  yet belongs to the others, or the whole army waits on a technology. */
 static uint8 s_roleSeen[HOUSE_MAX][DOCTRINE_ROLE_MAX];
+/* Production diagnostics.  "The base is not building tanks" is a sentence with
+ * at least four different causes -- nothing asked for one, the veto refused it,
+ * the factory is gone, or the credits went elsewhere -- and they are not
+ * distinguishable from the army that comes out. */
+static uint32 s_pickedRole[HOUSE_MAX][DOCTRINE_ROLE_MAX];
+static uint32 s_vetoedRole[HOUSE_MAX][DOCTRINE_ROLE_MAX];
 
 typedef struct DoctrineHouse {
 	uint8  phase;
@@ -247,6 +255,8 @@ void Doctrine_Reset(void)
 	memset(s_unitRole, DOCTRINE_ROLE_NONE, sizeof(s_unitRole));
 	memset(s_unitOnWave, 0, sizeof(s_unitOnWave));
 	memset(s_roleSeen, 0, sizeof(s_roleSeen));
+	memset(s_pickedRole, 0, sizeof(s_pickedRole));
+	memset(s_vetoedRole, 0, sizeof(s_vetoedRole));
 	memset(s_house, 0, sizeof(s_house));
 }
 
@@ -1419,6 +1429,8 @@ uint16 Doctrine_PickUnit(const House *h, uint32 buildable)
 		bestScore = score;
 	}
 
+	if (best != 0xFFFF) s_pickedRole[h->index][bestRole]++;
+
 	return best;
 }
 
@@ -1460,8 +1472,19 @@ bool Doctrine_AllowUnit(const House *h, uint16 unitType)
 
 		if (r == DOCTRINE_ROLE_NONE || !s_roleSeen[h->index][r]) continue;
 
-		total += Skirmish_CountUnitsOfType((uint8)h->index, i);
-		if (r == role) mine += Skirmish_CountUnitsOfType((uint8)h->index, i);
+		/* Built over the match, not alive now.  The two questions are different
+		 * and each rule needs its own: Doctrine_PickUnit() asks what the army is
+		 * short of and must look at what is standing, while this one asks where
+		 * the money has gone and must look at what was paid for.
+		 *
+		 * Measured with live counts here, the veto never fired once in a whole
+		 * match.  Infantry is the one thing that never stays alive: it dies, the
+		 * live count drops, the test passes, the Barracks builds more -- 46
+		 * garrison units against 2 assault, and not one refusal.  It is also
+		 * cheap, and production is paid a credit at a time, so five soldiers take
+		 * the credit stream a tank needed. */
+		total += Skirmish_GetUnitsBuilt((uint8)h->index, i);
+		if (r == role) mine += Skirmish_GetUnitsBuilt((uint8)h->index, i);
 	}
 
 	for (r = 0; r < DOCTRINE_ROLE_MAX; r++) {
@@ -1483,17 +1506,52 @@ bool Doctrine_AllowUnit(const House *h, uint16 unitType)
 	 *
 	 * So composition is steered where it costs nothing -- Doctrine_PickUnit()
 	 * picks the role furthest below its share whenever a factory asks -- and the
-	 * veto only catches the runaway case: three times over share, which one
-	 * production line grinding out the same unit for ten thousand ticks does
-	 * reach and nothing healthy does. */
+	 * veto is a quarter over share, measured in credits spent rather than units
+	 * standing. */
 	if (total < DOCTRINE_MIX_FLOOR) return true;
 
-	return (mine * shareSum <= total * p->roleShare[role] * 3);
+	if (mine * shareSum * 4 <= total * p->roleShare[role] * 5) return true;
+
+	s_vetoedRole[h->index][role]++;
+
+	return false;
 }
 
 /* -------------------------------------------------------------------------- */
 /* Reporting                                                                   */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Units built by role, picks by role, refusals by role.
+ *
+ * Roles are a property of the unit type, so this reads the same under either
+ * doctrine and the two production lines can be compared directly.
+ */
+bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
+{
+	uint16 built[DOCTRINE_ROLE_MAX];
+	uint8 r;
+	uint16 i;
+
+	if (houseID >= HOUSE_MAX || buf == NULL || length == 0) return false;
+
+	for (r = 0; r < DOCTRINE_ROLE_MAX; r++) built[r] = 0;
+
+	for (i = 0; i < UNIT_MAX; i++) {
+		r = Doctrine_RoleOf(i);
+		if (r == DOCTRINE_ROLE_NONE) continue;
+		built[r] = (uint16)(built[r] + Skirmish_GetUnitsBuilt(houseID, i));
+	}
+
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	         built[0], built[1], built[2], built[3],
+	         (unsigned)s_pickedRole[houseID][0], (unsigned)s_pickedRole[houseID][1],
+	         (unsigned)s_pickedRole[houseID][2], (unsigned)s_pickedRole[houseID][3],
+	         (unsigned)s_vetoedRole[houseID][0], (unsigned)s_vetoedRole[houseID][1],
+	         (unsigned)s_vetoedRole[houseID][2], (unsigned)s_vetoedRole[houseID][3]);
+
+	return true;
+}
 
 bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 {

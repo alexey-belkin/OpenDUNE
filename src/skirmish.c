@@ -173,6 +173,8 @@ static uint32 s_damageTaken[HOUSE_MAX];
 static uint16 s_unitsBuilt[HOUSE_MAX][UNIT_MAX];
 /* Whether each house is currently attacking or currently building up. */
 static bool s_waveOpen[HOUSE_MAX];
+/* Alternation on a house's only Heavy Factory: harvester, army, harvester. */
+static bool s_harvesterTurn[HOUSE_MAX];
 
 /* What the army is shooting at, cumulative.  Shots, not orders: an order that
  * never turns into a shot is exactly the failure these are here to catch. */
@@ -211,6 +213,12 @@ static const uint8 s_blueprint[] = {
 	STRUCTURE_TURRET,
 	STRUCTURE_SILO,
 	STRUCTURE_HIGH_TECH,
+	/* The second production line, and it belongs here rather than at the end of
+	 * the plan.  One Heavy Factory has to serve both the harvester fleet and the
+	 * army, and the fleet wins: no house of either doctrine built a single tank
+	 * before t125000 while the sixteenth harvester was still owed.  A factory is
+	 * economy spending, so this costs the army budget nothing. */
+	STRUCTURE_HEAVY_VEHICLE,
 	STRUCTURE_WINDTRAP,
 	STRUCTURE_REPAIR,
 	STRUCTURE_STARPORT,
@@ -220,16 +228,12 @@ static const uint8 s_blueprint[] = {
 	STRUCTURE_HOUSE_OF_IX,
 	STRUCTURE_PALACE,
 
-	/* A second production line of each kind.  One Heavy Factory is a hard
-	 * ceiling on how fast a house can replace what it loses: a Siege Tank takes
-	 * as long to build whether the house has 2000 credits or 8000, so a grown
-	 * economy spends the second half of a match unable to turn money into an
-	 * army.  Two of each roughly doubles that rate, and by this point in the plan
-	 * the income is there to keep them both busy. */
+	/* A third line, and a second light one.  One Heavy Factory is a hard ceiling
+	 * on how fast a house replaces what it loses: a Siege Tank takes as long to
+	 * build whether the house has 2000 credits or 8000, so a grown economy spends
+	 * the back half of a match unable to turn money into an army. */
 	STRUCTURE_HEAVY_VEHICLE,
 	STRUCTURE_LIGHT_VEHICLE,
-	STRUCTURE_WINDTRAP,
-	STRUCTURE_HEAVY_VEHICLE,
 
 	/* The forward line, and it is deliberately long.  A pair of turrets is a
 	 * speed bump; what stops a team is enough of them that the team dies inside
@@ -407,6 +411,7 @@ void Skirmish_Reset(void)
 	memset(s_damageTaken, 0, sizeof(s_damageTaken));
 	memset(s_unitsBuilt, 0, sizeof(s_unitsBuilt));
 	memset(s_waveOpen, 0, sizeof(s_waveOpen));
+	memset(s_harvesterTurn, 0, sizeof(s_harvesterTurn));
 	memset(s_shotsTurret, 0, sizeof(s_shotsTurret));
 	memset(s_shotsStructure, 0, sizeof(s_shotsStructure));
 	memset(s_shotsUnit, 0, sizeof(s_shotsUnit));
@@ -1155,6 +1160,63 @@ bool Skirmish_AI_AllowUnit(const House *h, uint16 unitType)
 	if (!Skirmish_AI_WantsHarvester(h)) return true;
 
 	return (h->unitCount + SKIRMISH_HARVESTER_TARGET < h->unitCountMax);
+}
+
+/**
+ * Whether *this* Heavy Factory should put a harvester on the line.
+ *
+ * Structure_AI_PickNextToBuild() answers "does the house want a harvester" and
+ * returns one unconditionally while it does, and the fleet target in a war is
+ * sixteen.  The Heavy Factory is also the only place a tank can come from, so
+ * the whole of it goes on harvesters until the fleet is complete -- and then
+ * again every time one dies.  Measured over a match: not one assault unit built
+ * by either house before t125000, against 31 raid units from the Light Factory
+ * by t100000.  That is why an attack was infantry and quads: the tanks did not
+ * exist yet, in either doctrine.
+ *
+ * Two ways out, and this takes both.  With more than one Heavy Factory the
+ * first one keeps the fleet and the rest are free for the army.  With only one,
+ * it alternates once the economy is standing -- the first few harvesters still
+ * come out back to back, because an economy with no harvesters has no army
+ * either.
+ */
+#define SKIRMISH_HARVESTER_FIRST 4
+
+bool Skirmish_AI_FactoryWantsHarvester(const House *h, const Structure *s)
+{
+	PoolFindStruct find;
+	uint16 lowest = 0xFFFF;
+	uint16 factories = 0;
+
+	if (!s_active || h == NULL || s == NULL) return Skirmish_AI_WantsHarvester(h);
+	if (!Skirmish_AI_WantsHarvester(h)) return false;
+
+	find.houseID = (uint8)h->index;
+	find.index   = 0xFFFF;
+	find.type    = STRUCTURE_HEAVY_VEHICLE;
+
+	while (true) {
+		const Structure *f = Structure_Find(&find);
+
+		if (f == NULL) break;
+		if (f->o.flags.s.isNotOnMap) continue;
+
+		factories++;
+		if (f->o.index < lowest) lowest = f->o.index;
+	}
+
+	/* More than one line: the oldest keeps the fleet, the others are the army's. */
+	if (factories > 1) return (s->o.index == lowest);
+
+	/* The opening is economy first, no argument. */
+	if (Skirmish_CountUnits((uint8)h->index, UNIT_HARVESTER) < SKIRMISH_HARVESTER_FIRST) return true;
+
+	/* One line, and the army is allowed to spend: take turns. */
+	if (!Skirmish_War_MilitaryAllowed(Skirmish_GetBase((uint8)h->index))) return true;
+
+	s_harvesterTurn[h->index] = !s_harvesterTurn[h->index];
+
+	return s_harvesterTurn[h->index];
 }
 
 bool Skirmish_AI_WantsHarvester(const House *h)
@@ -2422,10 +2484,12 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 
 	{
 		char doctrine[64];
+		char production[96];
 
 		if (!Doctrine_GetTelemetry(b->houseID, doctrine, sizeof(doctrine))) strcpy(doctrine, "0,0,0,0,0,0");
+		if (!Doctrine_GetProduction(b->houseID, production, sizeof(production))) strcpy(production, "0,0,0,0,0,0,0,0,0,0,0,0");
 
-		snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%s",
+		snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%s,%s",
 		         g_table_houseInfo[b->houseID].name,
 		         refineries, combatStructures,
 		         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER),
@@ -2442,7 +2506,7 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 		         Skirmish_CountIdleAttackers(b->houseID, true),
 		         Skirmish_CountStalledHarvesters(b->houseID),
 		         Skirmish_CountFreeRefineries(b->houseID),
-		         doctrine);
+		         doctrine, production);
 	}
 
 	return true;

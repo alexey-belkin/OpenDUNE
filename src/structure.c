@@ -2227,7 +2227,7 @@ uint16 Structure_AI_PickNextToBuild(Structure *s)
 	if (s->o.type == STRUCTURE_HEAVY_VEHICLE) {
 		/* A skirmish AI has to grow its own economy; the campaign AI is fed
 		 * harvesters by its scenario and keeps the original behaviour. */
-		if (Skirmish_AI_WantsHarvester(h) && (buildable & FLAG_UNIT_HARVESTER) != 0) return UNIT_HARVESTER;
+		if (Skirmish_AI_FactoryWantsHarvester(h, s) && (buildable & FLAG_UNIT_HARVESTER) != 0) return UNIT_HARVESTER;
 
 		buildable &= ~FLAG_UNIT_HARVESTER;
 		buildable &= ~FLAG_UNIT_MCV;

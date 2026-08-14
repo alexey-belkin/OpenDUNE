@@ -53,6 +53,7 @@ extern bool Doctrine_IsOnWave(const struct Unit *u);
 extern uint16 Doctrine_PickUnit(const struct House *h, uint32 buildable);
 extern bool Doctrine_AllowUnit(const struct House *h, uint16 unitType);
 extern void Doctrine_ForgetUnit(uint16 unitIndex);
+extern bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length);
 extern bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length);
 extern bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length);
 
