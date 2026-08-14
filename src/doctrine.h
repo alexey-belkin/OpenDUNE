@@ -56,6 +56,7 @@ extern void Doctrine_ForgetUnit(uint16 unitIndex);
 extern uint16 Doctrine_ThreatDistance(uint8 houseID, uint16 packed);
 extern void Doctrine_HarvesterExposure(uint8 houseID, uint16 *near8, uint16 *worst);
 extern uint16 Doctrine_DangerAt(uint8 houseID, uint16 packed);
+extern uint16 Doctrine_CoveringTurret(uint8 houseID, uint16 packed);
 extern bool Doctrine_TurretExclusion(struct Unit *unit);
 extern void Doctrine_RecordHarvesterLoss(uint8 owner, uint8 killer);
 extern bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length);

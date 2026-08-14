@@ -141,6 +141,19 @@ static uint8  s_danger[HOUSE_MAX][DANGER_CELLS * DANGER_CELLS];
 static uint32 s_dangerUntil[HOUSE_MAX];
 
 static uint32 s_turretZone[HOUSE_MAX];
+/* Entries, as distinct from time spent.  The counter above ticks once per unit
+ * tick and so measures how long units stand in an envelope; the goal is about
+ * how often they cross into one, which is a different number and the only one a
+ * rule can be held to.  s_inZone remembers which side of the line each unit was
+ * on last tick. */
+static uint32 s_turretEntries[HOUSE_MAX];
+static uint8  s_inZone[UNIT_INDEX_MAX];
+/* Ticks during which a turned-back unit is left alone: without it the doctrine
+ * re-issues on its next pass the very order that sent it there. */
+static uint32 s_turnedBack[UNIT_INDEX_MAX];
+/* Where each unit stood at its last check, so a turret finished on top of a unit
+ * is not booked as the unit walking into one. */
+static uint16 s_lastTile[UNIT_INDEX_MAX];
 /* Harvesters lost, and enemy harvesters killed.  The two halves of "money likes
  * quiet": ours should fall, theirs should rise. */
 static uint32 s_harvesterLost[HOUSE_MAX];
@@ -276,6 +289,10 @@ void Doctrine_Reset(void)
 	memset(s_pickedRole, 0, sizeof(s_pickedRole));
 	memset(s_vetoedRole, 0, sizeof(s_vetoedRole));
 	memset(s_turretZone, 0, sizeof(s_turretZone));
+	memset(s_turretEntries, 0, sizeof(s_turretEntries));
+	memset(s_inZone, 0, sizeof(s_inZone));
+	memset(s_turnedBack, 0, sizeof(s_turnedBack));
+	memset(s_lastTile, 0, sizeof(s_lastTile));
 	memset(s_harvesterLost, 0, sizeof(s_harvesterLost));
 	memset(s_harvesterKilled, 0, sizeof(s_harvesterKilled));
 	memset(s_harvesterLostEarly, 0, sizeof(s_harvesterLostEarly));
@@ -311,6 +328,7 @@ void Doctrine_ForgetUnit(uint16 unitIndex)
 	if (unitIndex >= UNIT_INDEX_MAX) return;
 	s_unitRole[unitIndex] = DOCTRINE_ROLE_NONE;
 	s_unitOnWave[unitIndex] = 0;
+	s_inZone[unitIndex] = 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -833,6 +851,44 @@ uint16 Doctrine_DangerAt(uint8 houseID, uint16 packed)
 }
 
 /**
+ * The enemy turret whose reach covers a tile, if any, as an encoded index.
+ *
+ * Every order the doctrine issues has to ask this before it issues it: sending a
+ * unit somewhere covered and then pushing it back out on the next tick is not a
+ * rule, it is a loop, and it ran twenty-three thousand times in a single match.
+ */
+uint16 Doctrine_CoveringTurret(uint8 houseID, uint16 packed)
+{
+	PoolFindStruct find;
+	uint16 best = 0;
+	uint16 bestReach = 0;
+
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+		uint16 reach;
+
+		if (s == NULL) break;
+
+		reach = Doctrine_TurretReach(s->o.type);
+		if (reach == 0) continue;
+		if (House_AreAllied(houseID, s->o.houseID)) continue;
+		if (s->o.flags.s.isNotOnMap) continue;
+		if (Tile_GetDistancePacked(packed, Tile_PackTile(s->o.position)) > reach) continue;
+
+		if (reach <= bestReach) continue;
+
+		bestReach = reach;
+		best = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
+	}
+
+	return best;
+}
+
+/**
  * Keep a unit out of a turret's reach unless that turret is what it came for.
  *
  * A tank fighting another tank drifts, and the ground it drifts onto is often
@@ -855,6 +911,9 @@ bool Doctrine_TurretExclusion(Unit *unit)
 	PoolFindStruct find;
 	const Structure *worst = NULL;
 	uint16 worstReach = 0;
+	uint16 distance;
+	uint16 margin;
+	bool inside = false;
 	uint8 houseID;
 
 	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX || unit->o.flags.s.isNotOnMap) return false;
@@ -865,6 +924,16 @@ bool Doctrine_TurretExclusion(Unit *unit)
 	ui = &g_table_unitInfo[unit->o.type];
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit) return false;
 	if (unit->o.type == UNIT_SABOTEUR) return false;                 /* Its job is to arrive. */
+
+	/* The fence has to be as wide as the ground a unit covers between two looks.
+	 *
+	 * This runs under tickUnknown4, which fires every twenty game ticks, and a
+	 * Raider Trike moves at an effective 37.5 against a Tank's 10.9 -- so a
+	 * one-tile fence is something the fast half of the army steps straight over
+	 * and is already inside by the time anyone asks.  Scaled by speed, the fast
+	 * units get turned early enough to actually turn. */
+	margin = (uint16)(1 + Doctrine_Speed(unit->o.type) / 8);
+	if (margin > 6) margin = 6;
 
 	find.houseID = HOUSE_INVALID;
 	find.index   = 0xFFFF;
@@ -886,7 +955,21 @@ bool Doctrine_TurretExclusion(Unit *unit)
 			&& Tools_Index_GetType(unit->targetAttack) == IT_STRUCTURE
 			&& Tools_Index_GetStructure(unit->targetAttack) == s) return false;
 
-		if (Tile_GetDistanceRoundedUp(unit->o.position, s->o.position) > reach) continue;
+		/* Turned back a tile early, on purpose.
+		 *
+		 * Gating every order the doctrine issues took one seed from 318 crossings
+		 * to 23 and made another worse, because what was left is not an order at
+		 * all: a unit whose start and finish are both clear still walks the line
+		 * between them, and the engine's pathfinder has never heard of a turret.
+		 * There is no way to ask it for a detour, so the fence goes one tile
+		 * outside the envelope and units are turned at it.
+		 *
+		 * The counter below still measures the real edge, so the number stays
+		 * honest about what it claims: crossings, not near misses. */
+		distance = Tile_GetDistanceRoundedUp(unit->o.position, s->o.position);
+		if (distance > reach + margin) continue;
+
+		if (distance <= reach) inside = true;
 
 		if (reach > worstReach) {
 			worstReach = reach;
@@ -894,19 +977,99 @@ bool Doctrine_TurretExclusion(Unit *unit)
 		}
 	}
 
-	if (worst == NULL) return false;
+	/* Track the crossing whichever way it goes, so an entry is counted once
+	 * rather than once per tick, and a unit that leaves can be counted in again
+	 * when it comes back. */
+	if (worst == NULL) {
+		s_inZone[unit->o.index] = 0;
+		return false;
+	}
 
-	s_turretZone[houseID]++;
+	/* Inside with nothing to shoot at is not the violation this is about.
+	 *
+	 * It is overwhelmingly one situation: the unit came in to kill a turret, the
+	 * turret died, and another one still covers the ground it is standing on.
+	 * Pushing it out to walk back in is worse than useless -- it is already
+	 * there and the line is still up -- so it takes the covering turret and
+	 * carries on, which is what the rule permits and what the doctrine wanted.
+	 *
+	 * The violation the rule exists for is the other one: inside while shooting
+	 * at something that is not a turret.  That is a tank that drifted in chasing
+	 * a tank, taking free fire from a gun it is not even fighting, and that is
+	 * what gets pushed out and counted. */
+	if (inside && !Tools_Index_IsValid(unit->targetAttack)) {
+		if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
+		Unit_SetTarget(unit, Tools_Index_Encode(worst->o.index, IT_STRUCTURE));
+		s_inZone[unit->o.index] = 1;
+		return false;
+	}
 
-	/* Straight out, to a tile past the edge of the envelope. */
+	if (inside) {
+		/* Only when the unit moved into it.  A turret finishing next to a unit
+		 * that has not moved puts it inside without it having gone anywhere, and
+		 * booking that as a crossing measures the enemy's construction rather
+		 * than our own discipline.  It still leaves; it is just not a breach. */
+		const bool moved = (s_lastTile[unit->o.index] != Tile_PackTile(unit->o.position));
+
+		if (s_inZone[unit->o.index] == 0 && moved) s_turretEntries[houseID]++;
+
+		s_inZone[unit->o.index] = 1;
+		s_turretZone[houseID]++;
+	}
+
+	s_lastTile[unit->o.index] = Tile_PackTile(unit->o.position);
+
+	s_turnedBack[unit->o.index] = g_timerGame + 90;
+
+	/* Out to the nearest tile clear of every envelope, not merely away from this
+	 * one.
+	 *
+	 * Pushing straight out from whichever turret was found first left units
+	 * inside a second turret's reach, and where the line is dense -- which is the
+	 * entire point of a line -- that is most of them.  Searched outward instead,
+	 * so a unit leaves by the shortest way out rather than the obvious one. */
 	{
-		tile32 out = Tile_MoveByDirection(unit->o.position,
-		                                  Tile_GetDirection(worst->o.position, unit->o.position),
-		                                  (uint16)((worstReach + 2) << 8));
+		const uint16 here = Tile_PackTile(unit->o.position);
+		const uint16 x = Tile_GetPackedX(here);
+		const uint16 y = Tile_GetPackedY(here);
+		uint16 out = 0;
+		int16 ring;
+
+		for (ring = 1; ring <= 14 && out == 0; ring++) {
+			int16 dx, dy;
+
+			for (dy = (int16)-ring; dy <= ring && out == 0; dy++) {
+				for (dx = (int16)-ring; dx <= ring; dx++) {
+					uint16 packed;
+					int32 nx, ny;
+
+					if (dx > -ring && dx < ring && dy > -ring && dy < ring) continue;
+
+					nx = (int32)x + dx;
+					ny = (int32)y + dy;
+					if (nx < 1 || ny < 1 || nx > 62 || ny > 62) continue;
+
+					packed = Tile_PackXY((uint16)nx, (uint16)ny);
+					if (Doctrine_CoveringTurret(houseID, packed) != 0) continue;
+					if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
+
+					out = packed;
+					break;
+				}
+			}
+		}
+
+		/* Nowhere clear within fourteen tiles: standing still under fire is the
+		 * worst of the options, so it takes the turret instead. */
+		if (out == 0) {
+			if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
+			Unit_SetTarget(unit, Tools_Index_Encode(worst->o.index, IT_STRUCTURE));
+			return true;
+		}
 
 		if (unit->actionID != ACTION_MOVE) Unit_SetAction(unit, ACTION_MOVE);
 		Unit_SetTarget(unit, 0);
-		Unit_SetDestination(unit, Tools_Index_Encode(Tile_PackTile(out), IT_TILE));
+		Unit_SetDestination(unit, Tools_Index_Encode(out, IT_TILE));
 	}
 
 	return true;
@@ -991,6 +1154,12 @@ static void Doctrine_AssignRoles(uint8 houseID)
 /* Doctrine B -- orders                                                        */
 /* -------------------------------------------------------------------------- */
 
+/** Whether this unit was just turned back and should be left to finish leaving. */
+static bool Doctrine_JustTurnedBack(const Unit *u)
+{
+	return (u->o.index < UNIT_INDEX_MAX && s_turnedBack[u->o.index] > g_timerGame);
+}
+
 static void Doctrine_OrderMove(Unit *u, uint16 packed)
 {
 	if (u->actionID != ACTION_MOVE) Unit_SetAction(u, ACTION_MOVE);
@@ -1050,7 +1219,7 @@ static uint16 Doctrine_MarchTo(uint8 houseID, RoleGroup *g, uint16 destination, 
 		Unit *u = Unit_Get_ByIndex(g->order[i]);
 		uint16 d;
 
-		if (u == NULL) continue;
+		if (u == NULL || Doctrine_JustTurnedBack(u)) continue;
 
 		d = Tile_GetDistancePacked(Tile_PackTile(u->o.position), destination);
 
@@ -1060,7 +1229,17 @@ static uint16 Doctrine_MarchTo(uint8 houseID, RoleGroup *g, uint16 destination, 
 			continue;
 		}
 
-		Doctrine_OrderMove(u, UnitSelection_SpreadTake(u, destination));
+		{
+			uint16 spot = UnitSelection_SpreadTake(u, destination);
+			uint16 cover = Doctrine_CoveringTurret(houseID, spot);
+
+			if (cover != 0) {
+				Doctrine_OrderAttack(u, cover, spot);
+				continue;
+			}
+
+			Doctrine_OrderMove(u, spot);
+		}
 	}
 
 	return column;
@@ -1512,7 +1691,7 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 			uint16 reach;
 			tile32 stand;
 
-			if (u == NULL) continue;
+			if (u == NULL || Doctrine_JustTurnedBack(u)) continue;
 
 			/* Already engaged with something in the way -- leave it alone. */
 			if (u->actionID == ACTION_ATTACK && Tools_Index_IsValid(u->targetAttack)
@@ -1522,6 +1701,25 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 			stand = Tile_MoveByDirection(Tile_UnpackTile(objectivePacked),
 			                             Tile_GetDirection(Tile_UnpackTile(objectivePacked), u->o.position),
 			                             reach << 8);
+
+			/* The post is inside somebody's envelope, which most of them are:
+			 * the objective is a building and the buildings are what the line is
+			 * there to cover.  Then the turret is the job, and the objective
+			 * waits -- this is the doctrine anyway, and it is also the only way
+			 * to send a unit in there without breaking the rule that says being
+			 * inside is allowed exactly when the turret is the target.
+			 *
+			 * Doing it here rather than in the exclusion is the whole point.
+			 * Ordering a unit somewhere covered and pushing it out again next
+			 * tick is not a rule, it is a loop, and it ran 318 times a match. */
+			{
+				uint16 cover = Doctrine_CoveringTurret(houseID, Tile_PackTile(stand));
+
+				if (cover != 0) {
+					Doctrine_OrderAttack(u, cover, Tile_PackTile(stand));
+					continue;
+				}
+			}
 
 			Doctrine_OrderAttack(u, dh->objective, UnitSelection_SpreadTake(u, Tile_PackTile(stand)));
 		}
@@ -1579,6 +1777,11 @@ static void Doctrine_Patrol(uint8 houseID, DoctrineHouse *dh)
 		if (u->o.flags.s.isNotOnMap) continue;
 		if (House_AreAllied(houseID, Unit_GetHouseID(u))) continue;
 
+		/* Not under a turret.  A Trike reaches three tiles and a Rocket Turret
+		 * eight: a harvester parked inside the envelope is bait, and taking it
+		 * costs more than the harvester is worth. */
+		if (Doctrine_CoveringTurret(houseID, Tile_PackTile(u->o.position)) != 0) continue;
+
 		d = Tile_GetDistancePacked(anchor, Tile_PackTile(u->o.position));
 		if (d >= preyDistance) continue;
 
@@ -1599,6 +1802,7 @@ static void Doctrine_Patrol(uint8 houseID, DoctrineHouse *dh)
 		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
 		if (s_unitRole[u->o.index] != DOCTRINE_ROLE_RAID) continue;
 		if (s_unitOnWave[u->o.index] != 0) continue;
+		if (Doctrine_JustTurnedBack(u)) continue;
 
 		/* Already hunting something: let it finish. */
 		if (Tools_Index_IsValid(u->targetAttack)) continue;
@@ -2000,13 +2204,13 @@ bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
 		built[r] = (uint16)(built[r] + Skirmish_GetUnitsBuilt(houseID, i));
 	}
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         built[0], built[1], built[2], built[3],
 	         (unsigned)s_pickedRole[houseID][0], (unsigned)s_pickedRole[houseID][1],
 	         (unsigned)s_pickedRole[houseID][2], (unsigned)s_pickedRole[houseID][3],
 	         (unsigned)s_vetoedRole[houseID][0], (unsigned)s_vetoedRole[houseID][1],
 	         (unsigned)s_vetoedRole[houseID][2], (unsigned)s_vetoedRole[houseID][3],
-	         (unsigned)s_turretZone[houseID],
+	         (unsigned)s_turretZone[houseID], (unsigned)s_turretEntries[houseID],
 	         (unsigned)s_harvesterLost[houseID], (unsigned)s_harvesterKilled[houseID],
 	         (unsigned)s_harvesterLostEarly[houseID], near8, worst);
 

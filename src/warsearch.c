@@ -326,7 +326,7 @@ void WarSearch_RunTelemetry(uint8 houseA, uint8 houseB, uint32 ticks, uint16 ste
 		Doctrine_GetSelection(doctrine, sizeof(doctrine));
 		fprintf(fp, "# doctrine %s\n", doctrine);
 	}
-	fprintf(fp, "tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus,shotsTurret,shotsStructure,shotsUnit,shotsBypass,idleAttackers,idleOnWave,stalledHarvesters,freeRefineries,wavePhase,waveUnits,waveAtLD,waveColumn,wavesLaunched,wavesAborted,builtArt,builtAss,builtRaid,builtGar,pickArt,pickAss,pickRaid,pickGar,vetoArt,vetoAss,vetoRaid,vetoGar,turretZone,harvLost,harvKilled,harvLostEarly,harvNear8,harvWorst\n");
+	fprintf(fp, "tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus,shotsTurret,shotsStructure,shotsUnit,shotsBypass,idleAttackers,idleOnWave,stalledHarvesters,freeRefineries,wavePhase,waveUnits,waveAtLD,waveColumn,wavesLaunched,wavesAborted,builtArt,builtAss,builtRaid,builtGar,pickArt,pickAss,pickRaid,pickGar,vetoArt,vetoAss,vetoRaid,vetoGar,turretZone,turretEntries,harvLost,harvKilled,harvLostEarly,harvNear8,harvWorst\n");
 
 	Timer_SetTimer(TIMER_GAME, false);
 

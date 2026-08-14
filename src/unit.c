@@ -2238,6 +2238,16 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	 * not "see" fired at it: measured at 210 such shots in one match. */
 	target = Unit_Autonomy_FindTargetWithin(unit, onWave ? max(reach + 3, 8) : reach, true);
 
+	/* Standing inside an envelope, the only legal target is the turret making it
+	 * one.  Handing this unit a tank to shoot at instead is what put it there and
+	 * kept it there: the sweep found something closer, the exclusion then pushed
+	 * it out, and the next sweep found the same thing again. */
+	{
+		const uint16 cover = Doctrine_CoveringTurret(Unit_GetHouseID(unit), Tile_PackTile(unit->o.position));
+
+		if (cover != 0) target = cover;
+	}
+
 	if (target != 0) {
 		Unit_SetTarget(unit, target);
 		if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
@@ -2795,6 +2805,15 @@ void GameLoop_Unit(void)
 		g_scriptCurrentTeam      = NULL;
 
 		if (u->o.flags.s.isNotOnMap) continue;
+
+		/* The exclusion runs on the movement cadence, not the twenty-tick one.
+		 *
+		 * tickUnknown4 fires every twenty game ticks and a Raider Trike crosses
+		 * several tiles in that time, so a unit could be well inside an envelope
+		 * before anyone looked.  Widening the fence to compensate helped and left
+		 * a remainder that was exactly this; every three ticks, nothing outruns
+		 * the check. */
+		if (tickMovement) Doctrine_TurretExclusion(u);
 
 		if (tickUnknown4) {
 			Unit_Autonomy_Update(u);
