@@ -704,6 +704,9 @@ static void ReadProfileIni(const char *filename)
 	}
 }
 
+/** Base the spectator camera last jumped to, cycled by Tab. */
+static uint8 s_skirmishCameraBase = 0;
+
 /** Houses the two skirmish AIs play, set from the command line. */
 static uint8 s_skirmishHouse[SKIRMISH_PLAYER_MAX] = { HOUSE_ATREIDES, HOUSE_HARKONNEN };
 
@@ -1164,12 +1167,25 @@ static void GameLoop_Main(void)
 		char line[512];
 		char trace[544];
 		uint32 tick;
+		bool started;
 		uint8 i;
 
 		/* Drive the simulation by hand: the real loop is paced by the GUI, and
 		 * a base takes minutes of wall clock to grow.  Advancing the game timer
 		 * ourselves runs the same subsystems as fast as the CPU allows. */
-		if (!Skirmish_Start(s_skirmishHouse[0], s_skirmishHouse[1])) {
+		if (s_warPlay) {
+			/* "--war=a,b --skirmish-self-test" is the headless twin of the match
+			 * "--war=a,b" plays in the GUI: same shares, same seed, same map. */
+			SkirmishEconomyPlan planA, planB;
+
+			WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
+			WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
+			started = Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_warPlaySeed, &planA, &planB);
+		} else {
+			started = Skirmish_Start(s_skirmishHouse[0], s_skirmishHouse[1]);
+		}
+
+		if (!started) {
 			PrintToConsole("skirmish-self-test: FAIL (could not start a skirmish)");
 			return;
 		}
@@ -1397,6 +1413,27 @@ static void GameLoop_Main(void)
 		if ((((key & 0x7FFF) == GUI_Widget_GetShortcut('A')) || Input_Test(GUI_Widget_GetShortcut('A')) != 0) && InGame_BeginSelectedAction(ACTION_ATTACK)) {
 			key = 0;
 		}
+		/* Tab walks the spectator camera from one AI base to the next.  A match
+		 * opens on the first one and the other is in the opposite corner of a
+		 * 62x62 map, which at the start is one Construction Yard and reads as
+		 * "there is only one AI on the map". */
+		if ((key & 0x7FFF) == 0x000F && Skirmish_IsActive()) {
+			uint8 tried;
+
+			for (tried = 0; tried < SKIRMISH_PLAYER_MAX; tried++) {
+				uint16 origin;
+
+				s_skirmishCameraBase = (uint8)((s_skirmishCameraBase + 1) % SKIRMISH_PLAYER_MAX);
+				origin = Skirmish_GetBaseOrigin(s_skirmishCameraBase);
+				if (origin == 0xFFFF) continue;
+
+				Map_SetViewportPosition(origin);
+				g_minimapPosition = g_viewportPosition;
+				break;
+			}
+			key = 0;
+		}
+
 		/* [ and ] step the simulation speed.  Event driven rather than polled:
 		 * Input_Test() is true for as long as the key is held, which would run
 		 * through the whole range in a few frames. */

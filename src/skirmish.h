@@ -65,6 +65,7 @@ extern bool Skirmish_GetSummary(uint8 index, char *buf, uint16 length);
 extern bool Skirmish_GetBuildOrder(uint8 index, char *buf, uint16 length);
 extern bool Skirmish_GetTeams(uint8 index, char *buf, uint16 length);
 extern uint16 Skirmish_GetMapSpice(void);
+extern uint16 Skirmish_GetBaseOrigin(uint8 index);
 extern bool Skirmish_GetRefineryLoad(char *buf, uint16 length);
 extern void Skirmish_DrawStatusOverlay(void);
 

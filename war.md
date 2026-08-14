@@ -59,6 +59,16 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --war-ladder=200000,5
 | `--war-trace` | — | one line per house per 20000 ticks of every match |
 | `--war` | `shareA,shareB[,seed]` | plays one pairing in the GUI, to watch |
 
+Watching one: the match opens on the first base, and at t0 the second house owns
+a single Construction Yard in the opposite corner of a 62x62 map -- which reads
+as "there is only one AI here". **Tab** walks the camera from one base to the
+next. The two overlay lines at the top of the viewport are the other check: if
+both are there, both houses are.
+
+`--war=0,45 --skirmish-self-test=20000` is the headless twin of the same match --
+same shares, same seed, same map -- and prints both houses. It is the quickest
+way to tell a display problem from a setup problem.
+
 A match is 200000 ticks and takes about 0.35 s, so a seven-share round robin over
 eight maps — 336 matches, both sides of every table — runs in a few minutes.
 

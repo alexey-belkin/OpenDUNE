@@ -367,6 +367,21 @@ uint32 Skirmish_War_GetSpent(uint8 index, bool military)
  * has refined.  This is what the military share is a share *of*, so it is also
  * the only denominator that says whether the share was reached.
  */
+/**
+ * Where a skirmish house has its Construction Yard.
+ *
+ * A spectator opens on the first base, and on a 62x62 map the other one is a
+ * single building forty tiles away -- which looks a lot like the second AI never
+ * turned up.  This is what the camera jump keys off.
+ * @return The packed tile, or 0xFFFF when there is no such base.
+ */
+uint16 Skirmish_GetBaseOrigin(uint8 index)
+{
+	if (!s_active || index >= SKIRMISH_PLAYER_MAX || s_bases[index].entryCount == 0) return 0xFFFF;
+
+	return s_bases[index].origin;
+}
+
 uint32 Skirmish_War_GetIncome(uint8 index)
 {
 	if (index >= SKIRMISH_PLAYER_MAX || s_bases[index].entryCount == 0) return 0;
