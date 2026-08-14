@@ -1617,10 +1617,12 @@ void Skirmish_RecordDamage(uint8 houseID, uint16 damage)
 /**
  * One sampled row of a match, for plotting how it actually went.
  *
- * Every counter here is a level except the last two, which are cumulative on
- * purpose: a rate is the difference between two samples, and taking the
- * difference of a running total is exact, while sampling a rate directly would
- * miss whatever happened between two samples.
+ * Everything here is a level except damageTaken and spiceRefined, which are
+ * cumulative on purpose: a rate is the difference between two samples, and
+ * taking the difference of a running total is exact, while sampling a rate
+ * directly would miss whatever happened between two samples.  Credits are a
+ * level and a different question from spice refined -- a house sitting on a pile
+ * of credits is one that cannot spend them, which is a diagnosis in itself.
  *
  * @return False when there is no such skirmish house.
  */
@@ -1677,13 +1679,14 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 
 	g_validateStrictIfZero = oldValidate;
 
-	snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%d",
+	snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d",
 	         g_table_houseInfo[b->houseID].name,
 	         refineries, combatStructures,
 	         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER),
 	         combatUnits, (unsigned)combatHitpoints,
 	         (unsigned)s_damageTaken[b->houseID],
 	         (unsigned)s_harvested[b->houseID],
+	         h->credits,
 	         (int)h->powerProduction - (int)h->powerUsage);
 
 	return true;

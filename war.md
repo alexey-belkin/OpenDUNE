@@ -167,12 +167,14 @@ then most of the income.** 0% → 90% at t35000.
 match and prints one row per house per step:
 
 ```
-tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,powerSurplus
+tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus
 ```
 
-Six of those are levels. `damageTaken` and `spiceRefined` are running totals on
-purpose: a rate is the difference between two samples, and differencing a total
-is exact, while sampling a rate directly misses whatever happened in between.
+Everything there is a level except `damageTaken` and `spiceRefined`, which are
+running totals on purpose: a rate is the difference between two samples, and
+differencing a total is exact, while sampling a rate directly misses whatever
+happened in between. `credits` is a level and a different question from spice
+refined -- a house sitting on a pile of credits is one that *cannot spend them*.
 
 Damage is recorded as **taken**, not dealt, because neither `Unit_Damage()` nor
 `Structure_Damage()` is told who fired. In a two-house match "damage A dealt" is
@@ -192,7 +194,14 @@ and what the sweeps above cannot:
 * **power surplus leads the collapse.** It goes negative before structures start
   falling: losing windtraps halves the hitpoints of everything else
   (`Structure_CalculateHitpointsMax`), and the finishing off gets faster from
-  there. It is the earliest warning in the file.
+  there. It is the earliest warning in the file;
+* **credits stay near zero while a house is healthy.** The starting 1500 is gone
+  within a few thousand ticks and everything refined afterwards goes straight
+  back out. The piles that appear later -- 1883 for one side around t125000, 2910
+  for the other at the end -- are not wealth, they are a house that has run into
+  the 40 unit cap and its factory throughput. That is the same ceiling the share
+  matrix hit: past roughly 60%, extra income stops converting into strength,
+  which is why the higher shares stop differing from each other.
 
 ## The Palace hands out an army the budget cannot see
 

@@ -275,7 +275,7 @@ void WarSearch_RunTelemetry(uint32 ticks, uint16 step, uint16 shareA, uint16 sha
 		return;
 	}
 
-	WarSearch_Print("tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,powerSurplus");
+	WarSearch_Print("tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus");
 
 	Timer_SetTimer(TIMER_GAME, false);
 
