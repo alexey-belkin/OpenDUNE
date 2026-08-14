@@ -2220,16 +2220,27 @@ bool Skirmish_GetSummary(uint8 index, char *buf, uint16 length)
 	/* The war line leads with the split that is being searched: the share in
 	 * force right now, and what the house has actually spent on the army against
 	 * what it has spent on the economy. */
-	snprintf(buf, length, "%s mil%u%% %u/%uc %uc h%u u%u s%u@%u%% val%u %u/%u %s",
-	         g_table_houseInfo[b->houseID].name,
-	         (unsigned)((g_timerGame - g_tickScenarioStart >= b->plan.militarySwitchTick)
-	                    ? b->plan.militaryShareLate : b->plan.militaryShare),
-	         (unsigned)b->militarySpent, (unsigned)b->economySpent,
-	         h->credits,
-	         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER), h->unitCount,
-	         alive, (unsigned)((hitpointsMax != 0) ? hitpoints * 100 / hitpointsMax : 100),
-	         (unsigned)Skirmish_War_GetValue(index),
-	         done, b->entryCount, building);
+	/* The doctrine tag goes on the war line rather than in its own overlay row:
+	 * the whole reason to watch a match live is to see which phase an attack is
+	 * in while it happens, and there is one line per house on screen. */
+	{
+		char doctrine[80];
+
+		if (Doctrine_UsesEngineTeams(b->houseID) || !Doctrine_GetSummary(b->houseID, doctrine, sizeof(doctrine))) {
+			strcpy(doctrine, "A");
+		}
+
+		snprintf(buf, length, "%s mil%u%% %u/%uc %uc h%u u%u s%u@%u%% val%u %u/%u %s | %s",
+		         g_table_houseInfo[b->houseID].name,
+		         (unsigned)((g_timerGame - g_tickScenarioStart >= b->plan.militarySwitchTick)
+		                    ? b->plan.militaryShareLate : b->plan.militaryShare),
+		         (unsigned)b->militarySpent, (unsigned)b->economySpent,
+		         h->credits,
+		         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER), h->unitCount,
+		         alive, (unsigned)((hitpointsMax != 0) ? hitpoints * 100 / hitpointsMax : 100),
+		         (unsigned)Skirmish_War_GetValue(index),
+		         done, b->entryCount, building, doctrine);
+	}
 
 	return true;
 }
