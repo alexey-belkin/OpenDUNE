@@ -102,7 +102,6 @@
 typedef struct SkirmishPlanEntry {
 	uint8  type;                                            /*!< StructureType to build. */
 	bool   taken;                                           /*!< The Construction Yard has already been given this entry. */
-	bool   urgent;                                          /*!< Demand asked for this one; it goes before the rest of the plan. */
 	uint16 position;                                        /*!< Packed tile the structure is planned for. */
 } SkirmishPlanEntry;
 
@@ -623,8 +622,19 @@ static uint16 Skirmish_Layout_Next(SkirmishBase *b, uint8 type)
  * pours them itself, right before the building lands, which is also when it is
  * visible on screen.
  */
-/** Concrete one tile, billed to the house.  Silently skips what is already paved. */
-static void Skirmish_LaySlab(House *h, uint16 packed)
+/**
+ * Concrete one tile.  Silently skips what is already paved.
+ *
+ * Only the footprint is billed.  Charging for the apron as well looks like the
+ * honest accounting and is not: the bill falls due the moment a structure
+ * completes, which is exactly when the house has just spent everything it had,
+ * so it takes whatever is left and the house never accumulates.  Measured on one
+ * map it cost a base sixteen harvesters and nineteen defence structures, leaving
+ * it with one of each -- for three thousand credits of concrete spread over a
+ * match earning eighteen thousand.  The apron is an artefact of how the plan
+ * arranges a base, not a decision anybody made, so it is not charged for.
+ */
+static void Skirmish_LaySlab(House *h, uint16 packed, bool charge)
 {
 	const uint16 cost = g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildCredits;
 	Tile *t = &g_map[packed];
@@ -641,7 +651,7 @@ static void Skirmish_LaySlab(House *h, uint16 packed)
 
 	Map_Update(packed, 0, false);
 
-	h->credits -= min(h->credits, cost);
+	if (charge) h->credits -= min(h->credits, cost);
 }
 
 static void Skirmish_LaySlabs(House *h, uint16 position, uint8 structureType)
@@ -657,7 +667,7 @@ static void Skirmish_LaySlabs(House *h, uint16 position, uint8 structureType)
 	 * and that is worth having. */
 	if (structureType != STRUCTURE_WALL) {
 		for (i = 0; i < g_table_structure_layoutTileCount[si->layout]; i++) {
-			Skirmish_LaySlab(h, position + g_table_structure_layoutTiles[si->layout][i]);
+			Skirmish_LaySlab(h, position + g_table_structure_layoutTiles[si->layout][i], true);
 		}
 	}
 
@@ -690,7 +700,7 @@ static void Skirmish_LaySlabs(House *h, uint16 position, uint8 structureType)
 		if (x < b->rectX || x >= b->rectX + SKIRMISH_BASE_WIDTH) continue;
 		if (y < b->rectY || y >= b->rectY + SKIRMISH_BASE_HEIGHT) continue;
 
-		Skirmish_LaySlab(h, packed);
+		Skirmish_LaySlab(h, packed, false);
 	}
 }
 
@@ -731,7 +741,6 @@ static void Skirmish_Plan_Create(SkirmishBase *b)
 
 		b->entries[b->entryCount].type     = type;
 		b->entries[b->entryCount].taken    = false;
-		b->entries[b->entryCount].urgent   = false;
 		b->entries[b->entryCount].position = position;
 		b->entryCount++;
 	}
@@ -881,8 +890,6 @@ uint16 Skirmish_Plan_PickNext(House *h)
 {
 	SkirmishBase *b;
 	uint16 fallback = 0xFFFF;
-	uint16 urgent = 0xFFFF;
-	bool   pendingEconomy = false;
 	uint16 i;
 
 	if (h == NULL) return 0xFFFF;
@@ -890,19 +897,11 @@ uint16 Skirmish_Plan_PickNext(House *h)
 	b = Skirmish_GetBase((uint8)h->index);
 	if (b == NULL) return 0xFFFF;
 
-	/* What the base has found out it needs, if anything.  It outranks defence,
-	 * not the economy: see the military branch below. */
-	for (i = 0; i < b->entryCount; i++) {
-		const SkirmishPlanEntry *e = &b->entries[i];
-		const StructureInfo *si = &g_table_structureInfo[e->type];
-
-		if (!e->urgent || e->taken) continue;
-		if ((h->structuresBuilt & si->o.structuresRequired) != si->o.structuresRequired) continue;
-
-		urgent = e->type;
-		break;
-	}
-
+	/* Strictly in plan order.  A demand-driven refinery is appended to the end
+	 * and waits its turn there, and that is deliberate: giving it priority over
+	 * the entries in front of it was measured on one map to take a base from
+	 * twenty standing defence structures to one, because a refinery is almost
+	 * always pending and the defence line is almost always behind it. */
 	for (i = 0; i < b->entryCount; i++) {
 		const SkirmishPlanEntry *e = &b->entries[i];
 		const StructureInfo *si = &g_table_structureInfo[e->type];
@@ -914,31 +913,11 @@ uint16 Skirmish_Plan_PickNext(House *h)
 		 * structure of the House caps at half its hitpoints. */
 		if (e->type == STRUCTURE_WINDTRAP && h->powerProduction < h->powerUsage + 20) return e->type;
 
-		if (Skirmish_IsMilitaryStructure(e->type)) {
-			/* Demand outranks defence, wherever the two sit in the plan.  A
-			 * refinery the harvesters are queueing for is appended to the end,
-			 * which used to bury it: once the budget switch opens the defence
-			 * line the twenty turrets and walls ahead of it are all eligible, so
-			 * the yard worked through those while the harvesters queued at the
-			 * one refinery the base had.
-			 *
-			 * Defence is all it outranks.  The trigger also fires early, while
-			 * the base still has one refinery and the single harvester that came
-			 * with it, and a refinery that jumps the Heavy Factory means the
-			 * harvesters which would fill it never get built.  Measured, that
-			 * death spiral ended a 200000 tick match on eight structures and 2853
-			 * credits of income against the usual 17000 -- so an economy entry the
-			 * yard is merely saving up for still comes first. */
-			if (urgent != 0xFFFF && !pendingEconomy) return urgent;
-
-			/* A Barracks the house cannot afford to keep supplied with soldiers is
-			 * worse than no Barracks: the same budget rule that gates units gates
-			 * the buildings that only exist to make them, so an economic strategy
-			 * walks straight past them to the next refinery. */
-			if (!Skirmish_War_MilitaryAllowed(b)) continue;
-		} else {
-			pendingEconomy = true;
-		}
+		/* A Barracks the house cannot afford to keep supplied with soldiers is
+		 * worse than no Barracks: the same budget rule that gates units gates the
+		 * buildings that only exist to make them, so an economic strategy walks
+		 * straight past them to the next refinery. */
+		if (Skirmish_IsMilitaryStructure(e->type) && !Skirmish_War_MilitaryAllowed(b)) continue;
 
 		if (fallback == 0xFFFF) fallback = e->type;
 		if (si->o.buildCredits > h->credits) continue;
@@ -958,7 +937,6 @@ uint16 Skirmish_Plan_PickNext(House *h)
 uint16 Skirmish_Plan_TakePosition(House *h, uint8 structureType)
 {
 	SkirmishBase *b;
-	uint16 pass;
 	uint16 i;
 
 	if (h == NULL) return 0xFFFF;
@@ -966,26 +944,18 @@ uint16 Skirmish_Plan_TakePosition(House *h, uint8 structureType)
 	b = Skirmish_GetBase((uint8)h->index);
 	if (b == NULL) return 0xFFFF;
 
-	/* Urgent entries are settled first, and it is not only about position.
-	 * Skirmish_Plan_PickNext() asks for a type, not for an entry, so if a planned
-	 * Windtrap were allowed to answer for the urgent one the urgent entry would
-	 * stay open and the yard would be told "Windtrap" again next time -- once for
-	 * every Windtrap left in the plan. */
-	for (pass = 0; pass < 2; pass++) {
-		for (i = 0; i < b->entryCount; i++) {
-			SkirmishPlanEntry *e = &b->entries[i];
+	for (i = 0; i < b->entryCount; i++) {
+		SkirmishPlanEntry *e = &b->entries[i];
 
-			if (e->taken) continue;
-			if (e->type != structureType) continue;
-			if (pass == 0 && !e->urgent) continue;
+		if (e->taken) continue;
+		if (e->type != structureType) continue;
 
-			e->taken = true;
-			if (b->historyCount < SKIRMISH_PLAN_MAX) b->history[b->historyCount++] = structureType;
+		e->taken = true;
+		if (b->historyCount < SKIRMISH_PLAN_MAX) b->history[b->historyCount++] = structureType;
 
-			Skirmish_LaySlabs(h, e->position, structureType);
+		Skirmish_LaySlabs(h, e->position, structureType);
 
-			return e->position;
-		}
+		return e->position;
 	}
 
 	return 0xFFFF;
@@ -1221,7 +1191,6 @@ static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 
 		b->entries[b->entryCount].type     = STRUCTURE_WINDTRAP;
 		b->entries[b->entryCount].taken    = false;
-		b->entries[b->entryCount].urgent   = true;
 		b->entries[b->entryCount].position = position;
 		b->entryCount++;
 
@@ -1233,7 +1202,6 @@ static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 
 	b->entries[b->entryCount].type     = type;
 	b->entries[b->entryCount].taken    = false;
-	b->entries[b->entryCount].urgent   = true;
 	b->entries[b->entryCount].position = position;
 	b->entryCount++;
 

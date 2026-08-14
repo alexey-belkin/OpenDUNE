@@ -707,6 +707,13 @@ bool Structure_Place(Structure *s, uint16 position)
 	s->o.hitpoints  = si->o.hitpoints;
 	s->hitpointsMax = si->o.hitpoints;
 
+	/* An AI house never carried this penalty.  The adjacency test it is bundled
+	 * with used to fail for every AI, which returned 0 and skipped the whole
+	 * branch; making that test answer honestly would hand every AI rebuild a
+	 * hitpoint cut and the degrades flag, which is a balance change nobody asked
+	 * for.  The foundation rule stays the player's. */
+	if (validBuildLocation < 0 && s->o.houseID != g_playerHouseID) validBuildLocation = 0;
+
 	/* If the return value is negative, there are tiles without slab. This gives a penalty to the hitpoints. */
 	if (validBuildLocation < 0) {
 		uint16 tilesWithoutSlab = -(int16)validBuildLocation;
