@@ -1294,6 +1294,11 @@ static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
 
+	/* Spread along the line rather than piled on its first tile: one claimed
+	 * tile each, radiating from the forward gun, so the reserve fills the gaps
+	 * in the picket instead of making a single target of itself. */
+	UnitSelection_SpreadReset();
+
 	while (true) {
 		Unit *u = Unit_Find(&find);
 
@@ -1306,16 +1311,16 @@ static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
 		/* Shooting at something is the job; do not interrupt it. */
 		if (Tools_Index_IsValid(u->targetAttack)) continue;
 
-		/* At the line already: hold it.  ACTION_GUARD still answers for its own
+		/* In the picket already: hold.  ACTION_GUARD still answers for its own
 		 * ground, and Unit_Skirmish_ClearTheWay() gives it anything in range. */
-		if (Tile_GetDistancePacked(Tile_PackTile(u->o.position), dh->musterPacked) <= 6) {
+		if (Tile_GetDistancePacked(Tile_PackTile(u->o.position), dh->musterPacked) <= 4) {
 			if (u->actionID != ACTION_GUARD) Doctrine_OrderHold(u);
 			continue;
 		}
 
 		if (u->targetMove != 0 && u->actionID == ACTION_MOVE) continue;
 
-		Doctrine_OrderMove(u, dh->musterPacked);
+		Doctrine_OrderMove(u, UnitSelection_SpreadTake(u, dh->musterPacked));
 	}
 }
 
@@ -1722,8 +1727,12 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 		role[s_unitRole[u->o.index]]++;
 	}
 
-	snprintf(buf, length, "B %s w%u/LD%u a%us%ur%ug%u L%uA%u",
+	snprintf(buf, length, "B %s w%u/LD%u T%u a%us%ur%ug%u L%uA%u",
 	         phaseName[dh->phase & 3], dh->waveCount, dh->atLD,
+	         /* Tiles from the rally to the nearest own turret.  A reserve that is
+	          * not standing with the guns is not covering them, and the number is
+	          * the only way to see that without counting pixels. */
+	         min(Skirmish_GetTurretDistance(houseID, dh->musterPacked), 99),
 	         role[DOCTRINE_ROLE_ARTILLERY], role[DOCTRINE_ROLE_ASSAULT],
 	         role[DOCTRINE_ROLE_RAID], role[DOCTRINE_ROLE_GARRISON],
 	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted);

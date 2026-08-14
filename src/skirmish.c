@@ -536,21 +536,58 @@ uint16 Skirmish_GetBaseOrigin(uint8 index)
  */
 uint16 Skirmish_GetBaseRally(uint8 houseID)
 {
+	PoolFindStruct find;
 	uint8 index;
 
 	if (!s_active) return 0;
 
+	/* Stand at the most forward gun, not at the middle of the line.
+	 *
+	 * The centre of mass of the turrets looks right and is not: the line runs
+	 * along two faces of the plateau, so its centroid falls in the corner
+	 * *between* them, measured three tiles off the nearest gun and further from
+	 * most.  Three tiles is the difference between infantry standing in the
+	 * picket and infantry standing behind it, which is the difference between the
+	 * guns being covered and not.
+	 *
+	 * The turret nearest the middle of the map is the one an attack reaches
+	 * first, so that is where the reserve belongs; Doctrine_Rally() spreads them
+	 * from there along the rest of the line. */
+	{
+		const uint16 centre = Tile_PackXY(SKIRMISH_MAP_CENTER, SKIRMISH_MAP_CENTER);
+		uint16 best = 0;
+		uint16 bestDistance = 0xFFFF;
+
+		find.houseID = houseID;
+		find.index   = 0xFFFF;
+		find.type    = 0xFFFF;
+
+		while (true) {
+			const Structure *s = Structure_Find(&find);
+			uint16 packed, d;
+
+			if (s == NULL) break;
+			if (s->o.type != STRUCTURE_TURRET && s->o.type != STRUCTURE_ROCKET_TURRET) continue;
+			if (s->o.flags.s.isNotOnMap) continue;
+
+			packed = Tile_PackTile(s->o.position);
+			d = Tile_GetDistancePacked(packed, centre);
+			if (d >= bestDistance) continue;
+
+			bestDistance = d;
+			best = packed;
+		}
+
+		if (best != 0) return best;
+	}
+
+	/* No line yet: the corner of the plateau it is going to be built on. */
 	for (index = 0; index < SKIRMISH_PLAYER_MAX; index++) {
 		const SkirmishBase *b = &s_bases[index];
 		uint16 x, y;
 
 		if (b->entryCount == 0 || b->houseID != houseID) continue;
 
-		/* One tile behind the turrets, which stand at SKIRMISH_DEFENCE_TURRET_INSET
-		 * from the plateau edge.  Six tiles in -- behind the whole four-tile
-		 * defence band -- reads on screen as "gathering in the middle of the
-		 * base", which is not where a reserve is any use: the point of standing
-		 * with the guns is that the guns shoot at whatever comes for you. */
 		x = b->eastSide  ? (uint16)(b->rectX + SKIRMISH_DEFENCE_TURRET_INSET + 1)
 		                 : (uint16)(b->rectX + SKIRMISH_BASE_WIDTH  - SKIRMISH_DEFENCE_TURRET_INSET - 1);
 		y = b->southSide ? (uint16)(b->rectY + SKIRMISH_DEFENCE_TURRET_INSET + 1)
@@ -560,6 +597,33 @@ uint16 Skirmish_GetBaseRally(uint8 houseID)
 	}
 
 	return 0;
+}
+
+/** Tiles between a tile and this House's nearest turret, or 0xFFFF for none. */
+uint16 Skirmish_GetTurretDistance(uint8 houseID, uint16 packed)
+{
+	PoolFindStruct find;
+	uint16 best = 0xFFFF;
+
+	if (!s_active || packed == 0) return 0xFFFF;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+		uint16 d;
+
+		if (s == NULL) break;
+		if (s->o.type != STRUCTURE_TURRET && s->o.type != STRUCTURE_ROCKET_TURRET) continue;
+		if (s->o.flags.s.isNotOnMap) continue;
+
+		d = Tile_GetDistancePacked(packed, Tile_PackTile(s->o.position));
+		if (d < best) best = d;
+	}
+
+	return best;
 }
 
 /** The House holding base slot @p index, or HOUSE_INVALID. */

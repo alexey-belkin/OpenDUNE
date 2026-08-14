@@ -75,6 +75,7 @@ extern uint16 Skirmish_GetMapSpice(void);
 extern uint16 Skirmish_GetBaseOrigin(uint8 index);
 extern uint8 Skirmish_GetBaseHouse(uint8 index);
 extern uint16 Skirmish_GetBaseRally(uint8 houseID);
+extern uint16 Skirmish_GetTurretDistance(uint8 houseID, uint16 packed);
 extern bool Skirmish_GetBaseRect(uint8 houseID, uint16 *x, uint16 *y, uint16 *width, uint16 *height);
 extern uint16 Skirmish_GetUnitsBuilt(uint8 houseID, uint16 unitType);
 extern uint16 Skirmish_CountUnitsOfType(uint8 houseID, uint16 unitType);
