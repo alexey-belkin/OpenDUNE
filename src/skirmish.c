@@ -46,6 +46,10 @@
 #define SKIRMISH_CARRYALL_MAX 6
 /** Harvesters on the map before the first carryall is worth building. */
 #define SKIRMISH_CARRYALL_FIRST 3
+/** Ticks between two spice blooms.  Five thousand is roughly a blooms-worth of
+ *  mining by a grown economy, so the map holds level rather than growing. */
+#define SKIRMISH_BLOOM_TICKS 5000
+
 /** How often the refinery queue is looked at, in game ticks. */
 #define SKIRMISH_QUEUE_SAMPLE_TICKS 60
 /** Harvesters a skirmish AI keeps trying to reach. */
@@ -98,6 +102,7 @@
 typedef struct SkirmishPlanEntry {
 	uint8  type;                                            /*!< StructureType to build. */
 	bool   taken;                                           /*!< The Construction Yard has already been given this entry. */
+	bool   urgent;                                          /*!< Demand asked for this one; it goes before the rest of the plan. */
 	uint16 position;                                        /*!< Packed tile the structure is planned for. */
 } SkirmishPlanEntry;
 
@@ -148,6 +153,7 @@ static uint32 s_harvested[HOUSE_MAX];
 static uint32 s_refineryLoad[STRUCTURE_INDEX_MAX_SOFT];
 static uint16 s_refineryWait[HOUSE_MAX];
 static uint32 s_nextQueueSample[HOUSE_MAX];
+static uint32 s_nextBloom;                                  /*!< Game tick the next spice bloom is due. */
 static uint16 s_carryallTarget[HOUSE_MAX];
 static uint32 s_tripStart[UNIT_INDEX_MAX];
 static uint16 s_starportBought[HOUSE_MAX][2];               /*!< [0] harvesters, [1] carryalls. */
@@ -354,6 +360,7 @@ void Skirmish_Reset(void)
 	memset(s_refineryLoad, 0, sizeof(s_refineryLoad));
 	memset(s_refineryWait, 0, sizeof(s_refineryWait));
 	memset(s_nextQueueSample, 0, sizeof(s_nextQueueSample));
+	s_nextBloom = 0;
 	memset(s_carryallTarget, 0, sizeof(s_carryallTarget));
 	memset(s_tripStart, 0, sizeof(s_tripStart));
 	memset(s_starportBought, 0, sizeof(s_starportBought));
@@ -681,6 +688,7 @@ static void Skirmish_Plan_Create(SkirmishBase *b)
 
 		b->entries[b->entryCount].type     = type;
 		b->entries[b->entryCount].taken    = false;
+		b->entries[b->entryCount].urgent   = false;
 		b->entries[b->entryCount].position = position;
 		b->entryCount++;
 	}
@@ -819,12 +827,27 @@ uint16 Skirmish_Plan_PickNext(House *h)
 {
 	SkirmishBase *b;
 	uint16 fallback = 0xFFFF;
+	uint16 urgent = 0xFFFF;
+	bool   pendingEconomy = false;
 	uint16 i;
 
 	if (h == NULL) return 0xFFFF;
 
 	b = Skirmish_GetBase((uint8)h->index);
 	if (b == NULL) return 0xFFFF;
+
+	/* What the base has found out it needs, if anything.  It outranks defence,
+	 * not the economy: see the military branch below. */
+	for (i = 0; i < b->entryCount; i++) {
+		const SkirmishPlanEntry *e = &b->entries[i];
+		const StructureInfo *si = &g_table_structureInfo[e->type];
+
+		if (!e->urgent || e->taken) continue;
+		if ((h->structuresBuilt & si->o.structuresRequired) != si->o.structuresRequired) continue;
+
+		urgent = e->type;
+		break;
+	}
 
 	for (i = 0; i < b->entryCount; i++) {
 		const SkirmishPlanEntry *e = &b->entries[i];
@@ -837,11 +860,31 @@ uint16 Skirmish_Plan_PickNext(House *h)
 		 * structure of the House caps at half its hitpoints. */
 		if (e->type == STRUCTURE_WINDTRAP && h->powerProduction < h->powerUsage + 20) return e->type;
 
-		/* A Barracks the house cannot afford to keep supplied with soldiers is
-		 * worse than no Barracks: the same budget rule that gates units gates the
-		 * buildings that only exist to make them, so an economic strategy walks
-		 * straight past them to the next refinery. */
-		if (Skirmish_IsMilitaryStructure(e->type) && !Skirmish_War_MilitaryAllowed(b)) continue;
+		if (Skirmish_IsMilitaryStructure(e->type)) {
+			/* Demand outranks defence, wherever the two sit in the plan.  A
+			 * refinery the harvesters are queueing for is appended to the end,
+			 * which used to bury it: once the budget switch opens the defence
+			 * line the twenty turrets and walls ahead of it are all eligible, so
+			 * the yard worked through those while the harvesters queued at the
+			 * one refinery the base had.
+			 *
+			 * Defence is all it outranks.  The trigger also fires early, while
+			 * the base still has one refinery and the single harvester that came
+			 * with it, and a refinery that jumps the Heavy Factory means the
+			 * harvesters which would fill it never get built.  Measured, that
+			 * death spiral ended a 200000 tick match on eight structures and 2853
+			 * credits of income against the usual 17000 -- so an economy entry the
+			 * yard is merely saving up for still comes first. */
+			if (urgent != 0xFFFF && !pendingEconomy) return urgent;
+
+			/* A Barracks the house cannot afford to keep supplied with soldiers is
+			 * worse than no Barracks: the same budget rule that gates units gates
+			 * the buildings that only exist to make them, so an economic strategy
+			 * walks straight past them to the next refinery. */
+			if (!Skirmish_War_MilitaryAllowed(b)) continue;
+		} else {
+			pendingEconomy = true;
+		}
 
 		if (fallback == 0xFFFF) fallback = e->type;
 		if (si->o.buildCredits > h->credits) continue;
@@ -861,6 +904,7 @@ uint16 Skirmish_Plan_PickNext(House *h)
 uint16 Skirmish_Plan_TakePosition(House *h, uint8 structureType)
 {
 	SkirmishBase *b;
+	uint16 pass;
 	uint16 i;
 
 	if (h == NULL) return 0xFFFF;
@@ -868,20 +912,28 @@ uint16 Skirmish_Plan_TakePosition(House *h, uint8 structureType)
 	b = Skirmish_GetBase((uint8)h->index);
 	if (b == NULL) return 0xFFFF;
 
-	for (i = 0; i < b->entryCount; i++) {
-		SkirmishPlanEntry *e = &b->entries[i];
+	/* Urgent entries are settled first, and it is not only about position.
+	 * Skirmish_Plan_PickNext() asks for a type, not for an entry, so if a planned
+	 * Windtrap were allowed to answer for the urgent one the urgent entry would
+	 * stay open and the yard would be told "Windtrap" again next time -- once for
+	 * every Windtrap left in the plan. */
+	for (pass = 0; pass < 2; pass++) {
+		for (i = 0; i < b->entryCount; i++) {
+			SkirmishPlanEntry *e = &b->entries[i];
 
-		if (e->taken) continue;
-		if (e->type != structureType) continue;
+			if (e->taken) continue;
+			if (e->type != structureType) continue;
+			if (pass == 0 && !e->urgent) continue;
 
-		e->taken = true;
-		if (b->historyCount < SKIRMISH_PLAN_MAX) b->history[b->historyCount++] = structureType;
+			e->taken = true;
+			if (b->historyCount < SKIRMISH_PLAN_MAX) b->history[b->historyCount++] = structureType;
 
-		/* A wall replaces the ground tile it stands on, so concrete under one is
-		 * paid for and immediately overwritten. */
-		if (structureType != STRUCTURE_WALL) Skirmish_LaySlabs(h, e->position, structureType);
+			/* A wall replaces the ground tile it stands on, so concrete under one
+			 * is paid for and immediately overwritten. */
+			if (structureType != STRUCTURE_WALL) Skirmish_LaySlabs(h, e->position, structureType);
 
-		return e->position;
+			return e->position;
+		}
 	}
 
 	return 0xFFFF;
@@ -1095,6 +1147,13 @@ static bool Skirmish_Economy_RefineryFree(const House *h)
 }
 
 /** Append a structure to a running plan, with the power it needs. */
+/**
+ * Add a structure the base has turned out to need to the end of its plan.
+ *
+ * Everything appended here is demand-driven -- a refinery the harvesters are
+ * queueing for, a Hi-Tech to replace a carryall -- so it is marked urgent and
+ * Skirmish_Plan_PickNext() takes it before the standing plan.
+ */
 static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 {
 	const StructureInfo *si = &g_table_structureInfo[type];
@@ -1110,6 +1169,7 @@ static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 
 		b->entries[b->entryCount].type     = STRUCTURE_WINDTRAP;
 		b->entries[b->entryCount].taken    = false;
+		b->entries[b->entryCount].urgent   = true;
 		b->entries[b->entryCount].position = position;
 		b->entryCount++;
 
@@ -1121,6 +1181,7 @@ static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 
 	b->entries[b->entryCount].type     = type;
 	b->entries[b->entryCount].taken    = false;
+	b->entries[b->entryCount].urgent   = true;
 	b->entries[b->entryCount].position = position;
 	b->entryCount++;
 
@@ -1212,11 +1273,51 @@ static void Skirmish_Economy_SampleCarryalls(SkirmishBase *b, House *h, bool ref
  * Per-house economy upkeep, called from the house loop so it runs whatever the
  * Construction Yard happens to be doing.
  */
+/**
+ * Drop a spice bloom on the open sand and set it off on the spot.
+ *
+ * Dune II has no spice regrowth whatsoever.  Two AIs mining continuously strip a
+ * 62x62 map inside a long match, and what is left is a frozen board: full
+ * armies, standing refineries, and nothing to put in them.  The engine does have
+ * a mechanism for new spice -- a bloom fills a circle when something shoots it --
+ * but nothing in UNIT.EMC makes an AI shoot one, so a bloom left standing is a
+ * bloom that stays there all match.  Detonating it immediately gets the spice
+ * without depending on the script to notice, and the tremor still shows where.
+ */
+static void Skirmish_SpiceBloom(void)
+{
+	uint16 attempt;
+
+	if (g_timerGame < s_nextBloom) return;
+	s_nextBloom = g_timerGame + SKIRMISH_BLOOM_TICKS;
+
+	/* Bounded rather than exhaustive: a map with no free sand left is a map that
+	 * does not need one of these, and the next period will try again. */
+	for (attempt = 0; attempt < 32; attempt++) {
+		const uint16 packed = Tile_PackXY(Tools_RandomLCG_Range(2, 59), Tools_RandomLCG_Range(2, 59));
+		const uint16 lst = Map_GetLandscapeType(packed);
+
+		if (lst != LST_NORMAL_SAND && lst != LST_ENTIRELY_DUNE && lst != LST_PARTIAL_DUNE) continue;
+
+		/* Map_Bloom_ExplodeSpice() removes whatever is standing on the tile, and
+		 * a harvester deleted from under its house is not a surprise a
+		 * measurement should contain. */
+		if (Object_GetByPackedTile(packed) != NULL) continue;
+
+		Map_Bloom_ExplodeSpice(packed, HOUSE_INVALID);
+		return;
+	}
+}
+
 void Skirmish_Economy_Tick(House *h)
 {
 	SkirmishBase *b;
 
 	if (!s_active || h == NULL) return;
+
+	/* Match-global, and this is the only per-tick hook the module has.  Its own
+	 * timer makes it fire once a period however many houses call in. */
+	Skirmish_SpiceBloom();
 
 	b = Skirmish_GetBase((uint8)h->index);
 	if (b == NULL) return;
@@ -1875,6 +1976,7 @@ void Skirmish_RecordKill(uint8 houseID, bool crushed)
  */
 bool Skirmish_GetCasualties(char *buf, uint16 length)
 {
+
 	uint16 used = 0;
 	uint8 i;
 

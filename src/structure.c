@@ -601,7 +601,16 @@ bool Structure_Place(Structure *s, uint16 position)
 		case STRUCTURE_WALL: {
 			Tile *t;
 
-			if (Structure_IsValidBuildLocation(position, STRUCTURE_WALL) == 0) return false;
+			/* The same exemption the general path at the end of this function
+			 * gets, and for the same reason.  Structure_IsValidBuildLocation()
+			 * ends in a "must touch something of your own" test written against
+			 * g_playerHouseID, so no AI house can ever satisfy it -- and in a
+			 * skirmish the player owns nothing at all.  Walls were the only
+			 * structure whose placement enforced it regardless of house, so every
+			 * AI wall was silently refunded and freed while its plan entry was
+			 * spent: an AI base never had a single one. */
+			if (Structure_IsValidBuildLocation(position, STRUCTURE_WALL) == 0 &&
+			    s->o.houseID == g_playerHouseID && !g_debugScenario && g_validateStrictIfZero == 0) return false;
 
 			t = &g_map[position];
 			t->groundTileID = g_wallTileID + 1;
