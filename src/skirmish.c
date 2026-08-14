@@ -626,6 +626,23 @@ uint16 Skirmish_GetTurretDistance(uint8 houseID, uint16 packed)
 	return best;
 }
 
+/** The other House in a two-House match, or HOUSE_INVALID. */
+uint8 Skirmish_GetOpponent(uint8 houseID)
+{
+	uint8 index;
+
+	if (!s_active) return HOUSE_INVALID;
+
+	for (index = 0; index < SKIRMISH_PLAYER_MAX; index++) {
+		const SkirmishBase *b = &s_bases[index];
+
+		if (b->entryCount == 0 || b->houseID == houseID) continue;
+		return b->houseID;
+	}
+
+	return HOUSE_INVALID;
+}
+
 /** The House holding base slot @p index, or HOUSE_INVALID. */
 uint8 Skirmish_GetBaseHouse(uint8 index)
 {
@@ -2588,7 +2605,7 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 		char production[96];
 
 		if (!Doctrine_GetTelemetry(b->houseID, doctrine, sizeof(doctrine))) strcpy(doctrine, "0,0,0,0,0,0");
-		if (!Doctrine_GetProduction(b->houseID, production, sizeof(production))) strcpy(production, "0,0,0,0,0,0,0,0,0,0,0,0");
+		if (!Doctrine_GetProduction(b->houseID, production, sizeof(production))) strcpy(production, "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
 
 		snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%s,%s",
 		         g_table_houseInfo[b->houseID].name,

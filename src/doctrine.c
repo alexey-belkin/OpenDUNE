@@ -131,6 +131,20 @@ static uint8 s_roleSeen[HOUSE_MAX][DOCTRINE_ROLE_MAX];
  * distinguishable from the army that comes out. */
 static uint32 s_pickedRole[HOUSE_MAX][DOCTRINE_ROLE_MAX];
 static uint32 s_vetoedRole[HOUSE_MAX][DOCTRINE_ROLE_MAX];
+/* Times a unit had to be pushed back out of an enemy turret's envelope.  The
+ * direct measure of the rule: it should fall towards zero as units learn to
+ * stop wandering in, and every one of them is a free shot given away. */
+/** Coarse hostile-presence map, one cell per 4x4 tiles.  Rebuilt on a timer
+ *  because a harvester asks this from inside a map-wide search. */
+#define DANGER_CELLS 16
+static uint8  s_danger[HOUSE_MAX][DANGER_CELLS * DANGER_CELLS];
+static uint32 s_dangerUntil[HOUSE_MAX];
+
+static uint32 s_turretZone[HOUSE_MAX];
+/* Harvesters lost, and enemy harvesters killed.  The two halves of "money likes
+ * quiet": ours should fall, theirs should rise. */
+static uint32 s_harvesterLost[HOUSE_MAX];
+static uint32 s_harvesterKilled[HOUSE_MAX];
 
 typedef struct DoctrineHouse {
 	uint8  phase;
@@ -257,6 +271,11 @@ void Doctrine_Reset(void)
 	memset(s_roleSeen, 0, sizeof(s_roleSeen));
 	memset(s_pickedRole, 0, sizeof(s_pickedRole));
 	memset(s_vetoedRole, 0, sizeof(s_vetoedRole));
+	memset(s_turretZone, 0, sizeof(s_turretZone));
+	memset(s_harvesterLost, 0, sizeof(s_harvesterLost));
+	memset(s_harvesterKilled, 0, sizeof(s_harvesterKilled));
+	memset(s_danger, 0, sizeof(s_danger));
+	memset(s_dangerUntil, 0, sizeof(s_dangerUntil));
 	memset(s_house, 0, sizeof(s_house));
 }
 
@@ -648,6 +667,189 @@ static uint16 Doctrine_PickObjective(uint8 enemy, uint16 approach, uint16 waveCo
 	}
 
 	return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Doctrine B -- danger, patrol, and the turret exclusion zone                 */
+/* -------------------------------------------------------------------------- */
+
+/** How far a turret of this type engages, in tiles.  These are the arguments to
+ *  FindTargetUnit in BUILD.EMC, which is the only place they exist. */
+static uint16 Doctrine_TurretReach(uint16 structureType)
+{
+	if (structureType == STRUCTURE_ROCKET_TURRET) return 8;
+	if (structureType == STRUCTURE_TURRET) return 5;
+	return 0;
+}
+
+static void Doctrine_BuildDanger(uint8 houseID)
+{
+	PoolFindStruct find;
+	uint8 *cell = s_danger[houseID];
+	uint16 i;
+
+	memset(cell, 0, DANGER_CELLS * DANGER_CELLS);
+	s_dangerUntil[houseID] = g_timerGame + 150;
+
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+		uint16 cx, cy;
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap) continue;
+		if (House_AreAllied(houseID, Unit_GetHouseID(u))) continue;
+		if (!g_table_unitInfo[u->o.type].o.flags.priority) continue;      /* Not a bullet. */
+		if (g_table_unitInfo[u->o.type].fireDistance == 0) continue;      /* Not a threat. */
+
+		cx = Tile_GetPackedX(Tile_PackTile(u->o.position)) / 4;
+		cy = Tile_GetPackedY(Tile_PackTile(u->o.position)) / 4;
+		if (cx >= DANGER_CELLS || cy >= DANGER_CELLS) continue;
+
+		if (cell[cy * DANGER_CELLS + cx] < 250) cell[cy * DANGER_CELLS + cx] += 4;
+	}
+
+	/* Turrets are permanent danger and worth more than a passing tank. */
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+		uint16 cx, cy;
+
+		if (s == NULL) break;
+		if (Doctrine_TurretReach(s->o.type) == 0) continue;
+		if (House_AreAllied(houseID, s->o.houseID)) continue;
+
+		cx = Tile_GetPackedX(Tile_PackTile(s->o.position)) / 4;
+		cy = Tile_GetPackedY(Tile_PackTile(s->o.position)) / 4;
+		if (cx >= DANGER_CELLS || cy >= DANGER_CELLS) continue;
+
+		if (cell[cy * DANGER_CELLS + cx] < 240) cell[cy * DANGER_CELLS + cx] += 10;
+	}
+
+	/* One pass of bleed into the neighbours, so the edge of a fight is not a
+	 * safe place to park a harvester either. */
+	for (i = 0; i < DANGER_CELLS * DANGER_CELLS; i++) {
+		uint16 x = i % DANGER_CELLS;
+		uint16 y = i / DANGER_CELLS;
+		uint16 spread = cell[i] / 2;
+
+		if (spread == 0) continue;
+
+		if (x > 0                && cell[i - 1] < spread) cell[i - 1] = (uint8)spread;
+		if (x < DANGER_CELLS - 1 && cell[i + 1] < spread) cell[i + 1] = (uint8)spread;
+		if (y > 0                && cell[i - DANGER_CELLS] < spread) cell[i - DANGER_CELLS] = (uint8)spread;
+		if (y < DANGER_CELLS - 1 && cell[i + DANGER_CELLS] < spread) cell[i + DANGER_CELLS] = (uint8)spread;
+	}
+}
+
+/**
+ * How dangerous a tile is for this House, 0 upwards.
+ *
+ * Money likes quiet.  A harvester that drives into a battle is not a harvester
+ * any more, and the spice it was going for is still there afterwards -- so the
+ * cost of walking further is almost always smaller than the cost of the trip
+ * that does not come back.
+ */
+uint16 Doctrine_DangerAt(uint8 houseID, uint16 packed)
+{
+	uint16 cx, cy;
+
+	if (houseID >= HOUSE_MAX) return 0;
+	if (Doctrine_GetForHouse(houseID) == DOCTRINE_LEGACY) return 0;
+
+	if (s_dangerUntil[houseID] <= g_timerGame) Doctrine_BuildDanger(houseID);
+
+	cx = Tile_GetPackedX(packed) / 4;
+	cy = Tile_GetPackedY(packed) / 4;
+	if (cx >= DANGER_CELLS || cy >= DANGER_CELLS) return 0;
+
+	return s_danger[houseID][cy * DANGER_CELLS + cx];
+}
+
+/**
+ * Keep a unit out of a turret's reach unless that turret is what it came for.
+ *
+ * A tank fighting another tank drifts, and the ground it drifts onto is often
+ * covered by something that shoots for free: the tank is busy, the turret is
+ * not, and the exchange is one-sided.  The rule is the blunt one -- you are
+ * inside the envelope only when the turret is your target -- and it is the same
+ * rule the wave already follows, applied to everyone all the time.
+ *
+ * Backing off rather than engaging is deliberate.  A Tank reaches 4 and a Rocket
+ * Turret 8, so "fight it where you stand" is a losing trade for everything but
+ * the artillery; the unit that should engage a turret is the one whose job it
+ * is, and Unit_Skirmish_ClearTheWay() has already given it that target -- at
+ * which point this does not fire.
+ *
+ * @return True when the unit was pushed out.
+ */
+bool Doctrine_TurretExclusion(Unit *unit)
+{
+	const UnitInfo *ui;
+	PoolFindStruct find;
+	const Structure *worst = NULL;
+	uint16 worstReach = 0;
+	uint8 houseID;
+
+	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX || unit->o.flags.s.isNotOnMap) return false;
+
+	houseID = Unit_GetHouseID(unit);
+	if (Doctrine_GetForHouse(houseID) == DOCTRINE_LEGACY) return false;
+
+	ui = &g_table_unitInfo[unit->o.type];
+	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit) return false;
+	if (unit->o.type == UNIT_SABOTEUR) return false;                 /* Its job is to arrive. */
+
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+		uint16 reach;
+
+		if (s == NULL) break;
+
+		reach = Doctrine_TurretReach(s->o.type);
+		if (reach == 0) continue;
+		if (House_AreAllied(houseID, s->o.houseID)) continue;
+		if (s->o.flags.s.isNotOnMap) continue;
+
+		/* Its own target: being here is the point. */
+		if (Tools_Index_IsValid(unit->targetAttack)
+			&& Tools_Index_GetType(unit->targetAttack) == IT_STRUCTURE
+			&& Tools_Index_GetStructure(unit->targetAttack) == s) return false;
+
+		if (Tile_GetDistanceRoundedUp(unit->o.position, s->o.position) > reach) continue;
+
+		if (reach > worstReach) {
+			worstReach = reach;
+			worst = s;
+		}
+	}
+
+	if (worst == NULL) return false;
+
+	s_turretZone[houseID]++;
+
+	/* Straight out, to a tile past the edge of the envelope. */
+	{
+		tile32 out = Tile_MoveByDirection(unit->o.position,
+		                                  Tile_GetDirection(worst->o.position, unit->o.position),
+		                                  (uint16)((worstReach + 2) << 8));
+
+		if (unit->actionID != ACTION_MOVE) Unit_SetAction(unit, ACTION_MOVE);
+		Unit_SetTarget(unit, 0);
+		Unit_SetDestination(unit, Tools_Index_Encode(Tile_PackTile(out), IT_TILE));
+	}
+
+	return true;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1284,6 +1486,69 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
  * The rally is behind the house's own turrets rather than out in the open, so
  * what accumulates there accumulates next to the guns covering it.
  */
+/**
+ * Raiders hunt harvesters; they are no use anywhere else.
+ *
+ * A Trike reaches 3 tiles and dies to anything that shoots back, so putting it
+ * in a line of battle is throwing it away -- but it is the fastest thing on the
+ * map, and an enemy harvester is unarmed, alone, and standing on the one part of
+ * the map its owner cannot do without.  The same reasoning that keeps our own
+ * harvesters away from a fight sends these to where theirs have to be.
+ *
+ * Only raiders not on a wave: when a wave takes them they are its screen.
+ */
+static void Doctrine_Patrol(uint8 houseID, DoctrineHouse *dh)
+{
+	PoolFindStruct find;
+	uint16 prey = 0;
+	uint16 preyDistance = 0xFFFF;
+	uint16 anchor = (dh->ldPacked != 0) ? dh->ldPacked : dh->musterPacked;
+
+	if (anchor == 0) return;
+
+	/* The nearest enemy harvester on the map, loaded or not. */
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = UNIT_HARVESTER;
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+		uint16 d;
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap) continue;
+		if (House_AreAllied(houseID, Unit_GetHouseID(u))) continue;
+
+		d = Tile_GetDistancePacked(anchor, Tile_PackTile(u->o.position));
+		if (d >= preyDistance) continue;
+
+		preyDistance = d;
+		prey = Tools_Index_Encode(u->o.index, IT_UNIT);
+	}
+
+	if (prey == 0) return;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+		if (s_unitRole[u->o.index] != DOCTRINE_ROLE_RAID) continue;
+		if (s_unitOnWave[u->o.index] != 0) continue;
+
+		/* Already hunting something: let it finish. */
+		if (Tools_Index_IsValid(u->targetAttack)) continue;
+
+		if (u->actionID != ACTION_ATTACK) Unit_SetAction(u, ACTION_ATTACK);
+		Unit_SetTarget(u, prey);
+		Unit_SetDestination(u, prey);
+	}
+}
+
 static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
 {
 	PoolFindStruct find;
@@ -1307,6 +1572,7 @@ static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
 		if (s_unitOnWave[u->o.index] != 0) continue;
 		if (s_unitRole[u->o.index] == DOCTRINE_ROLE_NONE) continue;
 		if (u->o.type == UNIT_SABOTEUR) continue;                  /* Has its own errand. */
+		if (s_unitRole[u->o.index] == DOCTRINE_ROLE_RAID) continue; /* Out hunting harvesters. */
 
 		/* Shooting at something is the job; do not interrupt it. */
 		if (Tools_Index_IsValid(u->targetAttack)) continue;
@@ -1418,6 +1684,7 @@ void Doctrine_Tick(House *h)
 
 	Doctrine_Rally(houseID, dh);
 	Doctrine_Saboteurs(houseID, dh);
+	Doctrine_Patrol(houseID, dh);
 
 }
 
@@ -1670,14 +1937,22 @@ bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
 		built[r] = (uint16)(built[r] + Skirmish_GetUnitsBuilt(houseID, i));
 	}
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         built[0], built[1], built[2], built[3],
 	         (unsigned)s_pickedRole[houseID][0], (unsigned)s_pickedRole[houseID][1],
 	         (unsigned)s_pickedRole[houseID][2], (unsigned)s_pickedRole[houseID][3],
 	         (unsigned)s_vetoedRole[houseID][0], (unsigned)s_vetoedRole[houseID][1],
-	         (unsigned)s_vetoedRole[houseID][2], (unsigned)s_vetoedRole[houseID][3]);
+	         (unsigned)s_vetoedRole[houseID][2], (unsigned)s_vetoedRole[houseID][3],
+	         (unsigned)s_turretZone[houseID],
+	         (unsigned)s_harvesterLost[houseID], (unsigned)s_harvesterKilled[houseID]);
 
 	return true;
+}
+
+void Doctrine_RecordHarvesterLoss(uint8 owner, uint8 killer)
+{
+	if (owner < HOUSE_MAX) s_harvesterLost[owner]++;
+	if (killer < HOUSE_MAX) s_harvesterKilled[killer]++;
 }
 
 bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)

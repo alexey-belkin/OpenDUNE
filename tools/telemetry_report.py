@@ -26,7 +26,9 @@ COLUMNS = ["refineries", "combatStructures", "harvesters", "combatUnits",
            "shotsTurret", "shotsStructure", "shotsUnit", "shotsBypass",
            "idleAttackers", "idleOnWave", "stalledHarvesters", "freeRefineries",
            "wavePhase", "waveUnits", "waveAtLD", "waveColumn",
-           "wavesLaunched", "wavesAborted"]
+           "wavesLaunched", "wavesAborted",
+           "builtArt", "builtAss", "builtRaid", "builtGar",
+           "turretZone", "harvLost", "harvKilled"]
 
 
 def read_match(path):

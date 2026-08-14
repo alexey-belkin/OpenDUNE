@@ -1495,6 +1495,10 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 			if (Object_GetByPackedTile(packed) != NULL || Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
 			distance = Tile_GetDistancePacked(Tile_PackTile(unit->o.position), packed);
 			score = distance * 16 + (type == LST_THICK_SPICE ? 0 : 8);
+			/* Money likes quiet.  Weighted heavily against distance on purpose:
+			 * the spice under a battle is still there in five thousand ticks and
+			 * the harvester is not, so almost any detour is the cheaper trip. */
+			score += (uint32)Doctrine_DangerAt(Unit_GetHouseID(unit), packed) * 64;
 			Unit_Harvester_AddCandidate(candidates, roughScores, &count, packed, score);
 		}
 	}
@@ -2688,7 +2692,10 @@ void GameLoop_Unit(void)
 
 		if (tickUnknown4) {
 			Unit_Autonomy_Update(u);
-			Unit_Skirmish_ClearTheWay(u);
+			/* Before the sweep, not after: a unit that has just been pushed out
+			 * of an envelope must not be handed a target inside it again on the
+			 * same tick. */
+			if (!Doctrine_TurretExclusion(u)) Unit_Skirmish_ClearTheWay(u);
 			Unit_Harvester_Update(u);
 			Unit_AirTransit_Update(u);
 			Unit_AttackPosition_Update(u);
@@ -4346,6 +4353,11 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 		}
 
 		if (Skirmish_IsActive()) Skirmish_RecordKill(houseID, false);
+		/* Both halves of "money likes quiet" in one place: whose harvester it
+		 * was, and who is the only other House on the map. */
+		if (Skirmish_IsActive() && unit->o.type == UNIT_HARVESTER) {
+			Doctrine_RecordHarvesterLoss(houseID, Skirmish_GetOpponent(houseID));
+		}
 
 		Unit_SetAction(unit, ACTION_DIE);
 		return true;
