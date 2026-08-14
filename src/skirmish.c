@@ -1170,11 +1170,48 @@ static bool Skirmish_Economy_RefineryFree(const House *h)
 
 /** Append a structure to a running plan, with the power it needs. */
 /**
- * Add a structure the base has turned out to need to the end of its plan.
+ * Put a demand-driven entry into the plan, in front of the defence line.
  *
- * Everything appended here is demand-driven -- a refinery the harvesters are
- * queueing for, a Hi-Tech to replace a carryall -- so it is marked urgent and
- * Skirmish_Plan_PickNext() takes it before the standing plan.
+ * Not at the end, and not at the front either.  At the end it sits behind the
+ * twenty-odd walls and turrets, and Skirmish_Economy_SampleQueue() will not ask
+ * for a second refinery while the first is still pending -- so the base holds at
+ * one refinery for as long as the line takes to build, which is most of the
+ * match.  At the front it outranks the line permanently, and since a refinery is
+ * almost always pending the line never gets built at all: measured at twenty
+ * standing defence structures down to one.
+ *
+ * In front of the line and behind the economy is the only place that is neither.
+ * One refinery at a time overtakes the turrets, and the turrets carry on.
+ */
+static void Skirmish_Plan_Insert(SkirmishBase *b, uint8 type, uint16 position)
+{
+	uint16 at = b->entryCount;
+	uint16 i;
+
+	for (i = 0; i < b->entryCount; i++) {
+		if (b->entries[i].taken) continue;
+		if (!Skirmish_IsDefenceStructure(b->entries[i].type)) continue;
+
+		at = i;
+		break;
+	}
+
+	for (i = b->entryCount; i > at; i--) {
+		b->entries[i] = b->entries[i - 1];
+	}
+
+	b->entries[at].type     = type;
+	b->entries[at].taken    = false;
+	b->entries[at].position = position;
+	b->entryCount++;
+}
+
+/**
+ * Add a structure the base has turned out to need to its plan.
+ *
+ * Everything here is demand-driven -- a refinery the harvesters are queueing
+ * for, a Hi-Tech to replace a lost carryall -- and goes in through
+ * Skirmish_Plan_Insert(), which decides where.
  */
 static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 {
@@ -1189,10 +1226,7 @@ static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 		position = Skirmish_Layout_Next(b, STRUCTURE_WINDTRAP);
 		if (position == 0xFFFF) return false;
 
-		b->entries[b->entryCount].type     = STRUCTURE_WINDTRAP;
-		b->entries[b->entryCount].taken    = false;
-		b->entries[b->entryCount].position = position;
-		b->entryCount++;
+		Skirmish_Plan_Insert(b, STRUCTURE_WINDTRAP, position);
 
 		if (b->entryCount >= SKIRMISH_PLAN_MAX) return false;
 	}
@@ -1200,10 +1234,7 @@ static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 	position = Skirmish_Layout_Next(b, type);
 	if (position == 0xFFFF) return false;
 
-	b->entries[b->entryCount].type     = type;
-	b->entries[b->entryCount].taken    = false;
-	b->entries[b->entryCount].position = position;
-	b->entryCount++;
+	Skirmish_Plan_Insert(b, type, position);
 
 	return true;
 }
