@@ -891,6 +891,7 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 {
 	const DoctrineParams *p = Doctrine_ParamsOf(houseID);
 	uint16 reserve;
+	uint16 keep;
 	uint16 approach;
 	uint16 objective;
 	PoolFindStruct find;
@@ -900,12 +901,19 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	if (dh->musterPacked == 0) return;
 
 	reserve = Doctrine_CountReserve(houseID, NULL);
-	if (reserve < p->minWave + p->garrisonKeep) return;
+	if (reserve < p->minWave) return;
+
+	/* The keep comes out of what is left above the minimum, not on top of it.
+	 * Demanding minWave + garrisonKeep before anything moves put the bar at ten
+	 * attackers, and a B house that was losing never reached it again: it stood
+	 * in its base with seven of them and launched nothing for the rest of the
+	 * match. */
+	keep = (reserve > (uint16)(p->minWave + p->garrisonKeep)) ? p->garrisonKeep : (uint16)(reserve - p->minWave);
 
 	approach = Doctrine_PickApproach(houseID, enemy);
 	if (approach == 0) return;
 
-	objective = Doctrine_PickObjective(enemy, approach, (uint16)(reserve - p->garrisonKeep));
+	objective = Doctrine_PickObjective(enemy, approach, (uint16)(reserve - keep));
 	if (objective == 0) return;
 
 	dh->objective = objective;
@@ -923,7 +931,7 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 		if (u == NULL) break;
 		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
 		if (!Doctrine_IsAttacker(s_unitRole[u->o.index])) continue;
-		if (taken + p->garrisonKeep >= reserve) break;
+		if (taken + keep >= reserve) break;
 
 		s_unitOnWave[u->o.index] = 1;
 		taken++;
@@ -1229,44 +1237,22 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	dh->atLD = 0;
 }
 
-/** Anything not on the wave defends the base. */
-static void Doctrine_Garrison(uint8 houseID, DoctrineHouse *dh)
-{
-	PoolFindStruct find;
-
-	if (dh->musterPacked == 0) return;
-
-	find.houseID = houseID;
-	find.index   = 0xFFFF;
-	find.type    = 0xFFFF;
-
-	while (true) {
-		Unit *u = Unit_Find(&find);
-
-		if (u == NULL) break;
-		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
-		if (s_unitOnWave[u->o.index] != 0) continue;
-		if (s_unitRole[u->o.index] == DOCTRINE_ROLE_NONE) continue;
-
-		/* Busy defending: that is the job, do not interrupt it. */
-		if (Tools_Index_IsValid(u->targetAttack)) continue;
-
-		/* Home is a station, not a spot: only fetch back the ones that have
-		 * wandered out of it, or the whole garrison re-paths every pass.
-		 *
-		 * And near home it is left completely alone.  Forcing ACTION_GUARD here
-		 * cost B every decisive match it played: the engine gives a fresh AI unit
-		 * ACTION_HUNT, which is what makes it go and fight on its own, and
-		 * overwriting that with GUARD turned the entire reserve inert.  Measured,
-		 * B took 138 shots by t80000 against A's 388, never launched a wave at
-		 * all, and had its harvesters hunted down inside its own base. */
-		if (Tile_GetDistancePacked(Tile_PackTile(u->o.position), dh->musterPacked) <= 12) continue;
-
-		if (u->targetMove != 0) continue;
-
-		Doctrine_OrderMove(u, dh->musterPacked);
-	}
-}
+/**
+ * Doctrine B touches nothing it has not committed.
+ *
+ * There was a garrison routine here that fetched idle reserve units back to the
+ * rally point, and it was the reason a B house sat inside its own base while its
+ * defence line was taken apart.  The engine gives every fresh AI unit
+ * ACTION_HUNT -- that is what sends it out to fight on its own, and it is the
+ * whole of doctrine A's behaviour.  Any order issued to a unit B has not
+ * committed replaces that with something quieter, so B was strictly less active
+ * than the doctrine it is supposed to improve on.
+ *
+ * The rule now is that B is A plus waves: a unit is either on a wave, and then
+ * B owns it completely, or it is not, and then B does not speak to it at all.
+ * That bounds how much worse B can be, which matters more here than any tidy
+ * idea about what a reserve ought to be doing.
+ */
 
 void Doctrine_Tick(House *h)
 {
@@ -1296,7 +1282,6 @@ void Doctrine_Tick(House *h)
 		default:             Doctrine_PhaseAssault(houseID, dh, enemy);  break;
 	}
 
-	Doctrine_Garrison(houseID, dh);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1527,7 +1512,7 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 
 bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 {
-	static const char *phaseName[4] = { "muster", "approach", "suppress", "assault" };
+	static const char *phaseName[4] = { "mus", "app", "sup", "ASSAULT" };
 	const DoctrineHouse *dh;
 	uint16 role[DOCTRINE_ROLE_MAX];
 	PoolFindStruct find;
@@ -1557,8 +1542,8 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 		role[s_unitRole[u->o.index]]++;
 	}
 
-	snprintf(buf, length, "B %s w%u@LD%u c%u a%u/s%u/r%u/g%u L%u/A%u",
-	         phaseName[dh->phase & 3], dh->waveCount, dh->atLD, dh->columnLength,
+	snprintf(buf, length, "B %s w%u/LD%u a%us%ur%ug%u L%uA%u",
+	         phaseName[dh->phase & 3], dh->waveCount, dh->atLD,
 	         role[DOCTRINE_ROLE_ARTILLERY], role[DOCTRINE_ROLE_ASSAULT],
 	         role[DOCTRINE_ROLE_RAID], role[DOCTRINE_ROLE_GARRISON],
 	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted);

@@ -2561,6 +2561,42 @@ bool Skirmish_GetBystanders(char *buf, uint16 length)
  * Draw a line per AI over the viewport, so the match can be followed without
  * clicking around.
  */
+/**
+ * The one-line-per-house version, sized for the screen rather than for a log.
+ *
+ * The full summary is about a hundred and thirty characters; the viewport fits
+ * roughly fifty, and GUI_DrawText_Wrapper() wraps rather than clipping, so the
+ * two houses' lines landed on top of each other and neither could be read.
+ */
+static bool Skirmish_GetOverlayLine(uint8 index, char *buf, uint16 length)
+{
+	const SkirmishBase *b;
+	const House *h;
+	char doctrine[64];
+	uint16 done = 0;
+	uint16 i;
+
+	if (!s_active || index >= SKIRMISH_PLAYER_MAX || buf == NULL) return false;
+
+	b = &s_bases[index];
+	if (b->entryCount == 0) return false;
+
+	h = House_Get_ByIndex(b->houseID);
+
+	for (i = 0; i < b->entryCount; i++) {
+		if (b->entries[i].taken) done++;
+	}
+
+	if (!Doctrine_GetSummary(b->houseID, doctrine, sizeof(doctrine))) strcpy(doctrine, "?");
+
+	snprintf(buf, length, "%.3s %s h%u u%u s%u/%u v%u",
+	         g_table_houseInfo[b->houseID].name, doctrine,
+	         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER), h->unitCount,
+	         done, b->entryCount, (unsigned)Skirmish_War_GetValue(index));
+
+	return true;
+}
+
 void Skirmish_DrawStatusOverlay(void)
 {
 	uint8 i;
@@ -2568,9 +2604,9 @@ void Skirmish_DrawStatusOverlay(void)
 	if (!s_active) return;
 
 	for (i = 0; i < SKIRMISH_PLAYER_MAX; i++) {
-		char line[220];
+		char line[80];
 
-		if (!Skirmish_GetSummary(i, line, sizeof(line))) continue;
+		if (!Skirmish_GetOverlayLine(i, line, sizeof(line))) continue;
 
 		/* Through a "%s", not as the format itself.  GUI_DrawText_Wrapper() is
 		 * printf-shaped, and the summary line contains a literal percent sign --
