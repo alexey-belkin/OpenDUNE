@@ -78,6 +78,27 @@ static void WarSearch_Print(const char *str)
 	fflush(stderr);
 }
 
+/**
+ * "3/28 [41s elapsed, ~2m10s left]".
+ *
+ * A round robin is minutes of silence otherwise, and the useful question while
+ * waiting is when it ends, not whether it is alive.  The estimate is linear in
+ * duels completed, which is honest here: every duel is the same number of
+ * matches, and matches that end early average out across the grid.
+ */
+static void WarSearch_Progress(char *buf, uint16 length, uint16 done, uint16 total, time_t started)
+{
+	const long elapsed = (long)(time(NULL) - started);
+	const long left = (done != 0 && done < total) ? elapsed * (total - done) / done : 0;
+
+	if (left >= 60) {
+		snprintf(buf, length, "%u/%u [%lds elapsed, ~%ldm%02lds left]",
+		         done, total, elapsed, left / 60, left % 60);
+	} else {
+		snprintf(buf, length, "%u/%u [%lds elapsed, ~%lds left]", done, total, elapsed, left);
+	}
+}
+
 void WarSearch_MakePlan(uint16 share, uint16 shareLate, uint32 switchTick, SkirmishEconomyPlan *out)
 {
 	Skirmish_MakeDefaultPlan(out);
@@ -234,9 +255,12 @@ static uint16 WarSearch_Duel(const SkirmishEconomyPlan *planA, const SkirmishEco
  */
 void WarSearch_RunMatrix(uint32 ticks, uint16 maps)
 {
+	const uint16 total = (uint16)(lengthof(s_shares) * (lengthof(s_shares) - 1) / 2);
 	uint16 points[lengthof(s_shares)];
 	char line[512];
+	char progress[64];
 	time_t started = time(NULL);
+	uint16 done = 0;
 	uint16 i, j;
 
 	if (maps < 1) maps = 1;
@@ -254,7 +278,6 @@ void WarSearch_RunMatrix(uint32 ticks, uint16 maps)
 			uint32 valueA, valueB;
 			uint16 realA, realB;
 			uint16 scored;
-			long elapsed;
 
 			WarSearch_MakePlan(s_shares[i], s_shares[i], 0, &planA);
 			WarSearch_MakePlan(s_shares[j], s_shares[j], 0, &planB);
@@ -264,11 +287,11 @@ void WarSearch_RunMatrix(uint32 ticks, uint16 maps)
 			points[i] += scored;
 			points[j] += (uint16)(maps * 4) - scored;
 
-			elapsed = (long)(time(NULL) - started);
-			snprintf(line, sizeof(line), "  mil %2u%% vs %2u%%: %u-%u points, value %u-%u, spent %u%%/%u%%, %u/%u by wipeout [%lds]",
+			WarSearch_Progress(progress, sizeof(progress), ++done, total, started);
+			snprintf(line, sizeof(line), "  mil %2u%% vs %2u%%: %u-%u points, value %u-%u, spent %u%%/%u%%, %u/%u by wipeout  %s",
 			         s_shares[i], s_shares[j], scored, (unsigned)(maps * 4) - scored,
 			         (unsigned)valueA, (unsigned)valueB, realA, realB,
-			         s_decisive, (unsigned)(maps * 2), elapsed);
+			         s_decisive, (unsigned)(maps * 2), progress);
 			WarSearch_Print(line);
 		}
 	}
@@ -297,25 +320,31 @@ void WarSearch_RunTiming(uint32 ticks, uint16 maps)
 		uint16 shareLate;
 		uint32 switchTick;
 	} schedules[] = {
-		{ "flat 30",        30, 30,      0 },
 		{ "flat 45",        45, 45,      0 },
-		{ "flat 90",        90, 90,      0 },
-		{ "0->90 at 15k",    0, 90,  15000 },
-		{ "0->90 at 25k",    0, 90,  25000 },
-		{ "0->90 at 35k",    0, 90,  35000 },
-		{ "0->90 at 50k",    0, 90,  50000 },
-		{ "0->90 at 70k",    0, 90,  70000 }
+		{ "arm t10k",        0, 90,  10000 },
+		{ "arm t20k",        0, 90,  20000 },
+		{ "arm t30k",        0, 90,  30000 },
+		{ "arm t40k",        0, 90,  40000 },
+		{ "arm t55k",        0, 90,  55000 },
+		{ "arm t75k",        0, 90,  75000 },
+		{ "arm t100k",       0, 90, 100000 }
 	};
 
+	const uint16 total = (uint16)(lengthof(schedules) * (lengthof(schedules) - 1) / 2);
 	uint16 points[lengthof(schedules)];
 	char line[512];
+	char progress[64];
+	time_t started = time(NULL);
+	uint16 done = 0;
 	uint16 i, j;
 
 	if (maps < 1) maps = 1;
 
 	memset(points, 0, sizeof(points));
 
-	WarSearch_Print("war-timing: schedules of the military share against each other");
+	snprintf(line, sizeof(line), "war-timing: %u schedules, %u duels of %u matches each",
+	         (unsigned)lengthof(schedules), total, maps * 2);
+	WarSearch_Print(line);
 
 	for (i = 0; i < lengthof(schedules); i++) {
 		for (j = i + 1; j < lengthof(schedules); j++) {
@@ -332,10 +361,11 @@ void WarSearch_RunTiming(uint32 ticks, uint16 maps)
 			points[i] += scored;
 			points[j] += (uint16)(maps * 4) - scored;
 
-			snprintf(line, sizeof(line), "  %-15s vs %-15s: %u-%u points, value %u-%u, spent %u%%/%u%%, %u/%u by wipeout",
+			WarSearch_Progress(progress, sizeof(progress), ++done, total, started);
+			snprintf(line, sizeof(line), "  %-15s vs %-15s: %u-%u points, value %u-%u, spent %u%%/%u%%, %u/%u by wipeout  %s",
 			         schedules[i].name, schedules[j].name, scored, (unsigned)(maps * 4) - scored,
 			         (unsigned)valueA, (unsigned)valueB, realA, realB,
-			         s_decisive, (unsigned)(maps * 2));
+			         s_decisive, (unsigned)(maps * 2), progress);
 			WarSearch_Print(line);
 		}
 	}
@@ -363,7 +393,11 @@ void WarSearch_RunLadder(uint32 ticks, uint16 maps)
 {
 	static const uint8 challengers[] = { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90 };
 
+	const uint16 total = (uint16)(5 * (lengthof(challengers) - 1));
 	char line[512];
+	char progress[64];
+	time_t started = time(NULL);
+	uint16 done = 0;
 	uint16 champion = 45;
 	uint16 round;
 
@@ -391,8 +425,9 @@ void WarSearch_RunLadder(uint32 ticks, uint16 maps)
 
 			scored = WarSearch_Duel(&planChallenger, &planChampion, ticks, maps, &valueA, &valueB, &realA, &realB);
 
-			snprintf(line, sizeof(line), "  round %u: %2u%% vs champion %2u%% -> %u-%u (spent %u%%/%u%%)",
-			         round + 1, challengers[i], champion, scored, (unsigned)(maps * 4) - scored, realA, realB);
+			WarSearch_Progress(progress, sizeof(progress), ++done, total, started);
+			snprintf(line, sizeof(line), "  round %u: %2u%% vs champion %2u%% -> %u-%u (spent %u%%/%u%%)  %s",
+			         round + 1, challengers[i], champion, scored, (unsigned)(maps * 4) - scored, realA, realB, progress);
 			WarSearch_Print(line);
 
 			if (scored > bestPoints) {
