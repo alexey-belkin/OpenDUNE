@@ -2233,17 +2233,23 @@ uint16 Structure_AI_PickNextToBuild(Structure *s)
 		buildable &= ~FLAG_UNIT_MCV;
 	}
 
-	type = 0xFFFF;
-	for (i = 0; i < UNIT_MAX; i++) {
-		if ((buildable & (1 << i)) == 0) continue;
+	/* A skirmish house builds an army, not a stack of whatever scores highest.
+	 * The loop below is the original rule -- take the maximum of priorityBuild --
+	 * which produces exactly one unit type per factory forever. */
+	type = Skirmish_IsActive() ? Skirmish_AI_PickUnit(h, buildable) : 0xFFFF;
 
-		if ((Tools_Random_256() % 4) == 0) type = i;
+	if (type == 0xFFFF) {
+		for (i = 0; i < UNIT_MAX; i++) {
+			if ((buildable & (1 << i)) == 0) continue;
 
-		if (type != 0xFFFF) {
-			if (g_table_unitInfo[i].o.priorityBuild <= g_table_unitInfo[type].o.priorityBuild) continue;
+			if ((Tools_Random_256() % 4) == 0) type = i;
+
+			if (type != 0xFFFF) {
+				if (g_table_unitInfo[i].o.priorityBuild <= g_table_unitInfo[type].o.priorityBuild) continue;
+			}
+
+			type = i;
 		}
-
-		type = i;
 	}
 
 	if (!Skirmish_AI_AllowUnit(h, type)) return 0xFFFF;

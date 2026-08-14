@@ -1507,6 +1507,73 @@ uint16 Unit_Harvester_FindPreferredSpice(Unit *unit)
  * A door reservation held by the asking harvester itself still counts as
  * available.  Ignoring that made a queued harvester classify its own booking as
  * "occupied" and start hunting for transport it did not need. */
+/* Which harvester is already driving to which refinery.
+ *
+ * The engine has no such thing, and that is the whole bug: three harvesters that
+ * fill up together each ask for the nearest refinery that will accept them, all
+ * three get the same answer -- nobody is inside it yet -- and all three drive to
+ * the same door while the others stand empty.  Only after arriving does one win
+ * and the rest re-route, having crossed the map for nothing.
+ *
+ * This is ours and not the script's.  The engine's own reservation is
+ * o.script.variables[4], and writing that on a harvester means "stand still and
+ * wait for a carryall", which would park the fleet -- see the ownership note
+ * above.  A claim here only makes a refinery invisible to *other* harvesters
+ * while one is on its way to it.
+ *
+ * The claim carries an expiry so nothing can be blocked forever by a harvester
+ * that died, changed its mind, or got picked up on the way. */
+#define HARVESTER_CLAIM_TICKS 900
+
+static uint16 s_refineryClaim[STRUCTURE_INDEX_MAX_SOFT];      /*!< Unit index + 1, or 0. */
+static uint32 s_refineryClaimUntil[STRUCTURE_INDEX_MAX_SOFT];
+
+void Unit_Harvester_ReleaseClaim(const Unit *unit)
+{
+	uint16 i;
+
+	if (unit == NULL) return;
+
+	for (i = 0; i < STRUCTURE_INDEX_MAX_SOFT; i++) {
+		if (s_refineryClaim[i] == unit->o.index + 1) s_refineryClaim[i] = 0;
+	}
+}
+
+static bool Unit_Harvester_ClaimedByOther(const Structure *refinery, const Unit *unit)
+{
+	uint16 index;
+	const Unit *holder;
+
+	if (refinery->o.index >= STRUCTURE_INDEX_MAX_SOFT) return false;
+
+	index = s_refineryClaim[refinery->o.index];
+	if (index == 0) return false;
+	if (unit != NULL && index == unit->o.index + 1) return false;
+	if (s_refineryClaimUntil[refinery->o.index] <= g_timerGame) return false;
+
+	/* A claim outlives nothing.  If the holder is gone, loaded no longer, or
+	 * already inside a refinery, the door is free again. */
+	holder = Unit_Get_ByIndex(index - 1);
+	if (holder == NULL || !holder->o.flags.s.used || holder->o.type != UNIT_HARVESTER
+		|| holder->o.flags.s.isNotOnMap || holder->amount == 0) {
+		s_refineryClaim[refinery->o.index] = 0;
+		return false;
+	}
+
+	return true;
+}
+
+/* Book this refinery for this harvester, so the next one to ask looks elsewhere. */
+static void Unit_Harvester_Claim(const Structure *refinery, const Unit *unit)
+{
+	if (refinery == NULL || unit == NULL || refinery->o.index >= STRUCTURE_INDEX_MAX_SOFT) return;
+
+	Unit_Harvester_ReleaseClaim(unit);
+
+	s_refineryClaim[refinery->o.index]      = unit->o.index + 1;
+	s_refineryClaimUntil[refinery->o.index] = g_timerGame + HARVESTER_CLAIM_TICKS;
+}
+
 static bool Unit_Harvester_RefineryAccepts(const Structure *refinery, const Unit *unit)
 {
 	if (refinery == NULL
@@ -1514,6 +1581,8 @@ static bool Unit_Harvester_RefineryAccepts(const Structure *refinery, const Unit
 		|| refinery->o.hitpoints == 0
 		|| refinery->state != STRUCTURE_STATE_IDLE
 		|| refinery->o.linkedID != 0xFF) return false;
+
+	if (Unit_Harvester_ClaimedByOther(refinery, unit)) return false;
 
 	if (refinery->o.script.variables[4] == 0) return true;
 	return unit != NULL && refinery->o.script.variables[4] == Tools_Index_Encode(unit->o.index, IT_UNIT);
@@ -1569,6 +1638,8 @@ static Structure *Unit_Harvester_FindAvailableRefinery(Unit *unit, const Structu
 		best = candidate;
 		bestDistance = distance;
 	}
+
+	Unit_Harvester_Claim(best, unit);
 
 	return best;
 }
@@ -2728,6 +2799,11 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 		}
 	}
 
+	/* Before the early return below: a factory creates its unit off the map and
+	 * only places it when the doors open, so counting after that point misses
+	 * every unit any factory ever made. */
+	Skirmish_RecordBuilt(houseID, typeID);
+
 	if ((position.x == 0xFFFF) && (position.y == 0xFFFF)) {
 		u->o.flags.s.isNotOnMap = true;
 		return u;
@@ -3317,7 +3393,12 @@ uint16 Unit_FindClosestRefinery(Unit *unit)
 		}
 	}
 
-	if (s != NULL) unit->originEncoded = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
+	if (s != NULL) {
+		unit->originEncoded = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
+		/* Claim it here too: this is the choice the original script makes at the
+		 * start of every return trip, and it is where the pile-up began. */
+		Unit_Harvester_Claim(s, unit);
+	}
 
 	return res;
 }
@@ -5939,6 +6020,23 @@ uint16 Unit_GetTargetStructurePriority(Unit *unit, Structure *target)
 	si = &g_table_structureInfo[target->o.type];
 	priority = si->o.priorityBuild + si->o.priorityTarget;
 	distance = Tile_GetDistanceRoundedUp(unit->o.position, target->o.position);
+
+	/* A turret close enough to be shooting is worth more than anything behind it.
+	 *
+	 * On the table a Heavy Factory is 600 and a Rocket Turret 175, so a team
+	 * walked its whole length past the defence line to reach the factory, took
+	 * the line's fire the entire way, and died without having returned a shot at
+	 * what killed it.  Clearing the line first is not a preference, it is the
+	 * only way through -- so within its reach a turret outranks the base.
+	 *
+	 * Eight tiles is an approximation of that reach: the turret's own radius
+	 * lives in the structure script, not in a table this side can read.  Skirmish
+	 * only, so campaign targeting is untouched. */
+	if (Skirmish_IsActive() && distance <= 8
+		&& (target->o.type == STRUCTURE_TURRET || target->o.type == STRUCTURE_ROCKET_TURRET)) {
+		priority += 700;
+	}
+
 	if (distance != 0) priority /= distance;
 
 	return min(priority, 32000);

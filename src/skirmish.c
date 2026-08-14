@@ -165,6 +165,18 @@ static uint16 s_killedByTracks[HOUSE_MAX];
  * which is the only way to attribute it at all: neither Unit_Damage() nor
  * Structure_Damage() is told who fired. */
 static uint32 s_damageTaken[HOUSE_MAX];
+/* Units this house has ever built, by type.  The army mix is judged against this
+ * rather than against what is alive: a type that keeps dying would otherwise
+ * read as "we have none of those" for ever, and the rule would order it again
+ * and again -- which is the single-unit-type behaviour it exists to replace. */
+static uint16 s_unitsBuilt[HOUSE_MAX][UNIT_MAX];
+
+void Skirmish_RecordBuilt(uint8 houseID, uint16 unitType)
+{
+	if (!s_active || houseID >= HOUSE_MAX || unitType >= UNIT_MAX) return;
+
+	if (s_unitsBuilt[houseID][unitType] < 0xFFFF) s_unitsBuilt[houseID][unitType]++;
+}
 
 /**
  * The base build order.  It is deliberately prerequisite-consistent top to
@@ -366,6 +378,7 @@ void Skirmish_Reset(void)
 	memset(s_killedByFire, 0, sizeof(s_killedByFire));
 	memset(s_killedByTracks, 0, sizeof(s_killedByTracks));
 	memset(s_damageTaken, 0, sizeof(s_damageTaken));
+	memset(s_unitsBuilt, 0, sizeof(s_unitsBuilt));
 }
 
 static SkirmishBase *Skirmish_GetBase(uint8 houseID)
@@ -1045,6 +1058,89 @@ bool Skirmish_AI_WantsHarvester(const House *h)
  * carryall out as soon as the house owns any.  Carryalls are what keep distant
  * spice worth mining, so an economy plan gets to ask for more.
  */
+/**
+ * How the army should be mixed, as relative weights per unit type.
+ *
+ * The engine picks units by taking the maximum of priorityBuild over whatever a
+ * factory can make, which is not a composition rule but a single winner: on the
+ * Heavy Factory the Siege Tank's 130 beats the Launcher's 100 forever, so a
+ * skirmish never saw a rocket launcher, and the Deviator's 50 -- read before the
+ * Tank's 80 -- could not be reached at all.  A house therefore fielded one unit
+ * type and lost to whatever countered it.
+ *
+ * These are shares of the army, not priorities, and zero means "somebody else
+ * decides": harvesters, carryalls and the MCV are handled by their own rules.
+ */
+static const uint8 s_armyMix[UNIT_MAX] = {
+	0,   /* Carryall     -- Skirmish_AI_WantsCarryall() */
+	10,  /* Ornithopter */
+	25,  /* Infantry */
+	25,  /* Troopers */
+	10,  /* Soldier */
+	10,  /* Trooper */
+	0,   /* Saboteur     -- a Palace special, never built */
+	20,  /* Launcher     -- the long arm, and the whole reason for this table */
+	15,  /* Deviator */
+	30,  /* Tank */
+	25,  /* Siege Tank */
+	15,  /* Devastator */
+	15,  /* Sonic Tank */
+	25,  /* Trike */
+	25,  /* Raider Trike */
+	20,  /* Quad */
+	0,   /* Harvester    -- Skirmish_AI_WantsHarvester() */
+	0    /* MCV */
+};
+
+/**
+ * Choose the unit a factory should build next: the one furthest below its share
+ * of the army.
+ *
+ * Compared within the set this factory can actually build, so the Barracks and
+ * the Heavy Factory each balance their own half without needing separate tables.
+ * @return The unit type, or 0xFFFF to let the caller fall back to the engine.
+ */
+uint16 Skirmish_AI_PickUnit(const House *h, uint32 buildable)
+{
+	uint16 count[UNIT_MAX];
+	uint32 weightSum = 0;
+	uint32 total = 0;
+	uint16 best = 0xFFFF;
+	int32  bestScore = 0;
+	uint16 i;
+
+	if (!s_active || h == NULL) return 0xFFFF;
+
+	for (i = 0; i < UNIT_MAX; i++) {
+		count[i] = 0;
+		if ((buildable & (1u << i)) == 0 || s_armyMix[i] == 0) continue;
+
+		count[i] = s_unitsBuilt[h->index][i];
+		weightSum += s_armyMix[i];
+		total     += count[i];
+	}
+
+	if (weightSum == 0) return 0xFFFF;
+
+	for (i = 0; i < UNIT_MAX; i++) {
+		int32 want, have, score;
+
+		if ((buildable & (1u << i)) == 0 || s_armyMix[i] == 0) continue;
+
+		/* Shares scaled by 1000 so integer division keeps its resolution. */
+		want = (int32)(s_armyMix[i] * 1000 / weightSum);
+		have = (total == 0) ? 0 : (int32)(count[i] * 1000 / total);
+		score = want - have;
+
+		if (best != 0xFFFF && score <= bestScore) continue;
+
+		best      = i;
+		bestScore = score;
+	}
+
+	return best;
+}
+
 bool Skirmish_AI_WantsCarryall(const House *h)
 {
 	const SkirmishBase *b;
