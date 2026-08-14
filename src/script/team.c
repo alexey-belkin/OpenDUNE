@@ -11,6 +11,7 @@
 #include "../pool/team.h"
 #include "../pool/pool.h"
 #include "../pool/unit.h"
+#include "../skirmish.h"
 #include "../team.h"
 #include "../tile.h"
 #include "../tools.h"
@@ -93,7 +94,11 @@ uint16 Script_Team_AddClosestUnit(ScriptEngine *script)
 
 		u = Unit_Find(&find);
 		if (u == NULL) break;
-		if (!u->o.flags.s.byScenario) continue;
+		/* Only scenario units may be recruited: the campaign feeds its AI teams
+		 * from the INI and from reinforcements, so factory output never joins a
+		 * team.  A skirmish AI has no scenario to draw on -- keeping the filter
+		 * there means its teams stay empty and nobody ever attacks. */
+		if (!u->o.flags.s.byScenario && !Skirmish_IsActive()) continue;
 		if (u->o.type == UNIT_SABOTEUR) continue;
 		if (g_table_unitInfo[u->o.type].movementType != t->movementType) continue;
 		if (u->team == 0) {

@@ -76,6 +76,7 @@ crashlog/crashlog_win32.c
 crashlog/crashlog_none.c
 #endif
 cutscene.c
+ecosearch.c
 explosion.c
 file.c
 gfx.c
@@ -143,6 +144,7 @@ script/script.c
 script/structure.c
 script/team.c
 script/unit.c
+skirmish.c
 sprites.c
 string.c
 structure.c
@@ -167,6 +169,7 @@ tile.c
 timer.c
 tools.c
 unit.c
+warsearch.c
 #if WIN32
 	#if SDL
 		video/video_sdl.c

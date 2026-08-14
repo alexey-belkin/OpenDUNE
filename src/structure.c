@@ -25,6 +25,7 @@
 #include "pool/team.h"
 #include "pool/unit.h"
 #include "scenario.h"
+#include "skirmish.h"
 #include "sprites.h"
 #include "string.h"
 #include "table/strings.h"
@@ -56,7 +57,28 @@ typedef struct UnitBuildQueue {
  * manual placement and the Starport retains its separate order cart. */
 static UnitBuildQueue s_unitBuildQueue[STRUCTURE_INDEX_MAX_HARD];
 
+/* Where a factory sends what it produces, 0 for "just leave the bay".  Kept
+ * out of the savegame deliberately: the original format has no room for a tile
+ * per structure, and a rally point is a convenience of the current session, not
+ * state the battle depends on. */
+static uint16 s_structureRally[STRUCTURE_INDEX_MAX_HARD];
+
 static void Structure_CancelBuild(Structure *s);
+
+/** Point a factory at a tile, or clear it with an invalid one. */
+void Structure_SetRallyPoint(Structure *s, uint16 packed)
+{
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_HARD) return;
+
+	s_structureRally[s->o.index] = Map_IsValidPosition(packed) ? packed : 0;
+}
+
+uint16 Structure_GetRallyPoint(const Structure *s)
+{
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_HARD) return 0;
+
+	return s_structureRally[s->o.index];
+}
 
 static UnitBuildQueue *Structure_Queue_Get(const Structure *s)
 {
@@ -322,6 +344,10 @@ void GameLoop_Structure(void)
 						s->buildCostRemainder = buildCost & 0xFF;
 						h->credits -= buildCost / 256;
 
+						/* The only place production is paid for, so the only place
+						 * a skirmish can tell army spending from economy spending. */
+						if (Skirmish_IsActive()) Skirmish_War_Charge(s, buildCost / 256);
+
 						if (buildSpeed < s->countDown) {
 							s->countDown -= buildSpeed;
 						} else {
@@ -344,6 +370,7 @@ void GameLoop_Structure(void)
 								/* An AI immediately places the structure when it is done building */
 								Structure *ns;
 								uint8 i;
+								bool placed = false;
 
 								ns = Structure_Get_ByIndex(s->o.linkedID);
 								s->o.linkedID = 0xFF;
@@ -359,11 +386,20 @@ void GameLoop_Structure(void)
 
 									h->ai_structureRebuild[i][0] = 0;
 									h->ai_structureRebuild[i][1] = 0;
+									placed = true;
 									break;
 								}
 
+								/* Nothing left to rebuild means this came out of the skirmish base
+								 * plan, which knows where the structure was meant to go. */
+								if (!placed && Skirmish_IsActive()) {
+									uint16 planned = Skirmish_Plan_TakePosition(h, ns->o.type);
+
+									if (planned != 0xFFFF) placed = Structure_Place(ns, planned);
+								}
+
 								/* If the AI no longer had in memory where to store the structure, free it and forget about it */
-								if (i == 5) {
+								if (!placed) {
 									const StructureInfo *nsi = &g_table_structureInfo[ns->o.type];
 
 									h->credits += nsi->o.buildCredits;
@@ -646,7 +682,11 @@ bool Structure_Place(Structure *s, uint16 position)
 	if (!g_dune2_enhanced && s->o.houseID == g_playerHouseID) Tile_RemoveFogInRadius(Tile_UnpackTile(position), 2);
 
 	s->o.seenByHouses |= 1 << s->o.houseID;
-	if (s->o.houseID == g_playerHouseID) s->o.seenByHouses |= 0xFF;
+	/* The player's base is visible to every House from the moment it is
+	 * built, which is what gives the campaign AI something to attack.  A
+	 * skirmish has no player base, so both AI bases take that role -- without
+	 * it Unit_GetTargetStructurePriority() returns 0 and no team ever moves. */
+	if (s->o.houseID == g_playerHouseID || Skirmish_IsActive()) s->o.seenByHouses |= 0xFF;
 
 	s->o.flags.s.isNotOnMap = false;
 
@@ -1426,6 +1466,9 @@ void Structure_Remove(Structure *s)
 	si = &g_table_structureInfo[s->o.type];
 	packed = Tile_PackTile(s->o.position);
 
+	/* The pool hands this index to the next structure built. */
+	Structure_SetRallyPoint(s, 0);
+
 	for (i = 0; i < g_table_structure_layoutTileCount[si->layout]; i++) {
 		Tile *t;
 		uint16 curPacked = packed + g_table_structure_layoutTiles[si->layout][i];
@@ -2097,7 +2140,10 @@ void Structure_HouseUnderAttack(uint8 houseID)
 uint16 Structure_AI_PickNextToBuild(Structure *s)
 {
 	PoolFindStruct find;
-	uint16 buildable;
+	/* Structure_GetBuildable() returns a 32 bit mask; as a uint16 this
+	 * silently dropped every structure type above 15, which is why the AI
+	 * never picked an Outpost, Silo or Rocket Turret. */
+	uint32 buildable;
 	uint16 type;
 	House *h;
 	int i;
@@ -2117,10 +2163,22 @@ uint16 Structure_AI_PickNextToBuild(Structure *s)
 			return type;
 		}
 
+		/* Rebuilding lost structures comes first; with nothing to rebuild, a
+		 * skirmish AI works its way through its base plan instead. */
+		if (Skirmish_IsActive()) {
+			type = Skirmish_Plan_PickNext(h);
+
+			if (type != 0xFFFF && (buildable & (1 << type)) != 0) return type;
+		}
+
 		return 0xFFFF;
 	}
 
 	if (s->o.type == STRUCTURE_HIGH_TECH) {
+		/* One carryall is all the stock AI ever keeps; an economy plan may ask
+		 * for more, and they are what makes distant spice worth mining. */
+		if (Skirmish_AI_WantsCarryall(h) && (buildable & FLAG_UNIT_CARRYALL) != 0) return UNIT_CARRYALL;
+
 		find.houseID = s->o.houseID;
 		find.index   = 0xFFFF;
 		find.type    = UNIT_CARRYALL;
@@ -2135,7 +2193,18 @@ uint16 Structure_AI_PickNextToBuild(Structure *s)
 		}
 	}
 
+	/* The Starport is a factory as far as the AI loop is concerned, but nothing
+	 * is built there -- it is shopped at. */
+	if (s->o.type == STRUCTURE_STARPORT) {
+		Skirmish_AI_StarportOrder(h, s);
+		return 0xFFFF;
+	}
+
 	if (s->o.type == STRUCTURE_HEAVY_VEHICLE) {
+		/* A skirmish AI has to grow its own economy; the campaign AI is fed
+		 * harvesters by its scenario and keeps the original behaviour. */
+		if (Skirmish_AI_WantsHarvester(h) && (buildable & FLAG_UNIT_HARVESTER) != 0) return UNIT_HARVESTER;
+
 		buildable &= ~FLAG_UNIT_HARVESTER;
 		buildable &= ~FLAG_UNIT_MCV;
 	}
@@ -2152,6 +2221,8 @@ uint16 Structure_AI_PickNextToBuild(Structure *s)
 
 		type = i;
 	}
+
+	if (!Skirmish_AI_AllowUnit(h, type)) return 0xFFFF;
 
 	return type;
 }

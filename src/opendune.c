@@ -40,6 +40,7 @@
 #include "config.h"
 #include "crashlog/crashlog.h"
 #include "cutscene.h"
+#include "ecosearch.h"
 #include "explosion.h"
 #include "file.h"
 #include "gfx.h"
@@ -62,6 +63,7 @@
 #include "pool/team.h"
 #include "rev.h"
 #include "scenario.h"
+#include "skirmish.h"
 #include "sprites.h"
 #include "string.h"
 #include "structure.h"
@@ -71,6 +73,7 @@
 #include "timer.h"
 #include "tools.h"
 #include "unit.h"
+#include "warsearch.h"
 #include "video/video.h"
 
 const char *window_caption = "OpenDUNE - v0.9";
@@ -102,6 +105,41 @@ static bool s_selectionSelfTest = false;
 static int s_selectionSelfTestResult = -1;
 static bool s_combatBalanceSelfTest = false;
 static int s_combatBalanceSelfTestResult = -1;
+/* Extra simulation passes per loop iteration, on top of whatever the Game
+ * Controls speed setting already does.  Powers of two only: the '[' and ']'
+ * keys halve and double it. */
+static uint16 s_gameSpeedFactor = 1;
+#define GAME_SPEED_FACTOR_MAX 8
+
+static bool s_ecoSearch = false;
+static bool s_ecoBaseline = false;
+static bool s_ecoGrid = false;
+static bool s_ecoQueue = false;
+static bool s_ecoCarryall = false;
+static bool s_ecoPlay = false;
+static uint16 s_ecoPlayRefineries = 1;
+static uint16 s_ecoPlayHarvesters = 16;
+static uint16 s_ecoPlayCarryalls = 0;
+static uint16 s_ecoPlayWait = 5;
+static uint16 s_ecoPlayCarryallWait = 1200;
+static uint32 s_ecoPlaySeed = 1000;
+static uint16 s_ecoPopulation = 12;
+static uint16 s_ecoGenerations = 8;
+static uint32 s_ecoTicks = 40000;
+static uint16 s_ecoMaps = 2;
+
+static bool s_warMatrix = false;
+static bool s_warTiming = false;
+static bool s_warLadder = false;
+static bool s_warPlay = false;
+static uint32 s_warTicks = 150000;
+static uint16 s_warMaps = 2;
+static uint16 s_warPlayShare[SKIRMISH_PLAYER_MAX] = { 45, 45 };
+static uint32 s_warPlaySeed = 1000;
+
+static bool s_skirmishSelfTest = false;
+static bool s_skirmishDirect = false;
+static uint32 s_skirmishSelfTestTicks = 30000;
 
 static void PrintToConsole(const char *str);
 
@@ -666,6 +704,50 @@ static void ReadProfileIni(const char *filename)
 	}
 }
 
+/** Houses the two skirmish AIs play, set from the command line. */
+static uint8 s_skirmishHouse[SKIRMISH_PLAYER_MAX] = { HOUSE_ATREIDES, HOUSE_HARKONNEN };
+
+/**
+ * Read the House pair of "--skirmish=atreides,harkonnen".  Anything the parser
+ * does not like leaves the default pair in place rather than starting a match
+ * the caller did not ask for.
+ * @param arg The part after the '='.
+ */
+static void GameLoop_SkirmishParseHouses(const char *arg)
+{
+	char names[64];
+	char *split;
+	uint8 first, second;
+
+	strncpy(names, arg, sizeof(names) - 1);
+	names[sizeof(names) - 1] = '\0';
+
+	split = strchr(names, ',');
+	if (split == NULL) {
+		Warning("--skirmish expects two House names, e.g. --skirmish=ordos,harkonnen\n");
+		return;
+	}
+	*split = '\0';
+
+	first  = House_StringToType(names);
+	second = House_StringToType(split + 1);
+
+	if (first == HOUSE_INVALID || second == HOUSE_INVALID) {
+		Warning("--skirmish: unknown House name in '%s'\n", arg);
+		return;
+	}
+
+	/* Everything in the engine is keyed on the House index, so the two AIs
+	 * cannot be the same House. */
+	if (first == second) {
+		Warning("--skirmish: both players cannot be the same House\n");
+		return;
+	}
+
+	s_skirmishHouse[0] = first;
+	s_skirmishHouse[1] = second;
+}
+
 /**
  * Intro menu.
  */
@@ -843,6 +925,33 @@ static void GameLoop_GameIntroAnimationMenu(void)
 	if (stringID == STR_PLAY_A_GAME) g_gameMode = GM_PICKHOUSE;
 }
 
+/**
+ * The speed the simulation is actually running at, as a multiplier of the
+ * original game's pace.  This is what the indicator shows.
+ */
+uint16 GameLoop_GetSpeedFactor(void)
+{
+	return s_gameSpeedFactor * ((g_gameConfig.gameSpeed == GAME_SPEED_FAST) ? 2 : 1);
+}
+
+/** Halve (direction < 0) or double (direction > 0) the game speed. */
+static void GameLoop_StepSpeed(int direction)
+{
+	uint16 old = s_gameSpeedFactor;
+
+	if (direction < 0) {
+		s_gameSpeedFactor = max(1, s_gameSpeedFactor / 2);
+	} else {
+		s_gameSpeedFactor = min(GAME_SPEED_FACTOR_MAX, s_gameSpeedFactor * 2);
+	}
+
+	if (s_gameSpeedFactor == old) return;
+
+	/* The indicator sits over the map, which is only repainted where it is
+	 * dirty; without this the previous factor stays on screen. */
+	g_viewport_forceRedraw = true;
+}
+
 static void InGame_Numpad_Move(uint16 key)
 {
 	if (key == 0) return;
@@ -931,6 +1040,7 @@ static void GameLoop_Main(void)
 	static uint32 l_timerNext = 0;
 	static uint32 l_timerUnitStatus = 0;
 	static int16  l_selectionState = -2;
+	static uint16 l_lastGroupDigit = 0xFFFF;
 
 	uint16 key;
 
@@ -1027,6 +1137,73 @@ static void GameLoop_Main(void)
 		return;
 	}
 
+	if (s_ecoBaseline || s_ecoSearch || s_ecoGrid || s_ecoQueue || s_ecoCarryall ||
+	    s_warMatrix || s_warTiming || s_warLadder) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		if (s_ecoBaseline) EcoSearch_RunBaseline(s_ecoTicks, s_ecoMaps);
+		if (s_ecoGrid) EcoSearch_RunGrid(s_ecoTicks, s_ecoMaps);
+		if (s_ecoQueue) EcoSearch_RunQueueSweep(s_ecoTicks, s_ecoMaps);
+		if (s_ecoCarryall) EcoSearch_RunCarryallSweep(s_ecoTicks, s_ecoMaps);
+		if (s_ecoSearch) EcoSearch_Run(s_ecoPopulation, s_ecoGenerations, s_ecoTicks, s_ecoMaps);
+		if (s_warMatrix) WarSearch_RunMatrix(s_warTicks, s_warMaps);
+		if (s_warTiming) WarSearch_RunTiming(s_warTicks, s_warMaps);
+		if (s_warLadder) WarSearch_RunLadder(s_warTicks, s_warMaps);
+		return;
+	}
+
+	/* The menu allocates this on its way into a game; both skirmish entry
+	 * points skip the menu, and the voice player writes through it. */
+	if (s_skirmishSelfTest || s_skirmishDirect || s_warPlay) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+	}
+
+	if (s_skirmishSelfTest) {
+		char line[512];
+		char trace[544];
+		uint32 tick;
+		uint8 i;
+
+		/* Drive the simulation by hand: the real loop is paced by the GUI, and
+		 * a base takes minutes of wall clock to grow.  Advancing the game timer
+		 * ourselves runs the same subsystems as fast as the CPU allows. */
+		if (!Skirmish_Start(s_skirmishHouse[0], s_skirmishHouse[1])) {
+			PrintToConsole("skirmish-self-test: FAIL (could not start a skirmish)");
+			return;
+		}
+
+		for (tick = 0; tick < s_skirmishSelfTestTicks; tick++) {
+			Timer_AdvanceGame();
+
+			GameLoop_Team();
+			GameLoop_Unit();
+			GameLoop_Structure();
+			GameLoop_House();
+
+			/* A trace rather than a verdict: base growth and losses only mean
+			 * something as a curve. */
+			if (tick != 0 && (tick % (s_skirmishSelfTestTicks / 5)) == 0) {
+				for (i = 0; i < SKIRMISH_PLAYER_MAX; i++) {
+					if (!Skirmish_GetSummary(i, line, sizeof(line))) continue;
+
+					snprintf(trace, sizeof(trace), "t%u spice%u %s", (unsigned)tick, (unsigned)Skirmish_GetMapSpice(), line);
+					PrintToConsole(trace);
+				}
+			}
+		}
+
+		for (i = 0; i < SKIRMISH_PLAYER_MAX; i++) {
+			if (Skirmish_GetSummary(i, line, sizeof(line))) PrintToConsole(line);
+			if (Skirmish_GetBuildOrder(i, line, sizeof(line))) PrintToConsole(line);
+			if (Skirmish_GetTeams(i, line, sizeof(line))) PrintToConsole(line);
+		}
+
+		PrintToConsole("skirmish-self-test: DONE");
+		return;
+	}
+
 	if (s_selectionSelfTest) {
 		static const char *saves[] = { "_SAVE004.DAT", "_SAVE003.DAT", "_SAVE002.DAT", "_SAVE001.DAT", "_SAVE000.DAT" };
 		uint16 tested = 0;
@@ -1061,6 +1238,10 @@ static void GameLoop_Main(void)
 
 	/* Let players skip the intro immediately, including on their first launch. */
 	g_canSkipIntro = true;
+
+	/* --skirmish drops straight into a match: the mode has no menu entry, it
+	 * is a development tool rather than something to play. */
+	if (s_skirmishDirect || s_ecoPlay || s_warPlay) g_gameMode = GM_SKIRMISH;
 
 	for (;; sleepIdle()) {
 		if (g_gameMode == GM_MENU) {
@@ -1104,6 +1285,53 @@ static void GameLoop_Main(void)
 			g_scenarioID = 1;
 			g_campaignID = 0;
 			g_strategicRegionBits = 0;
+		}
+
+		if (g_gameMode == GM_SKIRMISH) {
+			bool started;
+
+			g_playerHouseID = HOUSE_MERCENARY;
+
+			GUI_Mouse_Hide_Safe();
+
+			GFX_ClearBlock(SCREEN_0);
+
+			GUI_Palette_CreateRemap(g_playerHouseID);
+			Voice_LoadVoices(g_playerHouseID);
+
+			GUI_Mouse_Show_Safe();
+
+			GUI_ChangeSelectionType(SELECTIONTYPE_MENTAT);
+
+			/* --economy-play watches one cell of the economy grid: a single house,
+			 * no enemy, no combat units, on the map the search scored it on. */
+			if (s_ecoPlay) {
+				SkirmishEconomyPlan plan;
+
+				EcoSearch_MakePlan(s_ecoPlayRefineries, s_ecoPlayHarvesters, s_ecoPlayCarryalls, s_ecoPlayWait, s_ecoPlayCarryallWait, &plan);
+				started = Skirmish_StartEconomy(s_skirmishHouse[0], s_ecoPlaySeed, &plan);
+			} else if (s_warPlay) {
+				/* --war watches one cell of the matrix: two tuned economies, each
+				 * spending its own share of the take on the army. */
+				SkirmishEconomyPlan planA, planB;
+
+				WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
+				WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
+				started = Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_warPlaySeed, &planA, &planB);
+			} else {
+				started = Skirmish_Start(s_skirmishHouse[0], s_skirmishHouse[1]);
+			}
+
+			if (!started) {
+				g_gameMode = GM_MENU;
+			} else {
+				g_gameMode = GM_NORMAL;
+
+				GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
+
+				Music_Play(Tools_RandomLCG_Range(0, 8) + 8);
+				l_timerNext = g_timerGUI + 300;
+			}
 		}
 
 		if (g_selectionTypeNew != g_selectionType) {
@@ -1169,6 +1397,18 @@ static void GameLoop_Main(void)
 		if ((((key & 0x7FFF) == GUI_Widget_GetShortcut('A')) || Input_Test(GUI_Widget_GetShortcut('A')) != 0) && InGame_BeginSelectedAction(ACTION_ATTACK)) {
 			key = 0;
 		}
+		/* [ and ] step the simulation speed.  Event driven rather than polled:
+		 * Input_Test() is true for as long as the key is held, which would run
+		 * through the whole range in a few frames. */
+		if ((key & 0x7FFF) == 0x001A) {
+			GameLoop_StepSpeed(-1);
+			key = 0;
+		}
+		if ((key & 0x7FFF) == 0x001B) {
+			GameLoop_StepSpeed(1);
+			key = 0;
+		}
+
 		/* T = Hunt.  Polling the physical key also covers keys consumed by a
 		 * sidebar widget before this general in-game shortcut sees them. */
 		if (((key & 0x7FFF) == 0x0015 || Input_Test(0x15) != 0) && g_selectionType == SELECTIONTYPE_UNIT && g_unitSelectionCount != 0) {
@@ -1183,6 +1423,35 @@ static void GameLoop_Main(void)
 				GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
 			}
 			key = 0;
+		}
+
+		/* Control groups, StarCraft style: Ctrl or Option with a digit binds the
+		 * current selection, the bare digit brings it back.  Command is not an
+		 * option here - Video_Key_Callback() drops every event carrying it so
+		 * macOS keeps Command-Tab and friends. */
+		if (g_selectionType == SELECTIONTYPE_UNIT || g_selectionType == SELECTIONTYPE_STRUCTURE) {
+			uint16 digit = 0xFFFF;
+			uint16 i;
+
+			for (i = 0; i < 10; i++) {
+				uint8 code = (i == 0) ? 0x0B : (uint8)(0x01 + i);
+
+				if ((key & 0x7FFF) == code || Input_Test(code) != 0) {
+					digit = i;
+					break;
+				}
+			}
+
+			/* Act once per press: the polled key state stays set while held. */
+			if (digit != 0xFFFF && digit != l_lastGroupDigit) {
+				if (Input_Test(0x1d) != 0 || Input_Test(0x38) != 0) {
+					UnitSelection_AssignControlGroup(digit);
+				} else {
+					UnitSelection_RecallControlGroup(digit);
+				}
+				key = 0;
+			}
+			l_lastGroupDigit = digit;
 		}
 
 		if (g_selectionType == SELECTIONTYPE_TARGET || g_selectionType == SELECTIONTYPE_PLACE || g_selectionType == SELECTIONTYPE_UNIT || g_selectionType == SELECTIONTYPE_STRUCTURE) {
@@ -1203,20 +1472,21 @@ static void GameLoop_Main(void)
 
 			GUI_DrawCredits(g_playerHouseID, 0);
 
-			GameLoop_Team();
-			GameLoop_Unit();
-			GameLoop_Structure();
-			GameLoop_House();
+			/* Every step above x1 is another sequential simulation tick.
+			 * Advancing the game timer between passes keeps every timer-driven
+			 * system in step, rather than speeding up selected subsystems. */
+			{
+				uint16 passes = GameLoop_GetSpeedFactor();
+				uint16 pass;
 
-			/* Fast mode runs a second, sequential simulation tick. Advancing the
-			 * game timer between passes keeps every timer-driven system at x2,
-			 * rather than speeding up only selected subsystems. */
-			if (g_gameConfig.gameSpeed == GAME_SPEED_FAST) {
-				Timer_AdvanceGame();
-				GameLoop_Team();
-				GameLoop_Unit();
-				GameLoop_Structure();
-				GameLoop_House();
+				for (pass = 0; pass < passes; pass++) {
+					if (pass != 0) Timer_AdvanceGame();
+
+					GameLoop_Team();
+					GameLoop_Unit();
+					GameLoop_Structure();
+					GameLoop_House();
+				}
 			}
 
 			GUI_DrawScreen(SCREEN_0);
@@ -1406,6 +1676,54 @@ int main(int argc, char **argv)
 		for (i = 1; i < argc; i++) {
 			if (strcmp(argv[i], "--selection-self-test") == 0) s_selectionSelfTest = true;
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
+			if (strcmp(argv[i], "--economy-trace") == 0) EcoSearch_SetTrace(true);
+			if (strncmp(argv[i], "--economy-play", 14) == 0) {
+				s_ecoPlay = true;
+				if (argv[i][14] == '=') sscanf(argv[i] + 15, "%hu,%hu,%hu,%hu,%hu,%u", &s_ecoPlayRefineries, &s_ecoPlayHarvesters, &s_ecoPlayCarryalls, &s_ecoPlayWait, &s_ecoPlayCarryallWait, &s_ecoPlaySeed);
+			}
+			if (strncmp(argv[i], "--economy-carryall", 18) == 0) {
+				s_ecoCarryall = true;
+				if (argv[i][18] == '=') sscanf(argv[i] + 19, "%u,%hu", &s_ecoTicks, &s_ecoMaps);
+			}
+			if (strncmp(argv[i], "--economy-queue", 15) == 0) {
+				s_ecoQueue = true;
+				if (argv[i][15] == '=') sscanf(argv[i] + 16, "%u,%hu", &s_ecoTicks, &s_ecoMaps);
+			}
+			if (strncmp(argv[i], "--economy-grid", 14) == 0) {
+				s_ecoGrid = true;
+				if (argv[i][14] == '=') sscanf(argv[i] + 15, "%u,%hu", &s_ecoTicks, &s_ecoMaps);
+			}
+			if (strncmp(argv[i], "--economy-baseline", 18) == 0) {
+				s_ecoBaseline = true;
+				if (argv[i][18] == '=') sscanf(argv[i] + 19, "%u,%hu", &s_ecoTicks, &s_ecoMaps);
+			} else if (strncmp(argv[i], "--economy-search", 16) == 0) {
+				s_ecoSearch = true;
+				if (argv[i][16] == '=') sscanf(argv[i] + 17, "%hu,%hu,%u,%hu", &s_ecoPopulation, &s_ecoGenerations, &s_ecoTicks, &s_ecoMaps);
+			}
+			/* Chained, because "--war" is a prefix of every other war flag: a
+			 * separate test for --war-trace also started a match. */
+			if (strcmp(argv[i], "--war-trace") == 0) {
+				WarSearch_SetTrace(true);
+			} else if (strncmp(argv[i], "--war-matrix", 12) == 0) {
+				s_warMatrix = true;
+				if (argv[i][12] == '=') sscanf(argv[i] + 13, "%u,%hu", &s_warTicks, &s_warMaps);
+			} else if (strncmp(argv[i], "--war-timing", 12) == 0) {
+				s_warTiming = true;
+				if (argv[i][12] == '=') sscanf(argv[i] + 13, "%u,%hu", &s_warTicks, &s_warMaps);
+			} else if (strncmp(argv[i], "--war-ladder", 12) == 0) {
+				s_warLadder = true;
+				if (argv[i][12] == '=') sscanf(argv[i] + 13, "%u,%hu", &s_warTicks, &s_warMaps);
+			} else if (strncmp(argv[i], "--war", 5) == 0) {
+				s_warPlay = true;
+				if (argv[i][5] == '=') sscanf(argv[i] + 6, "%hu,%hu,%u", &s_warPlayShare[0], &s_warPlayShare[1], &s_warPlaySeed);
+			}
+			if (strncmp(argv[i], "--skirmish-self-test", 20) == 0) {
+				s_skirmishSelfTest = true;
+				if (argv[i][20] == '=') s_skirmishSelfTestTicks = (uint32)atoi(argv[i] + 21);
+			} else if (strncmp(argv[i], "--skirmish", 10) == 0) {
+				s_skirmishDirect = true;
+				if (argv[i][10] == '=') GameLoop_SkirmishParseHouses(argv[i] + 11);
+			}
 		}
 	}
 
@@ -1610,6 +1928,11 @@ void Game_Prepare(void)
  */
 void Game_Init(void)
 {
+	/* Any game that starts from here is not the skirmish that may still be
+	 * running: campaign restart, House pick and savegame load all pass
+	 * through, and they must not inherit the skirmish AI hooks. */
+	Skirmish_Reset();
+
 	Unit_Init();
 	Structure_Init();
 	Team_Init();
@@ -1657,6 +1980,7 @@ void Game_LoadScenario(uint8 houseID, uint16 scenarioID)
 	Sound_Output_Feedback(0xFFFE);
 
 	Game_Init();
+	UnitSelection_ClearControlGroups();
 
 	g_validateStrictIfZero++;
 

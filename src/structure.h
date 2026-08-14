@@ -156,6 +156,8 @@ extern bool Structure_ConnectWall(uint16 position, bool recurse);
 extern struct Unit *Structure_GetLinkedUnit(Structure *s);
 extern void Structure_UntargetMe(Structure *s);
 extern uint16 Structure_FindFreePosition(Structure *s, bool checkForSpice);
+extern void Structure_SetRallyPoint(Structure *s, uint16 packed);
+extern uint16 Structure_GetRallyPoint(const Structure *s);
 extern void Structure_Remove(Structure *s);
 extern bool Structure_BuildObject(Structure *s, uint16 objectType);
 extern bool Structure_Queue_CanOrder(const Structure *s);

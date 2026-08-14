@@ -27,6 +27,7 @@
 #include "pool/structure.h"
 #include "pool/unit.h"
 #include "pool/team.h"
+#include "skirmish.h"
 #include "sprites.h"
 #include "string.h"
 #include "structure.h"
@@ -339,6 +340,7 @@ typedef struct HarvesterTracker {
 	uint32 lastProgress;             /*!< Game time the unit last changed tile. */
 	uint16 refineryTarget;           /*!< Encoded refinery the return trip is aimed at. */
 	uint32 refineryStalledSince;     /*!< Game time the approach stopped making progress. */
+	uint32 refineryRetarget;         /*!< Earliest game time the return trip may be re-aimed again. */
 	uint32 airliftDeadline;          /*!< Game time the wait for a carryall gives up. */
 	uint32 liftCheck;                /*!< Throttle for the "is a carryall free now?" retry. */
 	uint16 spiceCache;               /*!< Memo for Unit_Harvester_FindPreferredSpice(). */
@@ -1603,6 +1605,7 @@ void Unit_Harvester_BeginOrder(Unit *unit, ActionType action)
 	tracker->nextCheck = 0;
 	tracker->refineryTarget = 0;
 	tracker->refineryStalledSince = 0;
+	tracker->refineryRetarget = 0;
 }
 
 /* Abandon the computed route, but never while the unit is between two tiles.
@@ -1769,6 +1772,9 @@ static bool Unit_Harvester_ContinueUntilFull(Unit *unit)
 	return true;
 }
 
+/* Ticks between two re-aims of the same return trip. */
+#define HARVESTER_RETARGET_COOLDOWN 60
+
 /* A refinery can become occupied after a harvester has already routed to its
  * entrance, and the original script then keeps pushing into the closed door
  * forever.  Watch a real return trip for lack of progress and re-route it.
@@ -1794,6 +1800,34 @@ static void Unit_Harvester_RecoverRefinery(Unit *unit)
 
 	destination = Tools_Index_Encode(refinery->o.index, IT_STRUCTURE);
 	packed = Tile_PackTile(unit->o.position);
+
+	/* Do not join a queue while another refinery stands empty.  The original
+	 * script picks a refinery once and keeps driving to it whatever happens
+	 * there, which with several refineries produces the one thing a fleet must
+	 * not do: a line at the first door and idle doors behind it.  Switching only
+	 * after the stall timer below meant three seconds of standing first. */
+	if (!Unit_Harvester_RefineryAccepts(refinery, unit) && tracker->refineryRetarget <= g_timerGame) {
+		alternate = Unit_Harvester_FindAvailableRefinery(unit, refinery);
+
+		if (alternate != NULL) {
+			/* Not more often than this.  The original script keeps aiming at the
+			 * refinery it chose, so it re-aims the unit back on its own tick; a
+			 * switch on every one of ours then tore up the route before the
+			 * harvester had moved a single tile, and it stood in the doorway for
+			 * the rest of the match with an idle refinery next to it.  The
+			 * cooldown is still an order of magnitude faster than waiting for the
+			 * stall timer below, which is what this replaced. */
+			tracker->refineryRetarget = g_timerGame + HARVESTER_RETARGET_COOLDOWN;
+			tracker->refineryTarget = Tools_Index_Encode(alternate->o.index, IT_STRUCTURE);
+			tracker->lastPosition = packed;
+			tracker->refineryStalledSince = g_timerGame;
+
+			Unit_Harvester_ClearOrder(unit);
+			Unit_SetDestination(unit, tracker->refineryTarget);
+			return;
+		}
+	}
+
 	if (tracker->refineryTarget != destination) {
 		tracker->refineryTarget = destination;
 		tracker->lastPosition = packed;
@@ -1870,7 +1904,14 @@ static void Unit_Harvester_Update(Unit *unit)
 	uint16 target;
 	uint16 type;
 
-	if (unit->o.type != UNIT_HARVESTER || Unit_GetHouseID(unit) != g_playerHouseID) return;
+	if (unit->o.type != UNIT_HARVESTER) return;
+	/* This recovery layer was written for the player's harvesters: in the
+	 * campaign nobody watches the AI closely enough to care that its
+	 * harvesters stall.  A skirmish is nothing but AI, and they stall in
+	 * exactly the same ways -- a route that never makes progress leaves the
+	 * script sitting in ACTION_HARVEST forever, and spice collection stops
+	 * for the rest of the match. */
+	if (Unit_GetHouseID(unit) != g_playerHouseID && !Skirmish_IsActive()) return;
 	if (unit->o.flags.s.isNotOnMap || unit->o.index >= UNIT_INDEX_MAX) return;
 	tracker = &s_harvester[unit->o.index];
 
@@ -2028,26 +2069,22 @@ static ActionType UnitSelection_GetUnitSpecialAction(const Unit *unit)
 }
 
 /* An Attack order aimed at bare ground is an advance, not a shot at the dirt.
- * "Bare" is deliberately the same test the classic targeting uses: no structure
- * on the tile, no unit in the ring around it, and not a spice bloom - a bloom is
- * something you shoot at on purpose. */
+ * "Bare" means the clicked tile itself and nothing else: no structure, no unit,
+ * and not a spice bloom - a bloom is something you shoot at on purpose.
+ *
+ * The classic targeting snaps to any unit in the ring around the click
+ * (Unit_FindTargetAround), which is convenient when every click is meant as an
+ * attack, and unacceptable now that a click on open ground has its own meaning:
+ * ordering an advance past one's own line would grab a friendly unit a tile
+ * away and shoot it.  Attacking is exact targeting; missing by a tile orders a
+ * march, which costs nothing to correct. */
 static bool UnitSelection_IsAdvanceTarget(uint16 packed)
 {
-	static const int16 around[] = {0, -1, 1, -64, 64, -65, -63, 65, 63};
-	uint16 i;
-
 	if (!Map_IsValidPosition(packed)) return false;
 	if (Structure_Get_ByPackedTile(packed) != NULL) return false;
 	if (Map_GetLandscapeType(packed) == LST_BLOOM_FIELD) return false;
 
-	for (i = 0; i < lengthof(around); i++) {
-		uint16 neighbour = packed + around[i];
-
-		if (!Map_IsValidPosition(neighbour)) continue;
-		if (Unit_Get_ByPackedTile(neighbour) != NULL) return false;
-	}
-
-	return true;
+	return Unit_Get_ByPackedTile(packed) == NULL;
 }
 
 /* Destination tiles handed out to one group order.  A group given a single
@@ -3287,6 +3324,11 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 		Unit_HouseUnitCount_Add(u, g_playerHouseID);
 	}
 
+	/* Nobody scouts for a skirmish AI: seeing the enemy is normally a side
+	 * effect of the human unveiling the map, and an unseen unit scores zero
+	 * in Unit_GetTargetUnitPriority(), so the AIs would ignore each other. */
+	if (Skirmish_IsActive()) u->o.seenByHouses = 0xFF;
+
 	if (u->o.houseID != g_playerHouseID || u->o.type == UNIT_HARVESTER || u->o.type == UNIT_SABOTEUR) {
 		Unit_SetAction(u, ui->actionAI);
 	} else {
@@ -4236,11 +4278,6 @@ void UnitSelection_SelectSingle(Unit *unit)
 	GUI_Widget_ActionPanel_Draw(true);
 }
 
-/**
- * Select player-controlled units inside a rectangle described in map tiles.
- * The caller deliberately supplies packed map coordinates rather than pixels,
- * which keeps this selection stable when the viewport scrolls.
- */
 /* Take one unit in or out of the group.  Shift could only ever add, so a
  * mis-click could not be corrected without rebuilding the whole group.
  * Returns false when the unit is not ours to command, leaving the caller to
@@ -4290,6 +4327,11 @@ bool UnitSelection_SelectSameTypeOnScreen(Unit *unit, bool additive)
 	return true;
 }
 
+/**
+ * Select player-controlled units inside a rectangle described in map tiles.
+ * The caller deliberately supplies packed map coordinates rather than pixels,
+ * which keeps this selection stable when the viewport scrolls.
+ */
 void UnitSelection_SelectBox(uint16 packedA, uint16 packedB, bool additive)
 {
 	uint16 minX = min(Tile_GetPackedX(packedA), Tile_GetPackedX(packedB));
@@ -4434,6 +4476,96 @@ int UnitSelection_RunRegressionTest(void)
 		}
 	}
 
+	/* Shift on a unit that is already in the group takes it out again. */
+	UnitSelection_SelectSingle(primary);
+	if (!UnitSelection_Toggle(primary) || UnitSelection_Contains(primary)) return 0;
+	if (!UnitSelection_Toggle(primary) || !UnitSelection_Contains(primary)) return 0;
+
+	/* A digit holds the group it was given and hands it back unchanged. */
+	UnitSelection_ClearControlGroups();
+	UnitSelection_ClearInternal();
+	for (i = 0; i < expectedCount; i++) UnitSelection_Add(Unit_Get_ByIndex(expected[i]));
+	UnitSelection_AssignControlGroup(3);
+	UnitSelection_SelectSingle(primary);
+	if (g_unitSelectionCount != 1) return 0;
+	if (!UnitSelection_RecallControlGroup(3)) return 0;
+	if (g_unitSelectionCount != expectedCount) return 0;
+	for (i = 0; i < expectedCount; i++) {
+		if (!UnitSelection_Contains(Unit_Get_ByIndex(expected[i]))) return 0;
+	}
+	/* An unbound digit is not allowed to disturb the current selection. */
+	if (UnitSelection_RecallControlGroup(4) || g_unitSelectionCount != expectedCount) return 0;
+
+	/* Double click takes every unit of that type on screen.  Driven through the
+	 * real click lifecycle on purpose: the selection function itself was never
+	 * the broken part, the pairing in the click path was - it was measured on
+	 * the game timer, which runs at double rate in Fast mode.  A headless run
+	 * cannot check the width of that window (GUI time barely advances here), so
+	 * what this pins down is that a second click on the same unit pairs at all,
+	 * and that a first one still selects exactly that unit. */
+	{
+		Widget viewport;
+		uint16 packed = Tile_PackTile(primary->o.position);
+		uint16 sameType = 0;
+		int16 x;
+		int16 y;
+
+		/* Start from "nothing selected", which is how the player meets a unit:
+		 * the first click has to change the selection mode as well as select. */
+		UnitSelection_Clear();
+		GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
+		Map_SetViewportPosition(packed);
+		/* The draw loop is what normally copies this over; there is none here. */
+		g_minimapPosition = g_viewportPosition;
+
+		x = ((int16)Tile_GetPackedX(packed) - (int16)Tile_GetPackedX(g_minimapPosition)) * 16 + 8;
+		y = ((int16)Tile_GetPackedY(packed) - (int16)Tile_GetPackedY(g_minimapPosition)) * 16 + 48;
+		if (x < 0 || x > 239 || y < 40 || y > 199) return 0;
+
+		for (i = 0; i < UNIT_INDEX_MAX; i++) {
+			Unit *other = Unit_Get_ByIndex(i);
+
+			if (!UnitSelection_IsControllable(other)) continue;
+			if (other->o.type != primary->o.type) continue;
+			if (!Map_IsPositionInViewport(other->o.position, NULL, NULL)) continue;
+			sameType++;
+		}
+		if (sameType == 0) return 0;
+
+		memset(&viewport, 0, sizeof(viewport));
+		viewport.index = 43;
+		g_mouseClickX = x;
+		g_mouseClickY = y;
+		g_mouseX = x;
+		g_mouseY = y;
+
+		/* Three deliveries of the same gesture: complete, and with either event
+		 * of the second click dropped.  The interface rebuild triggered by the
+		 * first click on a fresh unit can swallow one, which is what made the
+		 * double click need a third click in the game. */
+		for (i = 0; i < 3; i++) {
+			/* Let the pairing window lapse between runs, so each starts clean.
+			 * Nothing else advances GUI time in a headless run. */
+			g_timerGUI += 64;
+
+			viewport.state.buttonState = 0x01;
+			GUI_Widget_Viewport_Click(&viewport);
+			viewport.state.buttonState = 0x04;
+			GUI_Widget_Viewport_Click(&viewport);
+			if (g_unitSelectionCount != 1 || !UnitSelection_Contains(primary)) return 0;
+
+			if (i != 2) {
+				viewport.state.buttonState = 0x01;
+				GUI_Widget_Viewport_Click(&viewport);
+			}
+			if (i != 1) {
+				viewport.state.buttonState = 0x04;
+				GUI_Widget_Viewport_Click(&viewport);
+			}
+			if (g_unitSelectionCount != sameType || !UnitSelection_Contains(primary)) return 0;
+		}
+	}
+
 	return 1;
 }
 
@@ -4509,11 +4641,32 @@ static ActionType UnitSelection_GetUnitDefaultAction(const Unit *unit)
 	return ACTION_INVALID;
 }
 
+/* A right click on something hostile is an attack, on anything else a move.
+ * The tile is taken exactly, like the Attack order: missing an enemy by one
+ * tile should order a march, never a shot at whatever stands there. */
+static bool UnitSelection_IsHostileTarget(uint16 packed)
+{
+	Unit *unit;
+	const Structure *s;
+
+	if (!Map_IsValidPosition(packed)) return false;
+	if (g_map[packed].overlayTileID == g_veiledTileID && !g_debugScenario) return false;
+
+	unit = Unit_Get_ByPackedTile(packed);
+	if (unit != NULL) return !House_AreAllied(Unit_GetHouseID(unit), g_playerHouseID);
+
+	s = Structure_Get_ByPackedTile(packed);
+	if (s != NULL) return !House_AreAllied(s->o.houseID, g_playerHouseID);
+
+	return false;
+}
+
 /** Issue the most useful targeted order available to each selected unit. */
 void UnitSelection_IssueDefaultOrder(uint16 packed)
 {
 	uint16 order[UNIT_SELECTION_MAX];
 	uint16 count = 0;
+	bool hostile = UnitSelection_IsHostileTarget(packed);
 	uint16 i;
 
 	UnitSelection_CancelPendingAction();
@@ -4526,11 +4679,117 @@ void UnitSelection_IssueDefaultOrder(uint16 packed)
 
 	for (i = 0; i < count; i++) {
 		Unit *unit = Unit_Get_ByIndex(order[i]);
-		ActionType action = UnitSelection_GetUnitDefaultAction(unit);
+		ActionType action;
+
+		/* Everything that can shoot attacks; a harvester right-clicked onto an
+		 * enemy still does the only thing it can, which is drive there. */
+		if (hostile && UnitSelection_UnitHasAction(unit, ACTION_ATTACK)) {
+			action = ACTION_ATTACK;
+		} else {
+			action = UnitSelection_GetUnitDefaultAction(unit);
+		}
 
 		if (action == ACTION_INVALID) continue;
 		UnitSelection_ResetOrder(unit, action, action == ACTION_MOVE ? UnitSelection_SpreadTake(unit, packed) : packed);
 	}
+}
+
+/* Control groups.  Session state on purpose: they are a property of how the
+ * player is holding the mouse right now, not of the battlefield, and keeping
+ * them out of the save format avoids touching it for a convenience. */
+#define UNIT_CONTROL_GROUPS 10
+
+static uint16 s_controlGroup[UNIT_CONTROL_GROUPS][UNIT_SELECTION_MAX];
+static uint8 s_controlGroupType[UNIT_CONTROL_GROUPS][UNIT_SELECTION_MAX];
+static uint16 s_controlGroupCount[UNIT_CONTROL_GROUPS];
+/* A digit holds either a group of units or one building - the game never has
+ * both selected at once, so one slot each is enough. */
+static uint16 s_controlGroupStructure[UNIT_CONTROL_GROUPS] = {
+	0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF
+};
+static uint8 s_controlGroupStructureType[UNIT_CONTROL_GROUPS];
+
+/* Pool indices are reused between scenarios, so a group left over from the last
+ * one would name whatever now occupies those slots. */
+void UnitSelection_ClearControlGroups(void)
+{
+	uint16 i;
+
+	for (i = 0; i < UNIT_CONTROL_GROUPS; i++) {
+		s_controlGroupCount[i] = 0;
+		s_controlGroupStructure[i] = 0xFFFF;
+	}
+}
+
+/** Bind the current selection to a digit. An empty selection clears the group. */
+void UnitSelection_AssignControlGroup(uint16 group)
+{
+	uint16 i;
+
+	if (group >= UNIT_CONTROL_GROUPS) return;
+
+	s_controlGroupCount[group] = 0;
+	s_controlGroupStructure[group] = 0xFFFF;
+
+	if (g_unitSelectionCount == 0) {
+		Structure *s = Structure_Get_ByPackedTile(g_selectionPosition);
+
+		if (s != NULL && s->o.houseID == g_playerHouseID) {
+			s_controlGroupStructure[group] = s->o.index;
+			s_controlGroupStructureType[group] = (uint8)s->o.type;
+		}
+		return;
+	}
+
+	for (i = 0; i < g_unitSelectionCount; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+		uint16 slot;
+
+		if (!UnitSelection_IsControllable(unit)) continue;
+		slot = s_controlGroupCount[group]++;
+		s_controlGroup[group][slot] = unit->o.index;
+		/* The pool reuses the index of a dead unit, so the type is stored as a
+		 * cheap check that the recalled unit is still the same one. */
+		s_controlGroupType[group][slot] = (uint8)unit->o.type;
+	}
+}
+
+/** Select a bound group again, skipping whatever has died since. */
+bool UnitSelection_RecallControlGroup(uint16 group)
+{
+	Unit *primary = NULL;
+	uint16 i;
+
+	if (group >= UNIT_CONTROL_GROUPS) return false;
+
+	if (s_controlGroupStructure[group] != 0xFFFF) {
+		Structure *s = Structure_Get_ByIndex(s_controlGroupStructure[group]);
+
+		if (s == NULL || !s->o.flags.s.used || s->o.type != s_controlGroupStructureType[group]) return false;
+		if (s->o.houseID != g_playerHouseID) return false;
+
+		/* Map_SetSelection() does the rest: it drops the unit selection and
+		 * switches the interface into structure mode by itself. */
+		Map_SetSelection(Tile_PackTile(s->o.position));
+		return true;
+	}
+
+	if (s_controlGroupCount[group] == 0) return false;
+
+	UnitSelection_ClearInternal();
+	for (i = 0; i < s_controlGroupCount[group]; i++) {
+		Unit *unit = Unit_Get_ByIndex(s_controlGroup[group][i]);
+
+		if (!UnitSelection_IsControllable(unit)) continue;
+		if (unit->o.type != s_controlGroupType[group][i]) continue;
+		UnitSelection_Add(unit);
+		if (primary == NULL) primary = unit;
+	}
+
+	if (primary == NULL) return false;
+	Unit_Select(primary);
+	GUI_Widget_ActionPanel_Draw(true);
+	return true;
 }
 
 /* Hunt is intentionally a keyboard-only advanced order: it applies only to

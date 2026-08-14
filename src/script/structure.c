@@ -18,6 +18,7 @@
 #include "../scenario.h"
 #include "../sprites.h"
 #include "../string.h"
+#include "../skirmish.h"
 #include "../structure.h"
 #include "../table/strings.h"
 #include "../tile.h"
@@ -145,6 +146,8 @@ uint16 Script_Structure_RefineSpice(ScriptEngine *script)
 
 	h = House_Get_ByIndex(s->o.houseID);
 	h->credits += creditsStep;
+	/* Credits get spent; the economy search needs the gross figure. */
+	Skirmish_Economy_AddHarvested((uint8)s->o.houseID, creditsStep, s->o.index);
 	u->amount -= harvesterStep;
 
 	if (u->amount == 0) u->o.flags.s.inTransport = false;
@@ -304,6 +307,15 @@ uint16 Script_Structure_Unknown0C5A(ScriptEngine *script)
 
 	if (s->o.linkedID == 0xFF) Structure_SetState(s, STRUCTURE_STATE_IDLE);
 	Object_Script_Variable4_Clear(&s->o);
+
+	/* A rally point is where the factory sends what it builds.  Harvesters are
+	 * left alone: their own logic sends them to the spice they were built for,
+	 * and overriding it with a parking spot only makes the player re-order them. */
+	if (s->o.houseID == g_playerHouseID && u->o.type != UNIT_HARVESTER) {
+		uint16 rally = Structure_GetRallyPoint(s);
+
+		if (rally != 0) UnitSelection_IssueOrder(u, ACTION_MOVE, rally);
+	}
 
 	if (s->o.houseID != g_playerHouseID) return 1;
 	if (s->o.type == STRUCTURE_REPAIR) return 1;

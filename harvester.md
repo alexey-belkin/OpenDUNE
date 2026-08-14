@@ -1,5 +1,14 @@
 # Harvester logic: state model, our changes, and the fix
 
+## 0. Whose harvesters
+
+Everything below was written for the player's harvesters, and
+`Unit_Harvester_Update()` used to return immediately for any other house. It no
+longer does while a skirmish is running: the AI's harvesters stall in exactly the
+same ways, and in an AI vs AI match there is nobody to nudge them. The rest of
+the module is house-agnostic — it scopes refineries and carryalls by
+`Unit_GetHouseID(unit)`. See [skirmish.md](skirmish.md).
+
 ## 0. What "the legacy script" is here
 
 OpenDUNE does not implement harvester behaviour in C. It runs the original
@@ -337,3 +346,57 @@ intercepts it en route, so a request that comes to nothing costs no time. Only
 4. A full harvester either moves toward a refinery, or is inside one, or is
    airborne. Any other combination is repaired within 90 game ticks.
 5. `originEncoded` is only ever read, never written by our code.
+
+## 5. Choosing a different refinery, and the livelock that cost
+
+The original script picks a refinery once and keeps driving to it whatever
+happens there. With a single refinery that is fine. With several it produces the
+one thing a fleet must not do: a queue at the first door and idle doors behind
+it. `Unit_Harvester_RecoverRefinery()` therefore re-aims a return trip as soon as
+its refinery refuses it, rather than waiting out the 180 tick stall timer.
+
+Rate limiting that is not a detail, it is the whole of it.
+
+The script re-aims the unit back at *its* choice on its own tick. A switch on
+every one of ours is then a tug of war, and the harvester loses: each switch calls
+`Unit_Harvester_ClearOrder()` and recomputes the route, so the unit never
+completes a single step. It stands in the doorway for the rest of the match with
+an empty refinery beside it — the fleet looks alive, `harvesters` counts them all,
+and refined spice simply stops.
+
+`HARVESTER_RETARGET_COOLDOWN` (60 ticks) is the fix: still an order of magnitude
+faster than the stall timer this replaced, and slow enough that a step can finish.
+
+**How it showed up.** Not as a crash and not as a stall anyone could see — as
+noise in a search. The economy sweep had two reproducible collapses (N=10 in both
+rows, N=20 in one) that survived every explanation offered for them: power,
+routing, counting. They were this. Which threshold happened to produce the
+standoff was luck, which is exactly why it looked patternless. With the cooldown
+the sweep is flat within 4% and both collapses are gone — see
+[economy.md](economy.md).
+
+### What is still broken
+
+The cooldown treats the symptom. Underneath it there is a refinery that gets
+stuck, and it is worth fixing next:
+
+```
+ref#3 state1 linked255 var4=4016
+```
+
+State 1 is `STRUCTURE_STATE_BUSY`, `linkedID` 255 means nothing is inside, and
+`var4` is a door reservation held by a harvester that is standing outside. The
+refinery went busy expecting a harvester that never entered, and it never comes
+back out of that state — so it refuses every harvester in the house, forever.
+
+It reproduces deterministically and cheaply:
+
+```bash
+cd bin
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --economy-baseline=80000,1 --economy-trace
+```
+
+Baseline 1 (three refineries, one harvester, no Heavy Factory) freezes at around
+t30000 and refines nothing for the remaining 50000 ticks. `--economy-trace` prints
+the state of every harvester and every refinery at each sample, which is what
+found it.

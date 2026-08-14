@@ -20,6 +20,7 @@
 #include "pool/structure.h"
 #include "pool/unit.h"
 #include "scenario.h"
+#include "skirmish.h"
 #include "string.h"
 #include "structure.h"
 #include "table/strings.h"
@@ -185,8 +186,13 @@ void GameLoop_House(void)
 			/* ENHANCEMENT -- Originally this code was outside the house loop, which seems very odd.
 			 *  This problem is considered to be so bad, that the original code has been removed. */
 			if (h->index != g_playerHouseID) {
-				if (h->creditsStorage < h->credits) {
-					h->credits = h->creditsStorage;
+				/* A skirmish AI starts with credits but no spice storage at all,
+				 * so the plain storage clamp would wipe them before the first
+				 * Refinery is paid for.  Give it the same grace as the human. */
+				uint16 maxCredits = Skirmish_IsActive() ? Skirmish_House_MaxCredits(h) : h->creditsStorage;
+
+				if (h->credits > maxCredits) {
+					h->credits = maxCredits;
 				}
 			} else {
 				uint16 maxCredits = max(h->creditsStorage, g_playerCreditsNoSilo);
@@ -215,6 +221,8 @@ void GameLoop_House(void)
 		}
 
 		if (tickHouse) House_EnsureHarvesterAvailable(h->index);
+
+		Skirmish_Economy_Tick(h);
 
 		if (tickStarport && h->starportLinkedID != UNIT_INDEX_INVALID) {
 			Unit *u = NULL;
@@ -360,6 +368,12 @@ bool House_AreAllied(uint8 houseID1, uint8 houseID2)
 		return (houseID1 == HOUSE_ATREIDES || houseID2 == HOUSE_ATREIDES);
 	}
 
+	/* Dune II only ever has one enemy, the player, so every other pair of houses
+	 * is allied by definition.  A skirmish is watched by a spectator who owns
+	 * nothing, which would make the two AIs allies of each other: no target
+	 * scores above zero, no team ever moves, and both armies stand around. */
+	if (Skirmish_IsActive()) return false;
+
 	return (houseID1 != g_playerHouseID && houseID2 != g_playerHouseID);
 }
 
@@ -376,6 +390,13 @@ bool House_UpdateRadarState(House *h)
 	bool activate;
 
 	if (h == NULL || h->index != g_playerHouseID) return false;
+
+	/* The skirmish spectator owns no Outpost and produces no power, yet the
+	 * whole point of watching is seeing the minimap. */
+	if (Skirmish_IsActive()) {
+		h->flags.radarActivated = true;
+		return true;
+	}
 
 	wsa = NULL;
 

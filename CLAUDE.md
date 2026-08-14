@@ -19,10 +19,11 @@ rules for shared state. **Read it before touching anything behavioural.**
 
 | Path | Contents |
 |---|---|
-| `src/` | engine: `unit.c`, `structure.c`, `map.c`, `house.c`, `opendune.c` (main loop) |
+| `src/` | engine: `unit.c`, `structure.c`, `map.c`, `house.c`, `skirmish.c`, `opendune.c` (main loop) |
 | `src/script/` | the EMC virtual machine and its opcode implementations |
 | `src/gui/` | viewport, widgets, input, drawing |
 | `src/table/` | static data: `unitinfo.c`, `structureinfo.c`, `actioninfo.c` |
+| `src/skirmish.c` `src/ecosearch.c` `src/warsearch.c` | the AI test bench: match setup, the economy search, the war search |
 | `src/saveload/` | save format — extending a struct means touching this |
 | `tools/` | asset extractors, and `dis_emc.py` for the game scripts |
 | `bin/` | build output and `bin/data/` (game files) |
@@ -93,26 +94,56 @@ initialiser, `bin/opendune.ini.sample`, and the README.txt section. Verify with
 `--combat-balance-self-test` below, which checks the matrix, the neutral classes,
 the House bonuses and the shared-Barracks patch against the loaded config.
 
-**Known limit of that self-test:** its integration step fires a real Atreides
-Soldier shot (base 10) at a synthetic Harkonnen Trooper. If the configured
-multipliers make that shot lethal — `class_damage_p_vs_rp` at 400 or above — the
-Trooper dies, `Unit_SetAction(ACTION_DIE)` runs, and `Script_Load()` segfaults:
-`UNIT.EMC` is only loaded by `Sprites_LoadTiles()` when a scenario loads, which
-never happens on this path, so `g_scriptUnit->start` is still NULL. That is a
-harness limitation, not a game bug — use `--selection-self-test` (it replays real
-saves, so the script pool is populated) to sanity-check such configurations.
+Its integration step fires a real Atreides Soldier shot (base 10) at a synthetic
+Harkonnen Trooper (45 HP), so a strong enough `class_damage_p_vs_rp` makes that
+shot lethal and reaches `Unit_SetAction(ACTION_DIE)` with `UNIT.EMC` not yet
+loaded — `Sprites_LoadTiles()` only reads it when a scenario loads. The NULL
+guard in `Script_Load()` ([src/script/script.c:283](src/script/script.c:283))
+exists for exactly that; **rebuild before trusting a segfault here**, a stale
+`bin/opendune` predating that guard crashes instead.
+
+## Skirmish — the AI test bench
+
+`./opendune --skirmish` (optionally `--skirmish=ordos,harkonnen`) generates a
+62x62 map, puts two AI houses on it and lets the human watch. Each AI starts with
+a Construction Yard and a *plan* — the rest of its base as an ordered list of
+(type, position) it has to work through itself. It is how the AI is developed and
+judged in this fork; combat is not part of it yet. There is deliberately no menu
+entry: the main menu list is sized by its first `STR_NULL`, so a sixth item makes
+the whole menu vanish on a profile that has both a savegame and a Hall of Fame.
+
+→ [skirmish.md](skirmish.md) — the spectator model, the plan hooks, and the
+engine facts (player-centric AI checks, the credit clamp, the truncated
+`buildable` mask) you need before touching it.
+
+`--economy-search` evolves the fastest economic opening in that same sandbox,
+with combat switched off, by simulating thousands of matches headless.
+→ [economy.md](economy.md).
+
+`--war-matrix` / `--war-timing` put two tuned economies on one map and vary how
+much of the take each spends on its army. Fitness is not spice but the outcome,
+so the answer is a win matrix rather than a number. → [war.md](war.md).
 
 ## Verifying a change
 
-There is no test suite. Two built-in self-tests run headless and exit:
+There is no test suite. These run headless and exit:
 
 ```bash
 cd bin
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --selection-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish-self-test=200000
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --economy-baseline=80000,3
 ```
 
 The selection test replays the saves in `~/Library/Application Support/OpenDUNE/`.
+The skirmish test simulates a match as fast as the CPU allows and prints each
+AI's build order — see [skirmish.md](skirmish.md) for how to read it. Its map is
+random, so run it twice before calling a change a regression.
+The economy baseline is deterministic and is the cheapest guard on the harvester
+layer: baseline 0 should refine around 8000. If it drops to near zero, harvesters
+have stalled — add `--economy-trace` and read the per-harvester and per-refinery
+state it prints, then [harvester.md](harvester.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than
 leaving it running.
@@ -132,6 +163,12 @@ leaving it running.
 * [emc-scripts.md](emc-scripts.md) — script VM, disassembly, shared-state rules
 * [harvester.md](harvester.md) — harvester state model and its bug history; the
   worked example of supplementing a script correctly
+* [skirmish.md](skirmish.md) — AI vs AI mode: spectator model, base plans, and
+  the AI's known weak spots
+* [economy.md](economy.md) — the economy search: how a plan is encoded, what it
+  found, and which drivers actually matter
+* [war.md](war.md) — the economy/army split: the budget model, the win matrix,
+  and why the timing of the split beats its level
 * [units.md](units.md) / [units.html](units.html) — complete unit-type table
 * `INTERNALS.txt` — palette and file-format notes from upstream
 * `enhancement.txt` — upstream's list of deviations from the original game

@@ -149,7 +149,11 @@ void Voice_PlayAtTile(int16 voiceID, tile32 position)
 
 	index = g_table_voiceMapping[voiceID];
 
-	if (g_enableVoices != 0 && index != 0xFFFF && g_voiceData[index] != NULL && g_table_voices[index].priority >= s_currentVoicePriority) {
+	/* g_readBuffer is only allocated while a game is being set up; a code path
+	 * that reaches a voice without it (a skirmish started straight from the
+	 * command line, for one) must fall back to the sound effect, not memmove
+	 * into a null pointer. */
+	if (g_enableVoices != 0 && index != 0xFFFF && g_readBuffer != NULL && g_voiceData[index] != NULL && g_table_voices[index].priority >= s_currentVoicePriority) {
 		s_currentVoicePriority = g_table_voices[index].priority;
 		memmove(g_readBuffer, g_voiceData[index], g_voiceDataSize[index]);
 
@@ -345,6 +349,12 @@ void Sound_StartSound(uint16 index)
 		filename = g_table_voices[index].string;
 		if (filename[0] == '?') {
 			snprintf(filenameBuffer, sizeof(filenameBuffer), filename + 1, g_playerHouseID < HOUSE_MAX ? g_table_houseInfo[g_playerHouseID].prefixChar : ' ');
+
+			/* The name is built from the player's House letter, and only the
+			 * three playable Houses have a voice set: as a Mercenary spectator
+			 * this asks for MARRIVE.VOC and the file layer treats a miss as
+			 * fatal.  Voice_LoadVoices() checks the same way. */
+			if (!File_Exists(filenameBuffer)) return;
 
 			Driver_Voice_LoadFile(filenameBuffer, g_readBuffer, g_readBufferSize);
 

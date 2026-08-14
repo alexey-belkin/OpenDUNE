@@ -159,6 +159,9 @@ A few key controls are added in OpenDUNE, available depending on the
 platform :
 F8 - Toggle FPS display
 CTRL-ENTER or F11 - Toggle full screen
+[ - halve the game speed
+] - double the game speed (up to x16; the factor is shown in the top right
+    corner of the tactical view)
 
 
 Enhancement over Dune2

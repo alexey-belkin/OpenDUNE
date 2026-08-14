@@ -23,6 +23,7 @@
 #include "../pool/pool.h"
 #include "../pool/unit.h"
 #include "../scenario.h"
+#include "../skirmish.h"
 #include "../sprites.h"
 #include "../string.h"
 #include "../structure.h"
@@ -39,10 +40,14 @@ static bool s_selectionBoxDragging;                         /*!< The press moved
 static bool s_selectionBoxSuppressUntilRelease;              /*!< Ignore the tail of a target click after returning to unit mode. */
 static uint16 s_selectionBoxStart;                          /*!< Start tile, fixed in world coordinates. */
 static uint16 s_selectionBoxEnd;                            /*!< End tile, fixed in world coordinates. */
-static uint16 s_lastClickPosition;                          /*!< Tile of the previous plain click, for double-click detection. */
-static uint32 s_lastClickTime;                              /*!< When that click happened. */
+static uint16 s_lastClickUnit = 0xFFFF;                     /*!< Unit hit by the previous plain click, for double-click detection. */
+static uint32 s_lastClickTime;                              /*!< When that click happened, on the GUI clock. */
+static bool s_clickHandledOnPress;                          /*!< The press completed a double click; its release adds nothing. */
 
-#define VIEWPORT_DOUBLE_CLICK_TICKS 30                      /*!< Half a second on the 60 Hz game timer. */
+/* Half a second of GUI time.  Deliberately not the game timer: that one runs at
+ * double rate in Fast mode and stops altogether when the game is paused, which
+ * would make the double-click window a quarter of a second on x2. */
+#define VIEWPORT_DOUBLE_CLICK_TICKS 30
 
 /** Convert a tactical-view pixel position to a map tile. */
 static uint16 GUI_Widget_Viewport_GetPackedAt(uint16 x, uint16 y)
@@ -70,29 +75,50 @@ static void GUI_Widget_Viewport_SelectAt(uint16 packed)
 	}
 }
 
-/* A single click on the map, carrying the same two group modifiers the box
- * selection already has: shift takes a unit in or out of the group, and a
- * double click takes every unit of that type on screen.  Anything that is not
- * one of our units falls through to the classic "show me what this is". */
-static void GUI_Widget_Viewport_ClickAt(uint16 packed, bool additive)
+/** The unit a click on this tile refers to, NULL for anything else. */
+static Unit *GUI_Widget_Viewport_UnitAt(uint16 packed)
 {
 	uint16 position = g_debugScenario ? packed : Unit_FindTargetAround(packed);
-	Unit *unit = NULL;
-	bool doubleClick;
 
-	if (g_map[position].overlayTileID == g_veiledTileID && !g_debugScenario) return;
+	if (g_map[position].overlayTileID == g_veiledTileID && !g_debugScenario) return NULL;
 
-	unit = Unit_Get_ByPackedTile(position);
-	doubleClick = unit != NULL && position == s_lastClickPosition &&
-		s_lastClickTime != 0 && s_lastClickTime + VIEWPORT_DOUBLE_CLICK_TICKS > g_timerGame;
+	return Unit_Get_ByPackedTile(position);
+}
 
-	s_lastClickPosition = position;
-	s_lastClickTime = g_timerGame;
+/* Record this click and, if it completes a pair, take every unit of that type
+ * on screen.  Returns true when it did, meaning the gesture is finished.
+ *
+ * Pairing is decided on the press rather than on the release, and a release
+ * whose press never arrived runs it too.  The reason is the click before it: a
+ * first click on a unit that was not selected changes the selection mode, and
+ * GUI_ChangeSelectionType() redraws the whole interface and clears every
+ * widget's selected state on the way.  One event of the click that follows can
+ * be lost in that churn, which is why the double click used to need three
+ * clicks on a fresh unit and only two on one already selected.  Surviving the
+ * loss of any single event is cheaper than finding out which one it is.
+ *
+ * The pair is matched on the unit, not on the tile: a unit that is driving
+ * stands on a different tile by the time the second click arrives. */
+static bool GUI_Widget_Viewport_TakePair(uint16 packed, bool additive)
+{
+	Unit *unit = GUI_Widget_Viewport_UnitAt(packed);
+	bool doubleClick = unit != NULL && unit->o.index == s_lastClickUnit &&
+		s_lastClickTime != 0 && s_lastClickTime + VIEWPORT_DOUBLE_CLICK_TICKS > g_timerGUI;
 
-	if (unit != NULL) {
-		if (doubleClick && UnitSelection_SelectSameTypeOnScreen(unit, additive)) return;
-		if (additive && UnitSelection_Toggle(unit)) return;
-	}
+	s_lastClickUnit = unit != NULL ? unit->o.index : 0xFFFF;
+	s_lastClickTime = g_timerGUI;
+
+	return doubleClick && UnitSelection_SelectSameTypeOnScreen(unit, additive);
+}
+
+/* A single click on the map: shift takes a unit in or out of the group, and
+ * anything that is not one of our units falls through to the classic "show me
+ * what this is".  Pairing is not decided here - see above. */
+static void GUI_Widget_Viewport_ClickAt(uint16 packed, bool additive)
+{
+	Unit *unit = GUI_Widget_Viewport_UnitAt(packed);
+
+	if (unit != NULL && additive && UnitSelection_Toggle(unit)) return;
 
 	GUI_Widget_Viewport_SelectAt(packed);
 }
@@ -176,6 +202,43 @@ static void GUI_Widget_Viewport_DrawDebugLines(void)
 	}
 
 	GUI_SetClippingArea(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
+}
+
+/* The rally point of the selected factory: it is a move order, so it is drawn
+ * in the same white the debug overlay uses for one.  Returns false when there
+ * is nothing to draw, which also tells the caller it need not force a redraw. */
+static bool GUI_Widget_Viewport_DrawRallyPoint(bool draw)
+{
+	Structure *s;
+	uint16 rally;
+
+	if (g_selectionType != SELECTIONTYPE_STRUCTURE) return false;
+
+	s = Structure_Get_ByPackedTile(g_selectionPosition);
+	if (s == NULL || s->o.houseID != g_playerHouseID) return false;
+
+	rally = Structure_GetRallyPoint(s);
+	if (rally == 0) return false;
+
+	if (draw) {
+		GUI_SetClippingArea(0, 40, 239, 199);
+		GUI_Widget_Viewport_DrawDebugLine(Tile_Center(s->o.position), Tile_Center(Tile_UnpackTile(rally)), 0xFF);
+		GUI_SetClippingArea(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
+	}
+
+	return true;
+}
+
+/* The simulation speed, in the top right corner of the tactical view.  Drawn
+ * every frame: the map underneath is only repainted where it is dirty, so the
+ * text has to be reasserted rather than left standing. */
+static void GUI_Widget_Viewport_DrawSpeed(void)
+{
+	char text[8];
+
+	snprintf(text, sizeof(text), "x%u", (unsigned)GameLoop_GetSpeedFactor());
+
+	GUI_DrawText_Wrapper(text, 237, 42, 0xFF, 0, 0x222);
 }
 
 /** Scroll the tactical map while the pointer rests on a game-screen edge. */
@@ -322,7 +385,19 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			g_viewport_forceRedraw = true;
 		}
 
-		if (g_selectionType == SELECTIONTYPE_UNIT) UnitSelection_IssueDefaultOrder(packed);
+		if (g_selectionType == SELECTIONTYPE_UNIT) {
+			UnitSelection_IssueDefaultOrder(packed);
+		} else if (g_selectionType == SELECTIONTYPE_STRUCTURE) {
+			/* A right click with a factory selected points it at a tile: that is
+			 * where everything it builds drives off to. */
+			Structure *s = Structure_Get_ByPackedTile(g_selectionPosition);
+
+			if (s != NULL && s->o.houseID == g_playerHouseID && g_table_structureInfo[s->o.type].o.flags.factory &&
+				s->o.type != STRUCTURE_CONSTRUCTION_YARD) {
+				Structure_SetRallyPoint(s, packed);
+				g_viewport_forceRedraw = true;
+			}
+		}
 		return true;
 	}
 
@@ -332,6 +407,8 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			s_selectionBoxEnd = s_selectionBoxStart;
 			s_selectionBoxActive = true;
 			s_selectionBoxDragging = false;
+			s_clickHandledOnPress = GUI_Widget_Viewport_TakePair(s_selectionBoxStart,
+				g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39)));
 			return true;
 		}
 
@@ -347,18 +424,26 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			return true;
 		}
 
-		if (release && s_selectionBoxActive) {
+		/* A release is handled even when no press was seen: the press of a click
+		 * can be lost in the interface rebuild the click before it triggered. */
+		if (release) {
 			bool additive = g_dune2_enhanced && (Input_Test(0x2c) || Input_Test(0x39));
+			bool sawPress = s_selectionBoxActive;
 
 			s_selectionBoxEnd = GUI_Widget_Viewport_GetPackedAt(g_mouseClickX, g_mouseClickY);
 			/* A press that wandered inside one tile is a click, not a box.  The
 			 * mouse almost always reports a pixel of travel, so treating any drag
 			 * event as a box would make the modifiers below unreachable. */
-			if (s_selectionBoxDragging && s_selectionBoxStart != s_selectionBoxEnd) {
+			if (s_clickHandledOnPress) {
+				/* The press already took the pair; this release is its tail. */
+			} else if (sawPress && s_selectionBoxDragging && s_selectionBoxStart != s_selectionBoxEnd) {
 				UnitSelection_SelectBox(s_selectionBoxStart, s_selectionBoxEnd, additive);
+			} else if (!sawPress && GUI_Widget_Viewport_TakePair(s_selectionBoxEnd, additive)) {
+				/* Orphaned release: it is a click of its own, pair included. */
 			} else {
 				GUI_Widget_Viewport_ClickAt(s_selectionBoxEnd, additive);
 			}
+			s_clickHandledOnPress = false;
 			s_selectionBoxActive = false;
 			s_selectionBoxDragging = false;
 			g_viewport_forceRedraw = true;
@@ -557,7 +642,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 	/* Debug lines are drawn over the map, so the map underneath has to be
 	 * repainted every frame; a partial redraw would leave them smeared. */
-	if (g_gameConfig.debugLines) forceRedraw = true;
+	if (g_gameConfig.debugLines || GUI_Widget_Viewport_DrawRallyPoint(false)) forceRedraw = true;
 
 	updateDisplay = forceRedraw;
 
@@ -842,6 +927,9 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 	}
 
 	if (g_gameConfig.debugLines) GUI_Widget_Viewport_DrawDebugLines();
+	GUI_Widget_Viewport_DrawSpeed();
+	Skirmish_DrawStatusOverlay();
+	GUI_Widget_Viewport_DrawRallyPoint(true);
 
 	/* The drag endpoints are map tiles. Reproject them every frame so scrolling
 	 * never changes the selected world rectangle. */
