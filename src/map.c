@@ -101,7 +101,7 @@ void Map_SetSelection(uint16 packed)
 	if (g_selectionType == SELECTIONTYPE_TARGET) return;
 
 	if (g_selectionType == SELECTIONTYPE_PLACE) {
-		g_selectionState = Structure_IsValidBuildLocation(packed, g_structureActiveType);
+		g_selectionState = Structure_IsValidBuildLocation(packed, g_structureActiveType, g_playerHouseID);
 		g_selectionPosition = packed;
 		return;
 	}

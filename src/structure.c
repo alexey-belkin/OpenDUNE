@@ -609,7 +609,7 @@ bool Structure_Place(Structure *s, uint16 position)
 			 * structure whose placement enforced it regardless of house, so every
 			 * AI wall was silently refunded and freed while its plan entry was
 			 * spent: an AI base never had a single one. */
-			if (Structure_IsValidBuildLocation(position, STRUCTURE_WALL) == 0 &&
+			if (Structure_IsValidBuildLocation(position, STRUCTURE_WALL, s->o.houseID) == 0 &&
 			    s->o.houseID == g_playerHouseID && !g_debugScenario && g_validateStrictIfZero == 0) return false;
 
 			t = &g_map[position];
@@ -638,7 +638,7 @@ bool Structure_Place(Structure *s, uint16 position)
 				uint16 curPos = position + g_table_structure_layoutTiles[si->layout][i];
 				Tile *t = &g_map[curPos];
 
-				if (Structure_IsValidBuildLocation(curPos, STRUCTURE_SLAB_1x1) == 0) continue;
+				if (Structure_IsValidBuildLocation(curPos, STRUCTURE_SLAB_1x1, s->o.houseID) == 0) continue;
 
 				t->groundTileID = g_builtSlabTileID;
 				t->houseID = s->o.houseID;
@@ -660,7 +660,7 @@ bool Structure_Place(Structure *s, uint16 position)
 					uint16 curPos = position + g_table_structure_layoutTiles[si->layout][i];
 					Tile *t = &g_map[curPos];
 
-					if (Structure_IsValidBuildLocation(curPos, STRUCTURE_SLAB_1x1) == 0) continue;
+					if (Structure_IsValidBuildLocation(curPos, STRUCTURE_SLAB_1x1, s->o.houseID) == 0) continue;
 
 					t->groundTileID = g_builtSlabTileID;
 					t->houseID = s->o.houseID;
@@ -684,7 +684,7 @@ bool Structure_Place(Structure *s, uint16 position)
 		} return true;
 	}
 
-	validBuildLocation = Structure_IsValidBuildLocation(position, s->o.type);
+	validBuildLocation = Structure_IsValidBuildLocation(position, s->o.type, s->o.houseID);
 	if (validBuildLocation == 0 && s->o.houseID == g_playerHouseID && !g_debugScenario && g_validateStrictIfZero == 0) return false;
 
 	/* ENHANCEMENT -- In Dune2, it only removes the fog around the top-left tile of a structure, leaving for big structures the right in the fog. */
@@ -892,7 +892,7 @@ uint32 Structure_GetStructuresBuilt(House *h)
  * @param type The structure type to check the position for.
  * @return 0 if the position is not valid, 1 if the position is valid and have enough slabs, <0 if the position is valid but miss some slabs.
  */
-int16 Structure_IsValidBuildLocation(uint16 position, StructureType type)
+int16 Structure_IsValidBuildLocation(uint16 position, StructureType type, uint8 houseID)
 {
 	const StructureInfo *si;
 	const uint16 *layoutTile;
@@ -944,6 +944,10 @@ int16 Structure_IsValidBuildLocation(uint16 position, StructureType type)
 		}
 	}
 
+	/* "Must touch something of your own" -- and whose is decided by the house
+	 * asking, not by whoever happens to be at the keyboard.  Written against
+	 * g_playerHouseID it was unsatisfiable for every AI house, and in a skirmish,
+	 * where the player owns nothing at all, for everybody. */
 	if (g_validateStrictIfZero == 0 && isValid && type != STRUCTURE_CONSTRUCTION_YARD && !g_debugScenario) {
 		isValid = false;
 		for (i = 0; i < 16; i++) {
@@ -956,14 +960,14 @@ int16 Structure_IsValidBuildLocation(uint16 position, StructureType type)
 			curPos = position + offset;
 			s = Structure_Get_ByPackedTile(curPos);
 			if (s != NULL) {
-				if (s->o.houseID != g_playerHouseID) continue;
+				if (s->o.houseID != houseID) continue;
 				isValid = true;
 				break;
 			}
 
 			lst = Map_GetLandscapeType(curPos);
 			if (lst != LST_CONCRETE_SLAB && lst != LST_WALL) continue;
-			if (g_map[curPos].houseID != g_playerHouseID) continue;
+			if (g_map[curPos].houseID != houseID) continue;
 
 			isValid = true;
 			break;

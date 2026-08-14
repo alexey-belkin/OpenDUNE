@@ -623,31 +623,74 @@ static uint16 Skirmish_Layout_Next(SkirmishBase *b, uint8 type)
  * pours them itself, right before the building lands, which is also when it is
  * visible on screen.
  */
+/** Concrete one tile, billed to the house.  Silently skips what is already paved. */
+static void Skirmish_LaySlab(House *h, uint16 packed)
+{
+	const uint16 cost = g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildCredits;
+	Tile *t = &g_map[packed];
+
+	if (Tile_IsOutOfMap(packed)) return;
+	if (Map_GetLandscapeType(packed) == LST_CONCRETE_SLAB) return;
+
+	t->groundTileID = g_builtSlabTileID;
+	t->houseID      = h->index;
+
+	g_mapTileID[packed] |= 0x8000;
+
+	if (Map_IsPositionUnveiled(packed)) t->overlayTileID = 0;
+
+	Map_Update(packed, 0, false);
+
+	h->credits -= min(h->credits, cost);
+}
+
 static void Skirmish_LaySlabs(House *h, uint16 position, uint8 structureType)
 {
 	const StructureInfo *si = &g_table_structureInfo[structureType];
-	const uint16 cost = g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildCredits;
+	const SkirmishBase *b;
 	uint16 i;
 
 	if (h == NULL) return;
 
-	for (i = 0; i < g_table_structure_layoutTileCount[si->layout]; i++) {
-		const uint16 packed = position + g_table_structure_layoutTiles[si->layout][i];
-		Tile *t = &g_map[packed];
+	/* A wall overwrites the ground tile it stands on, so concrete underneath one
+	 * is paid for and immediately lost -- but its apron is what the rule reads,
+	 * and that is worth having. */
+	if (structureType != STRUCTURE_WALL) {
+		for (i = 0; i < g_table_structure_layoutTileCount[si->layout]; i++) {
+			Skirmish_LaySlab(h, position + g_table_structure_layoutTiles[si->layout][i]);
+		}
+	}
 
-		if (Tile_IsOutOfMap(packed)) continue;
-		if (Map_GetLandscapeType(packed) == LST_CONCRETE_SLAB) continue;
+	/* And an apron one tile wide around it.
+	 *
+	 * The plan leaves a tile of daylight between neighbours so units can drive
+	 * through the base, and that gap is exactly what breaks the "must touch
+	 * something of your own" rule: a structure's ring reaches one tile, the gap
+	 * is one tile, so the ring lands on bare rock and the next building over is
+	 * out of reach.  Paving the ring joins the base into one connected slab as it
+	 * grows, so every structure placed after the Construction Yard has something
+	 * of its own to touch -- walls and turrets on the forward line included. */
+	b = Skirmish_GetBase((uint8)h->index);
+	if (b == NULL) return;
 
-		t->groundTileID = g_builtSlabTileID;
-		t->houseID      = h->index;
+	for (i = 0; i < 16; i++) {
+		const int16 offset = g_table_structure_layoutTilesAround[si->layout][i];
+		uint16 packed;
+		uint16 x, y;
 
-		g_mapTileID[packed] |= 0x8000;
+		if (offset == 0) break;
 
-		if (Map_IsPositionUnveiled(packed)) t->overlayTileID = 0;
+		packed = position + offset;
+		x = Tile_GetPackedX(packed);
+		y = Tile_GetPackedY(packed);
 
-		Map_Update(packed, 0, false);
+		/* Inside the plateau only.  Concrete poured onto the sand outside it
+		 * would be paid for and then erode, and it would draw the outline of the
+		 * base for anyone watching. */
+		if (x < b->rectX || x >= b->rectX + SKIRMISH_BASE_WIDTH) continue;
+		if (y < b->rectY || y >= b->rectY + SKIRMISH_BASE_HEIGHT) continue;
 
-		h->credits -= min(h->credits, cost);
+		Skirmish_LaySlab(h, packed);
 	}
 }
 
@@ -752,6 +795,8 @@ static void Skirmish_Economy_SampleQueue(SkirmishBase *b, House *h)
 	PoolFindStruct find;
 	bool refineryFree = false;
 	bool harvesterWaiting = false;
+	uint16 harvesters = 0;
+	uint16 queued = 0;
 	uint16 position;
 
 	if (b->plan.refineryWait == 0 && b->plan.carryallWait == 0) return;
@@ -790,21 +835,30 @@ static void Skirmish_Economy_SampleQueue(SkirmishBase *b, House *h)
 	find.index   = 0xFFFF;
 	find.type    = UNIT_HARVESTER;
 
+	/* Count the ones inside a refinery too.  Unit_Find() hides them, and they are
+	 * exactly the harvesters somebody else would be queueing behind: without this
+	 * a house with two harvesters looks like a house with one whenever one of
+	 * them is unloading. */
+	g_validateStrictIfZero++;
+
 	while (true) {
 		const Unit *u = Unit_Find(&find);
 
 		if (u == NULL) break;
-		if (u->o.flags.s.isNotOnMap) continue;   /* Already inside a refinery. */
-		if (u->amount == 0) continue;            /* Nothing to unload. */
-		/* Full, or on its way home with a load: either way it is a harvester
-		 * that wants a refinery and cannot have one.  Insisting on a full 100
-		 * missed most of the queue -- a harvester sent home early by the
-		 * recovery layer carries whatever it had. */
-		if (u->amount < 100 && u->actionID != ACTION_RETURN) continue;
 
-		harvesterWaiting = true;
-		break;
+		harvesters++;
+		if (Unit_Harvester_IsQueued(u)) queued++;
 	}
+
+	g_validateStrictIfZero--;
+
+	/* A queue, not a commute.  This used to count any harvester carrying
+	 * anything, a harvester merely driving home included, so a base with one
+	 * harvester and one refinery reported a queue at itself and kept asking for
+	 * refineries that nothing would ever fill.  What counts now is a full
+	 * harvester standing at a refinery that refuses it -- and one harvester
+	 * cannot queue behind itself, whatever state the refinery is in. */
+	harvesterWaiting = (queued > 0 && harvesters >= 2);
 
 	if (!harvesterWaiting) {
 		if (s_refineryWait[h->index] != 0) s_refineryWait[h->index]--;
@@ -928,9 +982,7 @@ uint16 Skirmish_Plan_TakePosition(House *h, uint8 structureType)
 			e->taken = true;
 			if (b->historyCount < SKIRMISH_PLAN_MAX) b->history[b->historyCount++] = structureType;
 
-			/* A wall replaces the ground tile it stands on, so concrete under one
-			 * is paid for and immediately overwritten. */
-			if (structureType != STRUCTURE_WALL) Skirmish_LaySlabs(h, e->position, structureType);
+			Skirmish_LaySlabs(h, e->position, structureType);
 
 			return e->position;
 		}

@@ -1519,6 +1519,36 @@ static bool Unit_Harvester_RefineryAccepts(const Structure *refinery, const Unit
 	return unit != NULL && refinery->o.script.variables[4] == Tools_Index_Encode(unit->o.index, IT_UNIT);
 }
 
+/**
+ * Whether a harvester is queueing: sitting on the map with a full load, aimed at
+ * a refinery that will not take it.
+ *
+ * This is the "WAIT REF" of the harvester trace, and it is the only harvester
+ * state that means the house is short of refinery capacity.  A harvester driving
+ * home with a load is not queueing, however long the drive -- and telling the
+ * two apart is the whole point: counting the commute as a queue let a base with
+ * one harvester and one refinery report a queue at itself.
+ */
+bool Unit_Harvester_IsQueued(const Unit *unit)
+{
+	const Structure *refinery;
+
+	if (unit == NULL || unit->o.type != UNIT_HARVESTER) return false;
+	if (unit->o.flags.s.isNotOnMap) return false;    /* Already inside one. */
+	if (unit->amount < 100) return false;            /* Not full: still has work to do. */
+
+	/* Same two places the trace looks: where it is going, or failing that the
+	 * refinery it belongs to. */
+	refinery = Tools_Index_GetStructure(unit->targetMove);
+	if (refinery == NULL && Tools_Index_GetType(unit->originEncoded) == IT_STRUCTURE) {
+		refinery = Tools_Index_GetStructure(unit->originEncoded);
+	}
+
+	if (refinery == NULL || refinery->o.type != STRUCTURE_REFINERY) return false;
+
+	return !Unit_Harvester_RefineryAccepts(refinery, unit);
+}
+
 static Structure *Unit_Harvester_FindAvailableRefinery(Unit *unit, const Structure *exclude)
 {
 	PoolFindStruct find;

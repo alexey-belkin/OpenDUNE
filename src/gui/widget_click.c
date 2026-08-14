@@ -113,7 +113,7 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 				ns = Structure_Get_ByIndex(s->o.linkedID);
 				g_structureActive = ns;
 				g_structureActiveType = s->objectType;
-				g_selectionState = Structure_IsValidBuildLocation(g_selectionRectanglePosition, g_structureActiveType);
+				g_selectionState = Structure_IsValidBuildLocation(g_selectionRectanglePosition, g_structureActiveType, g_playerHouseID);
 				g_structureActivePosition = g_selectionPosition;
 				s->o.linkedID = STRUCTURE_INVALID;
 

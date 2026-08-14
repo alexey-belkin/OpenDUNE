@@ -322,6 +322,7 @@ extern void UnitSelection_SpreadReset(void);
 extern uint16 UnitSelection_SpreadTake(struct Unit *unit, uint16 packed);
 extern void UnitSelection_SortOrderByDistance(uint16 *order, uint16 count, uint16 packed);
 extern void Unit_Harvester_BeginOrder(struct Unit *unit, ActionType action);
+extern bool Unit_Harvester_IsQueued(const struct Unit *unit);
 extern void UnitSelection_OrderHunt(void);
 extern bool UnitSelection_BeginAirTransit(void);
 extern bool UnitSelection_BeginAction(ActionType action);
