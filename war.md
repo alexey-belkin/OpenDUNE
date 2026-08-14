@@ -57,7 +57,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --war-ladder=200000,5
 | `--war-timing` | `ticks,maps` | schedules: flat shares against ones that change mid-match |
 | `--war-ladder` | `ticks,maps` | repeatedly finds the best counter to the current champion |
 | `--war-trace` | — | one line per house per 20000 ticks of every match |
-| `--war-telemetry` | `ticks,step[,seed]` | plays one match and prints a sampled CSV of how it went |
+| `--war-telemetry` | `ticks,step[,seed]` | plays one match and records it to `telemetry/` |
 | `--war` | `shareA,shareB[,seed]` | plays one pairing in the GUI, to watch |
 
 Watching one: the match opens on the first base, and at t0 the second house owns
@@ -106,7 +106,11 @@ Requested against realised, measured:
 
 So the knob binds cleanly up to about 60% and then saturates: a house cannot put
 more than roughly three quarters of its income into war, because at that point it
-is limited by factory throughput and the 40 unit cap, not by money.
+is limited by factory throughput and the unit cap, not by money.
+
+**Those figures were measured with a 40 unit cap and have since been raised** --
+see "The pool was the ceiling" below. The shape of the result survived; the
+absolute values did not, and have not been re-measured.
 
 ## What it found
 
@@ -181,7 +185,19 @@ Damage is recorded as **taken**, not dealt, because neither `Unit_Damage()` nor
 "damage B took", with the caveat that Palace specials land in the same column --
 which is fair enough, since they are the summoner's doing.
 
-`./opendune --war=0,0,8919 --war-telemetry=200000,5000` is a contested one: level
+Recordings go to `telemetry/` beside the binary, one CSV per match, with the
+houses, shares, seed and the verdict in `#` comment lines. `tools/telemetry_report.py`
+bakes every recording it finds into `telemetry.html`: a match picker showing who
+played whom, when, and who won, with the chart beside it. It has to bake rather
+than load on demand because a page opened from the filesystem can neither list a
+directory nor fetch a sibling file. Re-run it after recording.
+
+```bash
+cd bin && ./opendune --skirmish=ordos,atreides --war=0,0,8919 --war-telemetry=200000,5000
+cd .. && python3 tools/telemetry_report.py
+```
+
+`--war=0,0,8919` is a contested one: level
 at t150000 on harvesters and damage taken, and decided only after. What it shows,
 and what the sweeps above cannot:
 
@@ -202,6 +218,36 @@ and what the sweeps above cannot:
   the 40 unit cap and its factory throughput. That is the same ceiling the share
   matrix hit: past roughly 60%, extra income stops converting into strength,
   which is why the higher shares stop differing from each other.
+
+## The pool was the ceiling, and it is not one number
+
+`h->unitCountMax` is not where the limit really lives. `Unit_Allocate()` places a
+new unit inside a band reserved for its *type* (`indexStart` / `indexEnd` in
+`g_table_unitInfo`), and the original partition of the 102 slot pool was:
+
+| Slots | For | Count |
+|---|---|---:|
+| 0-10 | Carryall, 'Thopter | 11 |
+| 11 | Frigate | 1 |
+| 12-15 | **every projectile in flight, anywhere on the map** | **4** |
+| 16-17 | Sandworm | 2 |
+| 20-21 | Saboteur | 2 |
+| 22-101 | **every ground unit of every house, harvesters included** | **80** |
+
+So the per-house cap of 40 was not a choice, it was 80 split down the middle. And
+the four projectile slots matter as much: with only four shots in the air at once
+for the whole map, a bigger army does not deal proportionally more damage, so
+raising the ground band alone would have changed nothing.
+
+Both were raised. The pool is now 242, the ground band 22-201 (180 slots, 90 a
+house) and projectiles moved to their own 202-241 (40 slots). Savegames store a
+uint16 index and are loaded by index without a range check, so every existing save
+still reads -- `--selection-self-test` replays five of them and passes.
+
+The schedule sweep was re-run afterwards and lands in the same place: t30k and
+t40k tied at the top on 113 points of 168, a plateau from t20k, t100k at 31, and
+the flat control last of the schedules on 59. **The conclusion is unchanged; the
+absolute values elsewhere in this file were measured before the change.**
 
 ## The Palace hands out an army the budget cannot see
 
@@ -244,10 +290,9 @@ Two consequences, both real:
 * **It breaks the budget model.** The whole premise here is that a share of
   income is the only thing separating two strategies. Free units are outside
   that.
-* **It squeezes the unit pool.** The pool is 102 slots for the whole map, and
-  the two houses are capped at 40 each. Twenty-one bystanders is twenty-one
-  slots neither AI can build into, so the Palace also quietly throttles the
-  loser's production.
+* **It squeezes the unit pool.** Bystanders occupy slots in the same ground band
+  both houses build into, so the Palace also quietly throttles the loser's
+  production.
 
 The Palace is the last entry of the base plan but it is reached well inside the
 200000 tick horizon -- both houses had it up by t120000 in a spot check -- so

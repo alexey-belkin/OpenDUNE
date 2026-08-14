@@ -25,7 +25,7 @@ rules for shared state. **Read it before touching anything behavioural.**
 | `src/table/` | static data: `unitinfo.c`, `structureinfo.c`, `actioninfo.c` |
 | `src/skirmish.c` `src/ecosearch.c` `src/warsearch.c` | the AI test bench: match setup, the economy search, the war search |
 | `src/saveload/` | save format — extending a struct means touching this |
-| `tools/` | asset extractors, and `dis_emc.py` for the game scripts |
+| `tools/` | asset extractors, `dis_emc.py` for the game scripts, `telemetry_report.py` for recorded matches |
 | `bin/` | build output and `bin/data/` (game files) |
 | `bundle/` | `make bundle` output — **wiped on every build** |
 
@@ -122,7 +122,9 @@ with combat switched off, by simulating thousands of matches headless.
 
 `--war-matrix` / `--war-timing` put two tuned economies on one map and vary how
 much of the take each spends on its army. Fitness is not spice but the outcome,
-so the answer is a win matrix rather than a number. → [war.md](war.md).
+so the answer is a win matrix rather than a number. `--war-telemetry` records one
+match to `bin/telemetry/`; `python3 tools/telemetry_report.py` turns everything
+recorded there into `telemetry.html`. → [war.md](war.md).
 
 ## Verifying a change
 

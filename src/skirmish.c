@@ -52,8 +52,8 @@
 #define SKIRMISH_HARVESTER_TARGET 3
 /** Unit cap per skirmish house. */
 #define SKIRMISH_UNIT_MAX 25
-/** Unit cap per house in a war: two of these plus frigates must fit the 102 slot pool. */
-#define SKIRMISH_WAR_UNIT_MAX 40
+/** Unit cap per house in a war: two of these must fit the ground band of the pool. */
+#define SKIRMISH_WAR_UNIT_MAX 90
 
 /* The economy settled on by the search -- see economy.md.  A war strategy varies
  * how much of what this earns goes into the army, not the economy itself. */

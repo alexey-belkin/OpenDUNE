@@ -1156,7 +1156,7 @@ static void GameLoop_Main(void)
 		if (s_warMatrix) WarSearch_RunMatrix(s_warTicks, s_warMaps);
 		if (s_warTiming) WarSearch_RunTiming(s_warTicks, s_warMaps);
 		if (s_warLadder) WarSearch_RunLadder(s_warTicks, s_warMaps);
-		if (s_warTelemetry) WarSearch_RunTelemetry(s_warTicks, s_warTelemetryStep, s_warPlayShare[0], s_warPlayShare[1], s_warSwitchTick, s_warPlaySeed);
+		if (s_warTelemetry) WarSearch_RunTelemetry(s_skirmishHouse[0], s_skirmishHouse[1], s_warTicks, s_warTelemetryStep, s_warPlayShare[0], s_warPlayShare[1], s_warSwitchTick, s_warPlaySeed);
 		return;
 	}
 

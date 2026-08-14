@@ -31,3 +31,6 @@ tools/*.pyc
 tools/amigaMXextract
 tools/extractpak
 .*.swp
+
+# Recorded matches: regenerate telemetry.html from them with tools/telemetry_report.py
+bin/telemetry/

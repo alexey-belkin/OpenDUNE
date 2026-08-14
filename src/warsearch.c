@@ -22,6 +22,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
+#if defined(_WIN32)
+	#include <direct.h>
+#endif
 #include "types.h"
 #include "os/common.h"
 #include "os/math.h"
@@ -255,11 +259,28 @@ static uint16 WarSearch_Duel(const SkirmishEconomyPlan *planA, const SkirmishEco
  * that a rate is an exact difference between two samples rather than whatever the
  * sampler happened to catch.
  */
-void WarSearch_RunTelemetry(uint32 ticks, uint16 step, uint16 shareA, uint16 shareB, uint32 switchTick, uint32 seed)
+/** Where recorded matches land, relative to the working directory. */
+#define WAR_TELEMETRY_DIR "telemetry"
+
+static void WarSearch_MakeDirectory(const char *path)
+{
+#if defined(_WIN32)
+	_mkdir(path);
+#else
+	mkdir(path, 0755);
+#endif
+}
+
+void WarSearch_RunTelemetry(uint8 houseA, uint8 houseB, uint32 ticks, uint16 step, uint16 shareA, uint16 shareB, uint32 switchTick, uint32 seed)
 {
 	SkirmishEconomyPlan planA, planB;
+	char path[256];
 	char line[256];
 	char row[320];
+	const char *winner;
+	FILE *fp;
+	time_t stamp = time(NULL);
+	uint32 valueA, valueB;
 	uint32 tick;
 	uint8 i;
 
@@ -270,12 +291,35 @@ void WarSearch_RunTelemetry(uint32 ticks, uint16 step, uint16 shareA, uint16 sha
 
 	Tools_RandomLCG_Seed((uint16)seed);
 
-	if (!Skirmish_StartWar(WAR_HOUSE_A, WAR_HOUSE_B, seed, &planA, &planB)) {
+	if (!Skirmish_StartWar(houseA, houseB, seed, &planA, &planB)) {
 		WarSearch_Print("war-telemetry: could not start a match");
 		return;
 	}
 
-	WarSearch_Print("tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus");
+	WarSearch_MakeDirectory(WAR_TELEMETRY_DIR);
+	snprintf(path, sizeof(path), "%s/match-%s-%s-%uv%u-s%u-%lu.csv",
+	         WAR_TELEMETRY_DIR,
+	         g_table_houseInfo[houseA].name, g_table_houseInfo[houseB].name,
+	         shareA, shareB, (unsigned)seed, (unsigned long)stamp);
+
+	fp = fopen(path, "w");
+	if (fp == NULL) {
+		snprintf(row, sizeof(row), "war-telemetry: cannot write %s", path);
+		WarSearch_Print(row);
+		return;
+	}
+
+	/* The metadata a reader needs to tell one recording from another, in comment
+	 * lines so the rest of the file is still plain CSV. */
+	fprintf(fp, "# recorded %s", ctime(&stamp));
+	fprintf(fp, "# houses %s,%s\n", g_table_houseInfo[houseA].name, g_table_houseInfo[houseB].name);
+	fprintf(fp, "# shares %u,%u\n", shareA, shareB);
+	fprintf(fp, "# shareLate 90,90\n");
+	fprintf(fp, "# switchTick %u\n", (unsigned)switchTick);
+	fprintf(fp, "# seed %u\n", (unsigned)seed);
+	fprintf(fp, "# ticks %u\n", (unsigned)ticks);
+	fprintf(fp, "# step %u\n", (unsigned)step);
+	fprintf(fp, "tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus\n");
 
 	Timer_SetTimer(TIMER_GAME, false);
 
@@ -286,6 +330,7 @@ void WarSearch_RunTelemetry(uint32 ticks, uint16 step, uint16 shareA, uint16 sha
 
 				snprintf(row, sizeof(row), "%u,%s", (unsigned)tick, line);
 				WarSearch_Print(row);
+				fprintf(fp, "%s\n", row);
 			}
 		}
 
@@ -298,6 +343,33 @@ void WarSearch_RunTelemetry(uint32 ticks, uint16 step, uint16 shareA, uint16 sha
 	}
 
 	Timer_SetTimer(TIMER_GAME, true);
+
+	valueA = Skirmish_War_GetValue(0);
+	valueB = Skirmish_War_GetValue(1);
+
+	if (Skirmish_War_IsDefeated(1) && !Skirmish_War_IsDefeated(0)) {
+		winner = g_table_houseInfo[houseA].name;
+	} else if (Skirmish_War_IsDefeated(0) && !Skirmish_War_IsDefeated(1)) {
+		winner = g_table_houseInfo[houseB].name;
+	} else if (valueA > valueB + valueB * WAR_MARGIN_PERCENT / 100) {
+		winner = g_table_houseInfo[houseA].name;
+	} else if (valueB > valueA + valueA * WAR_MARGIN_PERCENT / 100) {
+		winner = g_table_houseInfo[houseB].name;
+	} else {
+		winner = "draw";
+	}
+
+	/* Trailing rather than leading: the verdict is not known until the match has
+	 * been played, and rewinding the file to patch a header in would cost more
+	 * than a reader costs to skip to the end. */
+	fprintf(fp, "# winner %s\n", winner);
+	fprintf(fp, "# value %u,%u\n", (unsigned)valueA, (unsigned)valueB);
+	fprintf(fp, "# wipeout %u,%u\n",
+	        Skirmish_War_IsDefeated(0) ? 1u : 0u, Skirmish_War_IsDefeated(1) ? 1u : 0u);
+	fclose(fp);
+
+	snprintf(row, sizeof(row), "war-telemetry: %s -- winner %s (%u vs %u)", path, winner, (unsigned)valueA, (unsigned)valueB);
+	WarSearch_Print(row);
 }
 
 /**

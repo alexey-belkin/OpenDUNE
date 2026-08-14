@@ -197,7 +197,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ORDOS | FLAG_HOUSE_ATREIDES,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ false,
@@ -270,7 +270,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ORDOS | FLAG_HOUSE_HARKONNEN,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ false,
@@ -343,7 +343,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ORDOS | FLAG_HOUSE_ATREIDES,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ false,
@@ -416,7 +416,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ORDOS | FLAG_HOUSE_HARKONNEN,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ false,
@@ -562,7 +562,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ATREIDES | FLAG_HOUSE_HARKONNEN,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -635,7 +635,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_ORDOS,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -708,7 +708,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -781,7 +781,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -854,7 +854,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_HARKONNEN,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -927,7 +927,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ATREIDES,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -1000,7 +1000,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ATREIDES,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -1073,7 +1073,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_MERCENARY | FLAG_HOUSE_SARDAUKAR | FLAG_HOUSE_FREMEN | FLAG_HOUSE_ORDOS,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -1146,7 +1146,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -1219,7 +1219,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -1292,7 +1292,7 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
 		/* indexStart           */ 22,
-		/* indexEnd             */ 101,
+		/* indexEnd             */ 201,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ true,
@@ -1364,8 +1364,8 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* priorityTarget       */ 0,
 		/* availableHouse       */ FLAG_HOUSE_HARKONNEN,
 		},
-		/* indexStart           */ 12,
-		/* indexEnd             */ 15,
+		/* indexStart           */ 202,
+		/* indexEnd             */ 241,
 		{ /* flags */
 		/* isBullet             */ true,
 		/* explodeOnDeath       */ false,
@@ -1437,8 +1437,8 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* priorityTarget       */ 0,
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
-		/* indexStart           */ 12,
-		/* indexEnd             */ 15,
+		/* indexStart           */ 202,
+		/* indexEnd             */ 241,
 		{ /* flags */
 		/* isBullet             */ true,
 		/* explodeOnDeath       */ false,
@@ -1510,8 +1510,8 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* priorityTarget       */ 0,
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
-		/* indexStart           */ 12,
-		/* indexEnd             */ 15,
+		/* indexStart           */ 202,
+		/* indexEnd             */ 241,
 		{ /* flags */
 		/* isBullet             */ true,
 		/* explodeOnDeath       */ false,
@@ -1583,8 +1583,8 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* priorityTarget       */ 0,
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
-		/* indexStart           */ 12,
-		/* indexEnd             */ 15,
+		/* indexStart           */ 202,
+		/* indexEnd             */ 241,
 		{ /* flags */
 		/* isBullet             */ true,
 		/* explodeOnDeath       */ false,
@@ -1656,8 +1656,8 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* priorityTarget       */ 0,
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
-		/* indexStart           */ 12,
-		/* indexEnd             */ 15,
+		/* indexStart           */ 202,
+		/* indexEnd             */ 241,
 		{ /* flags */
 		/* isBullet             */ true,
 		/* explodeOnDeath       */ false,
@@ -1729,8 +1729,8 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* priorityTarget       */ 0,
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
-		/* indexStart           */ 12,
-		/* indexEnd             */ 15,
+		/* indexStart           */ 202,
+		/* indexEnd             */ 241,
 		{ /* flags */
 		/* isBullet             */ true,
 		/* explodeOnDeath       */ true,
@@ -1802,8 +1802,8 @@ UnitInfo g_table_unitInfo[UNIT_MAX] = {
 		/* priorityTarget       */ 0,
 		/* availableHouse       */ FLAG_HOUSE_ALL,
 		},
-		/* indexStart           */ 12,
-		/* indexEnd             */ 15,
+		/* indexStart           */ 202,
+		/* indexEnd             */ 241,
 		{ /* flags */
 		/* isBullet             */ false,
 		/* explodeOnDeath       */ false,

@@ -1,0 +1,357 @@
+<title>Записи боёв — OpenDUNE</title>
+<style>
+:root{
+  --ground:#EFE6D4; --surface:#F8F2E5; --sunk:#E5D9C1;
+  --ink:#241C14; --ink-soft:#6E5F49; --ink-faint:#96866D;
+  --rule:#D8CAB0; --grid:#E0D3B9;
+  --accent:#B4501A;
+  --Atreides:#2F5B8C; --Harkonnen:#9E3320; --Ordos:#3F6B4A;
+  --Fremen:#8A6A2F; --Sardaukar:#6A3C6B; --Mercenary:#7A6A55;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#13100C; --surface:#1B1611; --sunk:#0E0B08;
+    --ink:#F0E5D1; --ink-soft:#A5947A; --ink-faint:#7A6B55;
+    --rule:#332920; --grid:#241D16;
+    --accent:#D9702C;
+    --Atreides:#6FA0D8; --Harkonnen:#E0664A; --Ordos:#6DAE7E;
+    --Fremen:#C9A55C; --Sardaukar:#A97BAA; --Mercenary:#A5947A;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#13100C; --surface:#1B1611; --sunk:#0E0B08;
+  --ink:#F0E5D1; --ink-soft:#A5947A; --ink-faint:#7A6B55;
+  --rule:#332920; --grid:#241D16;
+  --accent:#D9702C;
+  --Atreides:#6FA0D8; --Harkonnen:#E0664A; --Ordos:#6DAE7E;
+  --Fremen:#C9A55C; --Sardaukar:#A97BAA; --Mercenary:#A5947A;
+}
+
+*{box-sizing:border-box}
+body{margin:0; background:var(--ground); color:var(--ink);
+  font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif; font-size:16px; line-height:1.55;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1220px; margin:0 auto; padding:40px 20px 80px; display:flex; flex-direction:column; gap:24px}
+.mono,button,.meta,.chip{font-family:ui-monospace,"SF Mono",Menlo,"DejaVu Sans Mono",monospace}
+
+header{display:flex; flex-direction:column; gap:10px; border-bottom:1px solid var(--rule); padding-bottom:20px}
+.eyebrow{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ink-faint)}
+h1{margin:0; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-weight:700;
+  font-size:clamp(23px,3.6vw,33px); line-height:1.15; letter-spacing:-.02em}
+.lede{margin:0; max-width:70ch; color:var(--ink-soft); font-size:16px}
+code{font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:.86em; background:var(--sunk);
+  padding:1px 5px; border-radius:2px}
+
+.cols{display:grid; grid-template-columns:330px minmax(0,1fr); gap:22px; align-items:start}
+@media (max-width:900px){ .cols{grid-template-columns:1fr} }
+
+/* --- match picker --- */
+.picker{display:flex; flex-direction:column; gap:8px; position:sticky; top:16px}
+.pickhead{display:flex; align-items:baseline; justify-content:space-between; gap:10px}
+.pickhead h2{margin:0; font-family:ui-monospace,Menlo,monospace; font-size:12px; font-weight:700;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--accent)}
+.pickhead .count{font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--ink-faint)}
+.list{display:flex; flex-direction:column; gap:7px; max-height:70vh; overflow-y:auto; padding-right:4px}
+
+.match{text-align:left; width:100%; background:var(--surface); border:1px solid var(--rule); border-left:3px solid var(--rule);
+  border-radius:2px; padding:9px 11px; cursor:pointer; display:flex; flex-direction:column; gap:5px; font:inherit; color:inherit}
+.match:hover{border-color:var(--ink-faint)}
+.match:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.match[aria-current="true"]{border-left-color:var(--accent); background:var(--sunk)}
+.match .vs{display:flex; align-items:center; gap:7px; font-family:ui-monospace,Menlo,monospace;
+  font-size:13px; font-weight:700; flex-wrap:wrap}
+.match .vs .sep{color:var(--ink-faint); font-weight:400}
+.match .meta{font-size:11px; color:var(--ink-faint); display:flex; gap:9px; flex-wrap:wrap}
+.match .verdict{font-family:ui-monospace,Menlo,monospace; font-size:11.5px; display:flex; align-items:center; gap:6px}
+.badge{display:inline-block; padding:1px 6px; border:1px solid currentColor; border-radius:2px;
+  font-size:10.5px; letter-spacing:.05em; text-transform:uppercase}
+.badge.draw{color:var(--ink-faint)}
+.badge.wipe{color:var(--accent)}
+
+/* --- controls + chart --- */
+.panel{display:flex; flex-direction:column; gap:12px}
+.controls{display:flex; flex-direction:column; gap:10px; padding:14px; background:var(--surface);
+  border:1px solid var(--rule); border-radius:2px}
+.grp{display:flex; flex-wrap:wrap; align-items:center; gap:7px}
+.grp > .lbl{font-family:ui-monospace,Menlo,monospace; font-size:10.5px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--ink-faint); margin-right:5px; min-width:74px}
+button{font-family:ui-monospace,Menlo,monospace; font-size:12px; background:var(--ground); color:var(--ink-soft);
+  border:1px solid var(--rule); border-radius:2px; padding:4px 10px; cursor:pointer;
+  display:inline-flex; align-items:center; gap:6px}
+button:hover{border-color:var(--ink-faint); color:var(--ink)}
+button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+button[aria-pressed="true"]{background:var(--sunk); color:var(--ink); border-color:var(--ink-faint)}
+button .dot{width:8px; height:8px; border-radius:50%; background:var(--ink-faint); flex:none}
+button[aria-pressed="true"] .dot{background:var(--accent)}
+.spacer{flex:1}
+button.plain{border-style:dashed}
+
+.chartbox{position:relative; background:var(--surface); border:1px solid var(--rule); border-radius:2px; padding:12px 12px 4px}
+canvas{display:block; width:100%; touch-action:none}
+.readout{position:absolute; top:12px; right:12px; background:var(--ground); border:1px solid var(--rule);
+  border-radius:2px; padding:8px 10px; pointer-events:none; font-family:ui-monospace,Menlo,monospace;
+  font-size:11.5px; font-variant-numeric:tabular-nums; color:var(--ink-soft); opacity:0}
+.readout.on{opacity:1}
+.readout .t{color:var(--ink); font-weight:700; margin-bottom:5px}
+.readout .r{display:grid; grid-template-columns:1fr 60px 60px; gap:0 9px; align-items:baseline}
+.readout .r b{text-align:right; color:var(--ink); font-weight:700}
+.readout .r.hd{border-bottom:1px solid var(--rule); padding-bottom:3px; margin-bottom:3px}
+.hint{color:var(--ink-faint); font-size:12.5px; margin:0}
+.summary{display:flex; flex-wrap:wrap; gap:8px 18px; font-family:ui-monospace,Menlo,monospace; font-size:12px;
+  color:var(--ink-soft); padding:0 2px}
+.summary b{color:var(--ink)}
+footer{border-top:1px solid var(--rule); padding-top:16px; color:var(--ink-faint); font-size:13px;
+  display:flex; flex-direction:column; gap:6px}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">OpenDUNE · записи боёв · собрано __GENERATED__</div>
+  <h1>Записи боёв</h1>
+  <p class="lede">Каждая запись — один матч, снятый с шагом в тиках: девять параметров по обеим
+  сторонам. Слева выбор боя, справа график. У каждого параметра своя панель в своих единицах;
+  параметры и стороны включаются и выключаются.</p>
+</header>
+
+<div class="cols">
+
+  <div class="picker">
+    <div class="pickhead">
+      <h2>Бои</h2>
+      <span class="count" id="count"></span>
+    </div>
+    <div class="list" id="list"></div>
+  </div>
+
+  <div class="panel">
+    <div class="summary" id="summary"></div>
+
+    <div class="controls">
+      <div class="grp"><span class="lbl">Стороны</span><span id="sides"></span></div>
+      <div class="grp"><span class="lbl">Параметры</span><span id="metrics"></span></div>
+      <div class="grp">
+        <span class="spacer"></span>
+        <button class="plain" id="all">все</button>
+        <button class="plain" id="none">ничего</button>
+      </div>
+    </div>
+
+    <div class="chartbox">
+      <canvas id="c" aria-label="Графики параметров боя по времени"></canvas>
+      <div class="readout" id="ro"></div>
+    </div>
+    <p class="hint">Наведите на график — точные значения на этом тике по обеим сторонам.</p>
+  </div>
+
+</div>
+
+<footer>
+  <div>Записать новый бой: <code>./opendune --skirmish=ordos,atreides --war=0,0,8919 --war-telemetry=200000,5000</code></div>
+  <div>Пересобрать эту страницу после записи: <code>python3 tools/telemetry_report.py</code></div>
+</footer>
+
+</div>
+
+<script>
+const MATCHES = __MATCHES__;
+
+const METRICS = [
+  {k:"refineries",       n:"рефайнери",        fmt:v=>v},
+  {k:"combatStructures", n:"боевые строения",  fmt:v=>v},
+  {k:"harvesters",       n:"харвестеры",       fmt:v=>v},
+  {k:"combatUnits",      n:"боевые юниты",     fmt:v=>v},
+  {k:"combatHitpoints",  n:"HP армии",         fmt:v=>v.toLocaleString("ru")},
+  {k:"damageDealt",      n:"урон за период",   fmt:v=>v.toLocaleString("ru")},
+  {k:"spiceDelta",       n:"спайс за период",  fmt:v=>v.toLocaleString("ru")},
+  {k:"credits",          n:"спайс на счету",   fmt:v=>v.toLocaleString("ru")},
+  {k:"powerSurplus",     n:"профицит энергии", fmt:v=>v}
+];
+
+const RU = {Atreides:"Атрейдес", Harkonnen:"Харконнен", Ordos:"Ордос",
+            Fremen:"Фримены", Sardaukar:"Сардаукары", Mercenary:"Наёмники"};
+const ru = h => RU[h] || h;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const houseColor = h => css("--"+h) || css("--ink-soft");
+
+let current = MATCHES[0];
+const onMetrics = new Set(METRICS.map(m=>m.k));
+let onSides = new Set(current.houses);
+let hoverIdx = -1;
+
+const cv=document.getElementById("c"), ctx=cv.getContext("2d"), ro=document.getElementById("ro");
+
+/* ---- match picker ---- */
+function buildList(){
+  const list=document.getElementById("list");
+  list.textContent="";
+  document.getElementById("count").textContent = MATCHES.length + " шт.";
+
+  MATCHES.forEach(m=>{
+    const b=document.createElement("button");
+    b.className="match";
+    b.setAttribute("aria-current", m===current ? "true":"false");
+
+    const wiped = m.wipeout[0] || m.wipeout[1];
+    const verdict = m.winner==="draw"
+      ? '<span class="badge draw">ничья</span>'
+      : '<span class="badge'+(wiped?" wipe":"")+'" style="color:'+houseColor(m.winner)+'">'
+        + (wiped ? "разгром" : "по стоимости") + '</span> <span style="color:'+houseColor(m.winner)+'">'+ru(m.winner)+'</span>';
+
+    b.innerHTML =
+      '<span class="vs">'
+      + m.houses.map(h=>'<span style="color:'+houseColor(h)+'">'+ru(h)+'</span>').join('<span class="sep">—</span>')
+      + '</span>'
+      + '<span class="verdict">'+verdict+'</span>'
+      + '<span class="meta"><span>'+m.recorded+'</span><span>армия '+m.shares[0]+'→'+m.shareLate[0]+'% / '
+      + m.shares[1]+'→'+m.shareLate[1]+'%</span><span>t'+(m.switchTick/1000)+'k</span><span>карта '+m.seed+'</span></span>';
+
+    b.onclick=()=>{ current=m; onSides=new Set(m.houses); hoverIdx=-1; readout(-1); render(); buildList(); };
+    list.appendChild(b);
+  });
+}
+
+function buildSummary(){
+  const m=current, s=document.getElementById("summary");
+  const dur = (m.endTick/1000)+"k тиков";
+  s.innerHTML =
+    m.houses.map((h,i)=>'<span><span style="color:'+houseColor(h)+'">■</span> '+ru(h)
+      +' — активов <b>'+m.values[i].toLocaleString("ru")+'</b>'+(m.wipeout[i]?" (уничтожен)":"")+'</span>').join("")
+    + '<span>длительность <b>'+dur+'</b></span>'
+    + '<span>шаг <b>'+m.step+'</b></span>'
+    + '<span>файл <b>'+m.file+'</b></span>';
+}
+
+/* ---- toggles ---- */
+function chip(label,pressed,color,onclick){
+  const b=document.createElement("button");
+  b.setAttribute("aria-pressed", pressed?"true":"false");
+  b.innerHTML='<span class="dot"'+(color&&pressed?' style="background:'+color+'"':'')+'></span>'+label;
+  b.onclick=()=>{ onclick(b.getAttribute("aria-pressed")!=="true"); render(); };
+  return b;
+}
+function buildChips(){
+  const ms=document.getElementById("metrics"), ss=document.getElementById("sides");
+  ms.textContent=""; ss.textContent="";
+  METRICS.forEach(m=>ms.appendChild(chip(m.n, onMetrics.has(m.k), null,
+    v=>{ v?onMetrics.add(m.k):onMetrics.delete(m.k); })));
+  current.houses.forEach(h=>ss.appendChild(chip(ru(h), onSides.has(h), houseColor(h),
+    v=>{ v?onSides.add(h):onSides.delete(h); })));
+}
+document.getElementById("all").onclick=()=>{ METRICS.forEach(m=>onMetrics.add(m.k)); onSides=new Set(current.houses); render(); };
+document.getElementById("none").onclick=()=>{ onMetrics.clear(); render(); };
+
+/* ---- chart ---- */
+function axisMax(v){
+  if(v<=0) return 1;
+  const e=Math.pow(10,Math.floor(Math.log10(v))), f=v/e;
+  const s = f<=1?1 : f<=1.5?1.5 : f<=2?2 : f<=2.5?2.5 : f<=3?3 : f<=4?4 : f<=5?5 : f<=8?8 : 10;
+  return Math.round(s*e);
+}
+
+function render(){
+  buildChips(); buildSummary();
+  const list=METRICS.filter(m=>onMetrics.has(m.k));
+  const sides=current.houses.filter(h=>onSides.has(h));
+  const dpr=window.devicePixelRatio||1;
+  const W=cv.parentElement.clientWidth-24;
+  const padL=54, padR=12, padT=16, padB=26, panelH=92, gap=16;
+  const H = list.length ? padT + list.length*panelH + (list.length-1)*gap + padB : 120;
+
+  cv.width=W*dpr; cv.height=H*dpr; cv.style.height=H+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  const ink=css("--ink"), soft=css("--ink-soft"), faint=css("--ink-faint"), grid=css("--grid");
+  ctx.font='11px ui-monospace, Menlo, monospace';
+  ctx.textBaseline="middle";
+
+  if(!list.length){
+    ctx.fillStyle=faint; ctx.textAlign="center";
+    ctx.fillText("выберите хотя бы один параметр", W/2, H/2);
+    return;
+  }
+
+  const T=current.samples, n=T.length;
+  const x = i => padL + (W-padL-padR)*(n>1 ? i/(n-1) : 0);
+
+  const panels=list.map((m,pi)=>{
+    const top=padT+pi*(panelH+gap);
+    let lo=0, hi=0;
+    sides.forEach(h=>current.series[h][m.k].forEach(v=>{ if(v>hi)hi=v; if(v<lo)lo=v; }));
+    hi=axisMax(hi); if(lo<0) lo=-axisMax(-lo);
+    return {m,top,h:panelH,lo,hi,y:v=>top+panelH-(v-lo)/((hi-lo)||1)*panelH};
+  });
+
+  panels.forEach(p=>{
+    ctx.strokeStyle=grid; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(padL,p.top+.5); ctx.lineTo(W-padR,p.top+.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(padL,p.top+p.h+.5); ctx.lineTo(W-padR,p.top+p.h+.5); ctx.stroke();
+    if(p.lo<0){ ctx.beginPath(); ctx.moveTo(padL,Math.round(p.y(0))+.5); ctx.lineTo(W-padR,Math.round(p.y(0))+.5); ctx.stroke(); }
+
+    ctx.fillStyle=soft; ctx.textAlign="right";
+    ctx.fillText(p.hi>=10000?(p.hi/1000)+"k":String(p.hi), padL-8, p.top+6);
+    ctx.fillText(String(p.lo), padL-8, p.top+p.h-6);
+    ctx.fillStyle=ink; ctx.textAlign="left";
+    ctx.font='700 11px ui-monospace, Menlo, monospace';
+    ctx.fillText(p.m.n, padL+6, p.top+11);
+    ctx.font='11px ui-monospace, Menlo, monospace';
+  });
+
+  panels.forEach(p=>{
+    sides.forEach(h=>{
+      ctx.strokeStyle=houseColor(h); ctx.lineWidth=1.8; ctx.lineJoin="round";
+      ctx.beginPath();
+      current.series[h][p.m.k].forEach((v,i)=>{ const yy=p.y(v); i?ctx.lineTo(x(i),yy):ctx.moveTo(x(i),yy); });
+      ctx.stroke();
+    });
+  });
+
+  ctx.fillStyle=faint; ctx.textAlign="center";
+  const stride=Math.max(1,Math.round(n/6));
+  for(let i=0;i<n;i+=stride) ctx.fillText((T[i]/1000)+"k", x(i), H-padB+12);
+
+  if(hoverIdx>=0 && hoverIdx<n){
+    ctx.strokeStyle=css("--accent"); ctx.lineWidth=1; ctx.globalAlpha=.65;
+    ctx.beginPath(); ctx.moveTo(Math.round(x(hoverIdx))+.5,padT); ctx.lineTo(Math.round(x(hoverIdx))+.5,H-padB); ctx.stroke();
+    ctx.globalAlpha=1;
+    panels.forEach(p=>sides.forEach(h=>{
+      ctx.fillStyle=houseColor(h);
+      ctx.beginPath(); ctx.arc(x(hoverIdx), p.y(current.series[h][p.m.k][hoverIdx]), 3, 0, 6.2832); ctx.fill();
+    }));
+  }
+}
+
+function readout(i){
+  const list=METRICS.filter(m=>onMetrics.has(m.k));
+  const sides=current.houses.filter(h=>onSides.has(h));
+  if(i<0 || !list.length || !sides.length){ ro.classList.remove("on"); return; }
+  let html='<div class="t">тик '+current.samples[i].toLocaleString("ru")+'</div>';
+  html+='<div class="r hd"><span></span>'+sides.map(h=>'<b style="color:'+houseColor(h)+'">'+ru(h).slice(0,4)+'</b>').join("")+'</div>';
+  list.forEach(m=>{
+    html+='<div class="r"><span>'+m.n+'</span>'+sides.map(h=>'<b>'+m.fmt(current.series[h][m.k][i])+'</b>').join("")+'</div>';
+  });
+  ro.innerHTML=html; ro.classList.add("on");
+}
+
+function pick(ev){
+  const r=cv.getBoundingClientRect();
+  const W=cv.parentElement.clientWidth-24, padL=54, padR=12;
+  const n=current.samples.length;
+  let i=Math.round((ev.clientX-r.left-padL)/((W-padL-padR)/Math.max(1,n-1)));
+  i=Math.max(0,Math.min(n-1,i));
+  if(i!==hoverIdx){ hoverIdx=i; render(); readout(i); }
+  const box=cv.parentElement.getBoundingClientRect();
+  ro.style.top=Math.max(8, Math.min(ev.clientY-box.top-24, box.height-ro.offsetHeight-8))+"px";
+}
+cv.addEventListener("pointermove", pick);
+cv.addEventListener("pointerdown", pick);
+cv.addEventListener("pointerleave", ()=>{ hoverIdx=-1; render(); readout(-1); });
+
+new ResizeObserver(()=>render()).observe(document.body);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", ()=>{ buildList(); render(); });
+
+buildList();
+render();
+</script>
