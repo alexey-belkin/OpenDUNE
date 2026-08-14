@@ -108,7 +108,8 @@ exists for exactly that; **rebuild before trusting a segfault here**, a stale
 62x62 map, puts two AI houses on it and lets the human watch. Each AI starts with
 a Construction Yard and a *plan* — the rest of its base as an ordered list of
 (type, position) it has to work through itself. It is how the AI is developed and
-judged in this fork; combat is not part of it yet. There is deliberately no menu
+judged in this fork, and the two AIs do fight: the default strategy spends nothing
+on an army until t35000 and most of its income after. There is deliberately no menu
 entry: the main menu list is sized by its first `STR_NULL`, so a sixth item makes
 the whole menu vanish on a profile that has both a savegame and a Hall of Fame.
 
@@ -122,9 +123,27 @@ with combat switched off, by simulating thousands of matches headless.
 
 `--war-matrix` / `--war-timing` put two tuned economies on one map and vary how
 much of the take each spends on its army. Fitness is not spice but the outcome,
-so the answer is a win matrix rather than a number. `--war-telemetry` records one
-match to `bin/telemetry/`; `python3 tools/telemetry_report.py` turns everything
-recorded there into `telemetry.html`. → [war.md](war.md).
+so the answer is a win matrix rather than a number. → [war.md](war.md).
+
+`--war-telemetry` records one match to `bin/telemetry/` as CSV, and
+`python3 tools/telemetry_report.py` bakes every recording into `telemetry.html`
+— a match picker with a chart. It has to bake rather than read the folder at view
+time, because a page opened from the filesystem may do neither.
+→ [telemetry.md](telemetry.md).
+
+## The unit pool is partitioned by type, and it is easy to hit
+
+There is one global pool of unit slots, and `Unit_Allocate()` does not take any
+free one: it scans only the band assigned to that unit *type*
+(`indexStart` / `indexEnd` in `g_table_unitInfo`) and fails when the band is
+full. `House.unitCountMax` is a second, weaker limit on top of it.
+
+Two consequences worth knowing before touching anything that scales the game up:
+**every ground unit of every house shares one band** — harvesters included — and
+**projectiles are units too**, with their own small band, so a bigger army does
+not deal proportionally more damage unless that band grows with it. This fork
+raised `UNIT_INDEX_MAX` to 242 and re-cut the bands; the layout, the savegame
+implications and the 254 ceiling are in [units.md](units.md).
 
 ## Verifying a change
 
@@ -171,6 +190,9 @@ leaving it running.
   found, and which drivers actually matter
 * [war.md](war.md) — the economy/army split: the budget model, the win matrix,
   and why the timing of the split beats its level
-* [units.md](units.md) / [units.html](units.html) — complete unit-type table
+* [telemetry.md](telemetry.md) — recording one match: the CSV format, the report
+  generator, and how to add a metric
+* [units.md](units.md) / [units.html](units.html) — complete unit-type table, and
+  the pool partition that caps how many units can exist at once
 * `INTERNALS.txt` — palette and file-format notes from upstream
 * `enhancement.txt` — upstream's list of deviations from the original game

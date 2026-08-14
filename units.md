@@ -52,6 +52,59 @@ and special-object types defined by the engine.
 | 25 | Sandworm | Native creature / hazard | Slither | 1000 | — | — | Swallow / bite | 300 | — | Fremen scenario unit | Can swallow units on sand; starts with three units to eat; cannot be deviated. |
 | 26 | Frigate | Transport / Starport object | Winged | 100 | — | — | None | — | — | Starport system object | Represents the ship that delivers Starport orders; not a normal combat unit. |
 
+## The pool is partitioned by unit type
+
+`UnitInfo` carries two fields the table above does not show, `indexStart` and
+`indexEnd`, and they are the most consequential numbers in the file. There is one
+global pool of unit slots, and `Unit_Allocate()`
+([src/pool/unit.c](src/pool/unit.c)) does not look for any free slot — it scans
+only the band its *type* is assigned to, and returns NULL when that band is full.
+
+So a unit cap is never one number. **`House.unitCountMax` is a second, weaker
+limit on top of the band**, and whichever binds first is the one that matters.
+
+Westwood's partition of the original 102 slots:
+
+| Slots | Types | Count |
+|---|---|---:|
+| 0-10 | Carryall, 'Thopter | 11 |
+| 11 | Frigate | 1 |
+| 12-15 | Death Hand, Rocket, ARocket, GRocket, MiniRocket, Bullet, Sonic Blast | **4** |
+| 16-17 | Sandworm | 2 |
+| 18-19 | *unused* | 2 |
+| 20-21 | Saboteur | 2 |
+| 22-101 | every ground unit: all infantry, all vehicles, Harvester, MCV | **80** |
+
+Two of those are traps for anything that scales the game up:
+
+* **80 ground slots are shared by every house on the map**, harvesters included.
+  Two AIs cannot have 50 units each no matter what their `unitCountMax` says.
+* **Four projectile slots serve the entire map.** Projectiles are units here, so
+  with four shots in the air at once a larger army does not deal proportionally
+  more damage. Raising the ground band on its own achieves nothing.
+
+### What this fork changed
+
+`UNIT_INDEX_MAX` is 242, and the bands are:
+
+| Slots | Types | Count |
+|---|---|---:|
+| 0-11, 16-21 | air, Frigate, Sandworm, Saboteur — unchanged | |
+| 22-201 | ground | **180** (90 a house) |
+| 202-241 | projectiles | **40** |
+
+Savegames store a `uint16` index and are loaded by index without a range check
+(`src/saveload/unit.c` calls `Unit_Get_ByIndex()` directly), so every existing
+save still reads — `--selection-self-test` replays five of them. Only the new high
+slots are unreachable to the unmodified game, which matters if a save written
+here is ever opened elsewhere.
+
+Anything referencing a unit through `Object.linkedID` is a `uint8` with `0xFF`
+reserved, so 254 is the hard ceiling on any further growth.
+
+The reason for the change, and the evidence that the old ceiling was binding, is
+in [war.md](war.md).
+
 ## Source
 
 The values above are taken from the unit enumeration in

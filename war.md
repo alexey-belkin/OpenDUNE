@@ -188,9 +188,9 @@ which is fair enough, since they are the summoner's doing.
 Recordings go to `telemetry/` beside the binary, one CSV per match, with the
 houses, shares, seed and the verdict in `#` comment lines. `tools/telemetry_report.py`
 bakes every recording it finds into `telemetry.html`: a match picker showing who
-played whom, when, and who won, with the chart beside it. It has to bake rather
-than load on demand because a page opened from the filesystem can neither list a
-directory nor fetch a sibling file. Re-run it after recording.
+played whom, when, and who won, with the chart beside it. The format, the
+generator and how to add a metric are specified in
+[telemetry.md](telemetry.md).
 
 ```bash
 cd bin && ./opendune --skirmish=ordos,atreides --war=0,0,8919 --war-telemetry=200000,5000
@@ -220,6 +220,9 @@ and what the sweeps above cannot:
   which is why the higher shares stop differing from each other.
 
 ## The pool was the ceiling, and it is not one number
+
+The full layout and its savegame implications are in [units.md](units.md); what
+follows is why it was raised.
 
 `h->unitCountMax` is not where the limit really lives. `Unit_Allocate()` places a
 new unit inside a band reserved for its *type* (`indexStart` / `indexEnd` in
