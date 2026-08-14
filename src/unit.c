@@ -1563,6 +1563,15 @@ static bool Unit_Harvester_ClaimedByOther(const Structure *refinery, const Unit 
 	return true;
 }
 
+/* Whether this harvester is the one holding this refinery. */
+static bool Unit_Harvester_HoldsClaim(const Structure *refinery, const Unit *unit)
+{
+	if (refinery == NULL || unit == NULL || refinery->o.index >= STRUCTURE_INDEX_MAX_SOFT) return false;
+
+	return (s_refineryClaim[refinery->o.index] == unit->o.index + 1
+		&& s_refineryClaimUntil[refinery->o.index] > g_timerGame);
+}
+
 /* Book this refinery for this harvester, so the next one to ask looks elsewhere. */
 static void Unit_Harvester_Claim(const Structure *refinery, const Unit *unit)
 {
@@ -3360,6 +3369,21 @@ uint16 Unit_FindClosestRefinery(Unit *unit)
 
 	if (unit->o.type != UNIT_HARVESTER) {
 		unit->originEncoded = Tools_Index_Encode(Tile_PackTile(unit->o.position), IT_TILE);
+		return res;
+	}
+
+	/* A choice already made is kept.
+	 *
+	 * The script asks this question again on every one of its ticks, so a
+	 * decision made here used to survive only until the next one: a harvester
+	 * that had politely gone to the second refinery was re-aimed at the nearest
+	 * one the moment the first harvester stepped inside, and the fleet collapsed
+	 * back onto one door.  Holding the claim until it stops being usable is what
+	 * makes the choice a decision instead of a suggestion. */
+	s2 = Tools_Index_GetStructure(unit->originEncoded);
+	if (s2 != NULL && s2->o.type == STRUCTURE_REFINERY && Unit_Harvester_HoldsClaim(s2, unit)
+		&& Unit_Harvester_RefineryAccepts(s2, unit)) {
+		Unit_Harvester_Claim(s2, unit);
 		return res;
 	}
 

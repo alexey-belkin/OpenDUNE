@@ -12,6 +12,7 @@
 #include "../pool/pool.h"
 #include "../pool/unit.h"
 #include "../skirmish.h"
+#include "../structure.h"
 #include "../team.h"
 #include "../tile.h"
 #include "../tools.h"
@@ -413,11 +414,32 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 
 	for (i = 0; i < count; i++) {
 		Unit *u = Unit_Get_ByIndex(order[i]);
+		uint16 mine = t->target;
 		uint16 distance;
 		uint16 packed;
+		Structure *blocker;
+
+		/* Whatever is shooting at this unit comes before the team's objective.
+		 *
+		 * A team picks its target once -- Script_Team_FindBestTarget() keeps the
+		 * one it has -- and this routine then puts every member on it.  So a team
+		 * that had settled on the Heavy Factory drove the whole length of the
+		 * defence line to reach it and died on the way without ever returning
+		 * fire, because the turret killing it was not the team's target.  A
+		 * turret close enough to be firing is this unit's problem now; the team
+		 * objective is still there afterwards. */
+		blocker = Tools_Index_GetStructure(Unit_FindBestTargetEncoded(u, 0));
+		if (blocker != NULL
+			&& (blocker->o.type == STRUCTURE_TURRET || blocker->o.type == STRUCTURE_ROCKET_TURRET)
+			&& !House_AreAllied(Unit_GetHouseID(u), blocker->o.houseID)) {
+			mine = Tools_Index_Encode(blocker->o.index, IT_STRUCTURE);
+			tile = Tools_Index_GetTile(mine);
+		} else {
+			tile = Tools_Index_GetTile(t->target);
+		}
 
 		distance = g_table_unitInfo[u->o.type].fireDistance << 8;
-		if (u->actionID == ACTION_ATTACK && u->targetAttack == t->target) {
+		if (u->actionID == ACTION_ATTACK && u->targetAttack == mine) {
 			if (u->targetMove != 0) continue;
 			if (Tile_GetDistance(u->o.position, tile) >= distance) continue;
 		}
@@ -430,7 +452,7 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 		packed = UnitSelection_SpreadTake(u, packed);
 
 		Unit_SetDestination(u, Tools_Index_Encode(packed, IT_TILE));
-		Unit_SetTarget(u, t->target);
+		Unit_SetTarget(u, mine);
 	}
 
 	return 0;
