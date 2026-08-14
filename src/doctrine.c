@@ -145,6 +145,10 @@ static uint32 s_turretZone[HOUSE_MAX];
  * quiet": ours should fall, theirs should rise. */
 static uint32 s_harvesterLost[HOUSE_MAX];
 static uint32 s_harvesterKilled[HOUSE_MAX];
+/* Harvesters lost before t100000.  The goal is zero: everything before that
+ * tick is the economy being built, and a harvester lost then is worth several
+ * lost later. */
+static uint32 s_harvesterLostEarly[HOUSE_MAX];
 
 typedef struct DoctrineHouse {
 	uint8  phase;
@@ -274,6 +278,7 @@ void Doctrine_Reset(void)
 	memset(s_turretZone, 0, sizeof(s_turretZone));
 	memset(s_harvesterLost, 0, sizeof(s_harvesterLost));
 	memset(s_harvesterKilled, 0, sizeof(s_harvesterKilled));
+	memset(s_harvesterLostEarly, 0, sizeof(s_harvesterLostEarly));
 	memset(s_danger, 0, sizeof(s_danger));
 	memset(s_dangerUntil, 0, sizeof(s_dangerUntil));
 	memset(s_house, 0, sizeof(s_house));
@@ -746,6 +751,61 @@ static void Doctrine_BuildDanger(uint8 houseID)
 		if (y > 0                && cell[i - DANGER_CELLS] < spread) cell[i - DANGER_CELLS] = (uint8)spread;
 		if (y < DANGER_CELLS - 1 && cell[i + DANGER_CELLS] < spread) cell[i + DANGER_CELLS] = (uint8)spread;
 	}
+}
+
+/**
+ * Tiles from a position to the nearest hostile thing that can shoot, capped
+ * at 99.  Exact, unlike the danger grid, because both the metric and the rule
+ * that acts on it have to agree about what "near" means.
+ */
+uint16 Doctrine_ThreatDistance(uint8 houseID, uint16 packed)
+{
+	PoolFindStruct find;
+	uint16 best = 99;
+
+	if (houseID >= HOUSE_MAX) return 99;
+
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+		uint16 d;
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap) continue;
+		if (House_AreAllied(houseID, Unit_GetHouseID(u))) continue;
+		if (!g_table_unitInfo[u->o.type].o.flags.priority) continue;
+		if (g_table_unitInfo[u->o.type].fireDistance == 0) continue;
+
+		d = Tile_GetDistancePacked(packed, Tile_PackTile(u->o.position));
+		if (d < best) best = d;
+	}
+
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+		uint16 reach, d;
+
+		if (s == NULL) break;
+
+		reach = Doctrine_TurretReach(s->o.type);
+		if (reach == 0) continue;
+		if (House_AreAllied(houseID, s->o.houseID)) continue;
+		if (s->o.flags.s.isNotOnMap) continue;
+
+		/* Measured from the edge of its reach, so "eight tiles from a turret"
+		 * means the same thing as "eight tiles from a tank". */
+		d = Tile_GetDistancePacked(packed, Tile_PackTile(s->o.position));
+		d = (d > reach) ? (uint16)(d - reach) : 0;
+		if (d < best) best = d;
+	}
+
+	return best;
 }
 
 /**
@@ -1924,6 +1984,7 @@ bool Doctrine_AllowUnit(const House *h, uint16 unitType)
 bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
 {
 	uint16 built[DOCTRINE_ROLE_MAX];
+	uint16 near8 = 0, worst = 99;
 	uint8 r;
 	uint16 i;
 
@@ -1931,28 +1992,75 @@ bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
 
 	for (r = 0; r < DOCTRINE_ROLE_MAX; r++) built[r] = 0;
 
+	Doctrine_HarvesterExposure(houseID, &near8, &worst);
+
 	for (i = 0; i < UNIT_MAX; i++) {
 		r = Doctrine_RoleOf(i);
 		if (r == DOCTRINE_ROLE_NONE) continue;
 		built[r] = (uint16)(built[r] + Skirmish_GetUnitsBuilt(houseID, i));
 	}
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         built[0], built[1], built[2], built[3],
 	         (unsigned)s_pickedRole[houseID][0], (unsigned)s_pickedRole[houseID][1],
 	         (unsigned)s_pickedRole[houseID][2], (unsigned)s_pickedRole[houseID][3],
 	         (unsigned)s_vetoedRole[houseID][0], (unsigned)s_vetoedRole[houseID][1],
 	         (unsigned)s_vetoedRole[houseID][2], (unsigned)s_vetoedRole[houseID][3],
 	         (unsigned)s_turretZone[houseID],
-	         (unsigned)s_harvesterLost[houseID], (unsigned)s_harvesterKilled[houseID]);
+	         (unsigned)s_harvesterLost[houseID], (unsigned)s_harvesterKilled[houseID],
+	         (unsigned)s_harvesterLostEarly[houseID], near8, worst);
 
 	return true;
 }
 
 void Doctrine_RecordHarvesterLoss(uint8 owner, uint8 killer)
 {
-	if (owner < HOUSE_MAX) s_harvesterLost[owner]++;
+	if (owner < HOUSE_MAX) {
+		s_harvesterLost[owner]++;
+		if (g_timerGame < 100000) s_harvesterLostEarly[owner]++;
+	}
 	if (killer < HOUSE_MAX) s_harvesterKilled[killer]++;
+}
+
+/**
+ * How close this House's harvesters are to the nearest thing that can shoot
+ * them: how many are inside eight tiles of one, and the worst single distance.
+ *
+ * Weighting danger when a field is chosen was not enough and the count says why
+ * -- a harvester picks a quiet field, settles on it, and the war arrives.  From
+ * that moment nothing re-asks the question: Unit_Harvester_Update() returns
+ * early for a harvester already standing on spice, which is exactly the one in
+ * trouble.  A number that is only sampled at the start of a trip cannot see
+ * that; this one is sampled continuously.
+ */
+void Doctrine_HarvesterExposure(uint8 houseID, uint16 *near8, uint16 *worst)
+{
+	PoolFindStruct find;
+	uint16 count = 0;
+	uint16 closest = 99;
+
+	if (near8 != NULL) *near8 = 0;
+	if (worst != NULL)  *worst = 99;
+	if (houseID >= HOUSE_MAX) return;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = UNIT_HARVESTER;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+		uint16 d;
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap) continue;
+
+		d = Doctrine_ThreatDistance(houseID, Tile_PackTile(u->o.position));
+		if (d <= 8) count++;
+		if (d < closest) closest = d;
+	}
+
+	if (near8 != NULL) *near8 = count;
+	if (worst != NULL)  *worst = closest;
 }
 
 bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)

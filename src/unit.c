@@ -347,6 +347,7 @@ typedef struct HarvesterTracker {
 	uint32 liftCheck;                /*!< Throttle for the "is a carryall free now?" retry. */
 	uint16 spiceCache;               /*!< Memo for Unit_Harvester_FindPreferredSpice(). */
 	uint16 spiceCacheCenter;         /*!< harvestCenter the memo was computed for. */
+	uint32 fleeUntil;                /*!< Next tick a threatened harvester may re-decide where to run. */
 	uint32 spiceCacheUntil;          /*!< Game time the memo expires. */
 	bool   forcedReturn;             /*!< Player pressed Return: unload even when not full. */
 } HarvesterTracker;
@@ -1470,6 +1471,11 @@ static void Unit_Harvester_AddCandidate(uint16 *candidates, uint32 *scores, uint
 	scores[insert] = score;
 }
 
+/** Tiles a harvester keeps between itself and anything that shoots: it starts
+ *  leaving at the first, and will not settle closer than the second. */
+#define HARVESTER_FLEE_TILES 12
+#define HARVESTER_SAFE_TILES 14
+
 static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, uint16 *result)
 {
 	uint16 candidates[24];
@@ -1507,6 +1513,11 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 		uint32 ticks;
 		uint16 type;
 		uint32 score;
+
+		/* The coarse grid above is cheap enough to run over four thousand tiles
+		 * and too blunt to trust with the answer; this is the exact distance, and
+		 * there are at most two dozen candidates left to ask it about. */
+		if (Doctrine_ThreatDistance(Unit_GetHouseID(unit), candidates[i]) < HARVESTER_SAFE_TILES) continue;
 
 		if (!Script_Unit_HasRoute(unit, Tile_PackTile(unit->o.position), candidates[i], &ticks)) continue;
 		type = Map_GetLandscapeType(candidates[i]);
@@ -1913,6 +1924,98 @@ static void Unit_Harvester_RetryLift(Unit *unit)
 /* The original script may start an unload trip before the cargo is full.  For
  * player harvesters, a reachable spice tile takes priority until 100%; only a
  * truly exhausted working area is allowed to trigger an early unload. */
+/**
+ * Pull a harvester out of a fight it is standing in.
+ *
+ * Weighting danger when the field is chosen is necessary and not sufficient, and
+ * the exposure counter says why: a harvester picks a quiet field, settles on it,
+ * and the war arrives.  From that moment nothing re-asks the question --
+ * Unit_Harvester_Update() returns early for a harvester already standing on
+ * spice, which is precisely the one in trouble -- so it mines until something
+ * shoots it.  Measured to t100000: one or two of them within eight tiles of an
+ * enemy at every sample from t40000 on, worst case zero tiles, thirteen to
+ * sixteen lost.
+ *
+ * Loaded, it runs home; empty, it takes the nearest field that is not in a
+ * fight.  The flee radius is wider than the distance that counts as exposure,
+ * because leaving has to start before the shooting does.
+ *
+ * @return True when the harvester was sent away and the rest of the update
+ *         should not run.
+ */
+static bool Unit_Harvester_Flee(Unit *unit)
+{
+	HarvesterTracker *tracker = &s_harvester[unit->o.index];
+	uint8 houseID;
+	uint16 spice;
+
+	if (!Skirmish_IsActive()) return false;
+
+	houseID = Unit_GetHouseID(unit);
+	if (Doctrine_GetForHouse(houseID) == DOCTRINE_LEGACY) return false;
+
+	if (Doctrine_ThreatDistance(houseID, Tile_PackTile(unit->o.position)) > HARVESTER_FLEE_TILES) return false;
+
+	/* Do not re-decide every tick: a harvester driving out of a danger zone is
+	 * still inside it for a while, and re-issuing the order each time is how it
+	 * ends up standing still in the middle of one. */
+	if (tracker->fleeUntil > g_timerGame) return true;
+	tracker->fleeUntil = g_timerGame + 120;
+
+	/* Anything in its cargo is worth more at the refinery than another
+	 * half-load is worth here. */
+	if (unit->amount > 0) {
+		Structure *refinery = Unit_Harvester_FindAvailableRefinery(unit, NULL);
+
+		if (refinery == NULL) {
+			Unit_FindClosestRefinery(unit);
+			refinery = Tools_Index_GetStructure(unit->originEncoded);
+		}
+
+		if (refinery != NULL && refinery->o.type == STRUCTURE_REFINERY) {
+			Unit_Harvester_ClearOrder(unit);
+			Unit_SetAction(unit, ACTION_MOVE);
+			Unit_SetDestination(unit, Tools_Index_Encode(refinery->o.index, IT_STRUCTURE));
+			return true;
+		}
+	}
+
+	/* Empty, or with nowhere to unload: somewhere else entirely.  The working
+	 * area goes with it, or the next trip comes straight back here. */
+	unit->harvestCenter = 0;
+	tracker->spiceCacheUntil = 0;
+
+	spice = Unit_Harvester_FindPreferredSpice(unit);
+
+	/* Nowhere safe to mine is not a reason to keep mining here.  When the whole
+	 * reachable field is in somebody's reach the harvester goes home and waits:
+	 * a parked harvester earns nothing, and a dead one earns nothing ever, plus
+	 * the three hundred credits it takes to replace it.  This is the case the
+	 * first version fell through -- seed 9001 kept two of them standing two
+	 * tiles from the enemy because the search came back empty. */
+	if (spice == 0) {
+		Structure *refinery = Unit_Harvester_FindAvailableRefinery(unit, NULL);
+
+		if (refinery == NULL) {
+			Unit_FindClosestRefinery(unit);
+			refinery = Tools_Index_GetStructure(unit->originEncoded);
+		}
+
+		if (refinery == NULL || refinery->o.type != STRUCTURE_REFINERY) return false;
+
+		Unit_Harvester_ClearOrder(unit);
+		Unit_SetAction(unit, ACTION_MOVE);
+		Unit_SetDestination(unit, Tools_Index_Encode(refinery->o.index, IT_STRUCTURE));
+
+		return true;
+	}
+
+	Unit_Harvester_ClearOrder(unit);
+	Unit_Harvester_GoToSpice(unit, spice);
+
+	return true;
+}
+
 static bool Unit_Harvester_ContinueUntilFull(Unit *unit)
 {
 	Structure *refinery;
@@ -2190,6 +2293,9 @@ static void Unit_Harvester_Update(Unit *unit)
 	if (unit->amount == 0) tracker->forcedReturn = false;
 
 	Unit_Harvester_UpdateAirlift(unit);
+	/* Before everything: the paths below all end in "keep mining", and the one
+	 * case that must not is a harvester with a tank next to it. */
+	if (Unit_Harvester_Flee(unit)) return;
 	if (Unit_Harvester_ContinueUntilFull(unit)) return;
 	Unit_Harvester_RecoverRefinery(unit);
 	Unit_Harvester_RetryLift(unit);
