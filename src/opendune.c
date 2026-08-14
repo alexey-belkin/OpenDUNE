@@ -1216,6 +1216,8 @@ static void GameLoop_Main(void)
 			if (Skirmish_GetTeams(i, line, sizeof(line))) PrintToConsole(line);
 		}
 
+		if (Skirmish_GetBystanders(line, sizeof(line))) PrintToConsole(line);
+
 		PrintToConsole("skirmish-self-test: DONE");
 		return;
 	}

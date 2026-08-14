@@ -1596,6 +1596,65 @@ bool Skirmish_GetTeams(uint8 index, char *buf, uint16 length)
 }
 
 /**
+ * Units on the map that belong to nobody playing.
+ *
+ * The Atreides Palace summons five HOUSE_FREMEN troopers on ACTION_HUNT every
+ * 300 ticks, the Ordos one a Saboteur, and the AI fires its special the moment
+ * it comes off cooldown (Structure_Update()).  They are not the summoner's
+ * units, so they cost nothing against the military share and show up under a
+ * House that has no base -- which on screen reads as an army arriving from
+ * nowhere.  Anything here is outside the experiment.
+ * @return False when there are none.
+ */
+bool Skirmish_GetBystanders(char *buf, uint16 length)
+{
+	uint16 count[HOUSE_MAX];
+	PoolFindStruct find;
+	uint16 used = 0;
+	uint16 oldValidate = g_validateStrictIfZero;
+	uint8 i;
+
+	if (!s_active || buf == NULL || length == 0) return false;
+
+	buf[0] = '\0';
+	memset(count, 0, sizeof(count));
+
+	g_validateStrictIfZero = 1;
+
+	find.houseID = HOUSE_INVALID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.houseID >= HOUSE_MAX) continue;
+		if (Skirmish_GetBase((uint8)u->o.houseID) != NULL) continue;
+
+		count[u->o.houseID]++;
+	}
+
+	g_validateStrictIfZero = oldValidate;
+
+	for (i = 0; i < HOUSE_MAX; i++) {
+		int written;
+
+		if (count[i] == 0) continue;
+		if (used + 24 >= length) break;
+
+		written = snprintf(buf + used, length - used, "%s%s %u",
+		                   (used == 0) ? "bystanders: " : ", ",
+		                   g_table_houseInfo[i].name, count[i]);
+
+		if (written <= 0) break;
+		used += (uint16)written;
+	}
+
+	return (used != 0);
+}
+
+/**
  * Draw a line per AI over the viewport, so the match can be followed without
  * clicking around.
  */

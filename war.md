@@ -160,6 +160,42 @@ So the rule the search settled on, and the default in
 `Skirmish_MakeDefaultPlan()`: **nothing on the army until the base is built,
 then most of the income.** 0% → 90% at t35000.
 
+## The Palace hands out an army the budget cannot see
+
+Every House's Palace has a special weapon, and `Structure_Update()` fires it for
+an AI the moment it comes off cooldown. Two of the three produce units:
+
+| House | Special | Cadence | Belongs to |
+|---|---|---:|---|
+| Atreides | five Trooper/Troopers on ACTION_HUNT | 300 ticks | **HOUSE_FREMEN** |
+| Ordos | a Saboteur | 300 ticks | itself |
+| Harkonnen | a Death Hand missile | 600 ticks | itself |
+
+The Atreides one is the problem. Those troopers are not Atreides units: they
+belong to a House that has no base in the match, so **nothing charges them to any
+military share**, and `House_AreAllied()` makes them permanent enemies of the
+other AI and permanent friends of the one that summoned them. A strategy that
+reaches the Palace gets a free, endlessly renewed army on top of its budget.
+
+`Skirmish_GetBystanders()` counts them; `--skirmish-self-test` prints the line at
+the end. Measured: 21 Fremen alive on the map at t400000.
+
+Two consequences, both real:
+
+* **It breaks the budget model.** The whole premise here is that a share of
+  income is the only thing separating two strategies. Free units are outside
+  that.
+* **It squeezes the unit pool.** The pool is 102 slots for the whole map, and
+  the two houses are capped at 40 each. Twenty-one bystanders is twenty-one
+  slots neither AI can build into, so the Palace also quietly throttles the
+  loser's production.
+
+The Palace is the last entry of the base plan but it is reached well inside the
+200000 tick horizon -- both houses had it up by t120000 in a spot check -- so
+this is present in the results above, not merely a risk for longer matches. The
+side swap cancels the part of it that is House identity; it does not cancel the
+free units.
+
 ## Caveats worth keeping in mind
 
 * Matches rarely end in annihilation at this horizon. Most results are value
