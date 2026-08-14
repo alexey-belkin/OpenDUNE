@@ -5844,6 +5844,11 @@ void Unit_EnterStructure(Unit *unit, Structure *s)
 	}
 
 	if (unit->o.type == UNIT_SABOTEUR) {
+		/* Counted as an attack on that structure, because it is one -- and the
+		 * only one an Ordos house can make on a turret without standing in its
+		 * fire.  Without this the turret share reads zero for the House whose
+		 * answer to a turret line does not involve shooting. */
+		Skirmish_RecordShot(Unit_GetHouseID(unit), Tools_Index_Encode(s->o.index, IT_STRUCTURE));
 		Structure_Damage(s, 500, 1);
 		Unit_Remove(unit);
 		return;

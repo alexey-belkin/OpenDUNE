@@ -315,6 +315,19 @@ static uint8 Doctrine_RoleOf(uint16 type)
 		case UNIT_SONIC_TANK:
 			return DOCTRINE_ROLE_ARTILLERY;
 
+		/* Ordos can build neither of the above -- the Launcher's availableHouse
+		 * covers everyone but Ordos, and the Sonic Tank is Atreides only -- so
+		 * the one House whose whole identity is indirection has no way to touch a
+		 * turret line without standing inside it.  Its answer is the Saboteur,
+		 * and the numbers say it is a better one: entering a structure calls
+		 * Structure_Damage(s, 500), against a Rocket Turret's 200 hitpoints, so
+		 * one of them removes any turret in the game outright.  It walks at 17.5
+		 * on sand, faster than a Tank, and Unit_GetTileSpeed() gives it 255
+		 * through a wall.  It is artillery that costs itself instead of costing
+		 * time. */
+		case UNIT_SABOTEUR:
+			return DOCTRINE_ROLE_ARTILLERY;
+
 		case UNIT_TANK:
 		case UNIT_SIEGE_TANK:
 		case UNIT_DEVIATOR:
@@ -350,6 +363,16 @@ static uint16 Doctrine_Speed(uint16 type)
 	uint16 speed = (uint16)((uint32)ground * ui->movingSpeedFactor / 256);
 
 	return (speed == 0) ? 1 : speed;
+}
+
+/** Whether an encoded index names a turret. */
+static bool Doctrine_IsTurret(uint16 encoded)
+{
+	const Structure *s = Tools_Index_GetStructure(encoded);
+
+	if (s == NULL) return false;
+
+	return (s->o.type == STRUCTURE_TURRET || s->o.type == STRUCTURE_ROCKET_TURRET);
 }
 
 static bool Doctrine_IsAttacker(uint8 role)
@@ -800,6 +823,7 @@ static uint16 Doctrine_CountReserve(uint8 houseID, uint32 *hitpoints)
 		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
 		if (s_unitOnWave[u->o.index] != 0) continue;
 		if (!Doctrine_IsAttacker(s_unitRole[u->o.index])) continue;
+		if (u->o.type == UNIT_SABOTEUR) continue;                  /* Never part of a muster. */
 
 		count++;
 		if (hitpoints != NULL) *hitpoints += u->o.hitpoints;
@@ -930,6 +954,7 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 		if (u == NULL) break;
 		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
 		if (!Doctrine_IsAttacker(s_unitRole[u->o.index])) continue;
+		if (u->o.type == UNIT_SABOTEUR) continue;
 		if (taken + keep >= reserve) break;
 
 		s_unitOnWave[u->o.index] = 1;
@@ -1135,6 +1160,14 @@ static void Doctrine_PhaseSuppress(uint8 houseID, DoctrineHouse *dh)
 
 		if (u == NULL) continue;
 
+		/* A Saboteur has no standoff -- its weapon is arriving. */
+		if (u->o.type == UNIT_SABOTEUR) {
+			if (u->actionID != ACTION_SABOTAGE) Unit_SetAction(u, ACTION_SABOTAGE);
+			Unit_SetTarget(u, turret);
+			Unit_SetDestination(u, turret);
+			continue;
+		}
+
 		reach = g_table_unitInfo[u->o.type].fireDistance;
 		stand = Tile_MoveByDirection(Tile_UnpackTile(turretPacked),
 		                             Tile_GetDirection(Tile_UnpackTile(turretPacked), u->o.position),
@@ -1268,6 +1301,7 @@ static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
 		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
 		if (s_unitOnWave[u->o.index] != 0) continue;
 		if (s_unitRole[u->o.index] == DOCTRINE_ROLE_NONE) continue;
+		if (u->o.type == UNIT_SABOTEUR) continue;                  /* Has its own errand. */
 
 		/* Shooting at something is the job; do not interrupt it. */
 		if (Tools_Index_IsValid(u->targetAttack)) continue;
@@ -1302,6 +1336,53 @@ static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
  * idea about what a reserve ought to be doing.
  */
 
+/**
+ * Send every Saboteur at the turret in the way, the moment it exists.
+ *
+ * They are not built and cannot be planned for: the Palace spawns one on its own
+ * countdown and hands it ACTION_SABOTAGE, whereupon UNIT.EMC picks a target with
+ * Unit_FindBestTargetEncoded(mode 4) -- highest priority over the whole map,
+ * divided by distance.  From inside its own base that is a lottery over
+ * everything the enemy owns, and it is usually spent on whatever happens to sit
+ * on the near edge.
+ *
+ * Spent on a Rocket Turret instead it is worth 250 credits of defence and the
+ * wave behind it gets through.  So they are never held for a muster -- a free
+ * unit that arrives on a timer should leave on the same timer -- and they are
+ * aimed at the turret nearest the line of departure, which is by construction
+ * the one the wave is about to meet.
+ */
+static void Doctrine_Saboteurs(uint8 houseID, DoctrineHouse *dh)
+{
+	PoolFindStruct find;
+	uint16 aim = (dh->ldPacked != 0) ? dh->ldPacked : dh->musterPacked;
+	uint16 turret;
+
+	if (aim == 0) return;
+
+	turret = Doctrine_NearestTurret(houseID, aim, NULL);
+	if (turret == 0) return;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = UNIT_SABOTEUR;
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+
+		/* Already walking into a turret: leave it alone.  Re-aiming one in
+		 * transit is how it ends up circling between two of them. */
+		if (u->targetMove != 0 && Doctrine_IsTurret(u->targetMove)) continue;
+
+		if (u->actionID != ACTION_SABOTAGE) Unit_SetAction(u, ACTION_SABOTAGE);
+		Unit_SetTarget(u, turret);
+		Unit_SetDestination(u, turret);
+	}
+}
+
 void Doctrine_Tick(House *h)
 {
 	uint8 houseID;
@@ -1331,6 +1412,7 @@ void Doctrine_Tick(House *h)
 	}
 
 	Doctrine_Rally(houseID, dh);
+	Doctrine_Saboteurs(houseID, dh);
 
 }
 
