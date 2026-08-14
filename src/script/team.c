@@ -205,23 +205,42 @@ uint16 Script_Team_Unknown0543(ScriptEngine *script)
 	uint16 distance;
 	PoolFindStruct find;
 
+	uint16 order[TEAM_MEMBERS_MAX];
+	uint16 members = 0;
+	uint16 rallyPacked;
+	uint16 i;
+
 	t = g_scriptCurrentTeam;
 	distance = STACK_PEEK(1);
+	rallyPacked = Tile_PackTile(t->position);
 
 	find.houseID = t->houseID;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
 
-	while (true) {
+	while (members < TEAM_MEMBERS_MAX) {
 		Unit *u;
-		tile32 tile;
-		uint16 distanceUnitDest;
-		uint16 distanceUnitTeam;
-		uint16 distanceTeamDest;
 
 		u = Unit_Find(&find);
 		if (u == NULL) break;
 		if (t->index != u->team - 1) continue;
+
+		order[members++] = u->o.index;
+	}
+
+	/* Same positioning as the attack below: a stragger is called in to a tile of
+	 * its own next to the team's centre of mass.  It used to be a fresh random
+	 * tile within the gather radius each time the script looked, which is why a
+	 * team forming up wandered instead of closing ranks. */
+	UnitSelection_SortOrderByDistance(order, members, rallyPacked);
+	UnitSelection_SpreadReset();
+
+	for (i = 0; i < members; i++) {
+		Unit *u = Unit_Get_ByIndex(order[i]);
+		tile32 tile;
+		uint16 distanceUnitDest;
+		uint16 distanceUnitTeam;
+		uint16 distanceTeamDest;
 
 		tile = Tools_Index_GetTile(u->targetMove);
 		distanceUnitTeam = Tile_GetDistanceRoundedUp(u->o.position, t->position);
@@ -237,9 +256,7 @@ uint16 Script_Team_Unknown0543(ScriptEngine *script)
 		if ((distanceUnitDest < distanceTeamDest && (distance + 2) < distanceUnitTeam) || (distanceUnitDest >= distanceTeamDest && distanceUnitTeam > distance)) {
 			Unit_SetAction(u, ACTION_MOVE);
 
-			tile = Tile_MoveByRandom(t->position, distance << 4, true);
-
-			Unit_SetDestination(u, Tools_Index_Encode(Tile_PackTile(tile), IT_TILE));
+			Unit_SetDestination(u, Tools_Index_Encode(UnitSelection_SpreadTake(u, rallyPacked), IT_TILE));
 			count++;
 			continue;
 		}
@@ -356,6 +373,10 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 {
 	Team *t;
 	tile32 tile;
+	uint16 order[TEAM_MEMBERS_MAX];
+	uint16 count = 0;
+	uint16 targetPacked;
+	uint16 i;
 	PoolFindStruct find;
 
 	VARIABLE_NOT_USED(script);
@@ -364,24 +385,36 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 	if (t->target == 0) return 0;
 
 	tile = Tools_Index_GetTile(t->target);
+	targetPacked = Tile_PackTile(tile);
 
 	find.houseID = t->houseID;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
 
-	while (true) {
+	while (count < TEAM_MEMBERS_MAX) {
 		Unit *u;
-		uint16 distance;
-		uint16 packed;
-		int16 orientation;
 
 		u = Unit_Find(&find);
 		if (u == NULL) break;
 		if (u->team - 1 != t->index) continue;
-		if (t->target == 0) {
-			Unit_SetAction(u, ACTION_GUARD);
-			continue;
-		}
+
+		order[count++] = u->o.index;
+	}
+
+	/* Give the team the same firing line the player's group orders get.  The
+	 * original picked each unit's stand-off tile as a quadrant of the bearing
+	 * plus up to half a turn of noise, re-rolled on every script tick, and fell
+	 * back to the target's own tile whenever that landed on something -- so the
+	 * team converged into a shoving heap on top of what it was shooting at and
+	 * never settled.  Sorted by distance and one claimed tile each, they arrive
+	 * as an arc facing the target and stay put. */
+	UnitSelection_SortOrderByDistance(order, count, targetPacked);
+	UnitSelection_SpreadReset();
+
+	for (i = 0; i < count; i++) {
+		Unit *u = Unit_Get_ByIndex(order[i]);
+		uint16 distance;
+		uint16 packed;
 
 		distance = g_table_unitInfo[u->o.type].fireDistance << 8;
 		if (u->actionID == ACTION_ATTACK && u->targetAttack == t->target) {
@@ -391,17 +424,12 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 
 		if (u->actionID != ACTION_ATTACK) Unit_SetAction(u, ACTION_ATTACK);
 
-		orientation = (Tile_GetDirection(tile, u->o.position) & 0xC0) + Tools_RandomLCG_Range(0, 127);
-		if (orientation < 0) orientation += 256;
+		/* Stand off along the bearing the unit is already on, so nobody crosses
+		 * the target to reach its post. */
+		packed = Tile_PackTile(Tile_MoveByDirection(tile, Tile_GetDirection(tile, u->o.position), distance));
+		packed = UnitSelection_SpreadTake(u, packed);
 
-		packed = Tile_PackTile(Tile_MoveByDirection(tile, orientation, distance));
-
-		if (Object_GetByPackedTile(packed) == NULL) {
-			Unit_SetDestination(u, Tools_Index_Encode(packed, IT_TILE));
-		} else {
-			Unit_SetDestination(u, Tools_Index_Encode(Tile_PackTile(tile), IT_TILE));
-		}
-
+		Unit_SetDestination(u, Tools_Index_Encode(packed, IT_TILE));
 		Unit_SetTarget(u, t->target);
 	}
 

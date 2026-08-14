@@ -5,6 +5,10 @@
 
 #include "script/script.h"
 
+/** Members one team is positioned as a group.  Above the largest team the
+ *  skirmish AI raises, and only a bound on the ordering scratch buffer. */
+#define TEAM_MEMBERS_MAX 32
+
 /**
  * Types of TeamActions available in the game.
  */

@@ -315,6 +315,12 @@ extern ActionType UnitSelection_GetActionForSlot(uint16 slot);
 extern ActionType UnitSelection_GetSpecialAction(void);
 extern void UnitSelection_IssueDefaultOrder(uint16 packed);
 extern void UnitSelection_IssueOrder(struct Unit *unit, ActionType action, uint16 packed);
+/* Group positioning.  Written for the player's group orders, and shared with the
+ * AI's teams -- a formation is a formation whoever asked for it.  Reset once,
+ * sort the recipients, then claim one tile per unit. */
+extern void UnitSelection_SpreadReset(void);
+extern uint16 UnitSelection_SpreadTake(struct Unit *unit, uint16 packed);
+extern void UnitSelection_SortOrderByDistance(uint16 *order, uint16 count, uint16 packed);
 extern void Unit_Harvester_BeginOrder(struct Unit *unit, ActionType action);
 extern void UnitSelection_OrderHunt(void);
 extern bool UnitSelection_BeginAirTransit(void);

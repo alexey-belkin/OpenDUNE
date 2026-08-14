@@ -71,10 +71,29 @@
 #define SKIRMISH_CAMPAIGN 8
 
 /** Size of the rock plateau carved out for one base. */
-#define SKIRMISH_BASE_WIDTH  20
-#define SKIRMISH_BASE_HEIGHT 16
+#define SKIRMISH_BASE_WIDTH  24
+#define SKIRMISH_BASE_HEIGHT 20
 /** Middle of the 62x62 map, which is what a base is oriented against. */
 #define SKIRMISH_MAP_CENTER  31
+
+/**
+ * Depth of the band kept clear along the two edges facing the middle of the map.
+ * Buildings start behind it; the defence line is built into it.
+ *
+ * Without the band the Construction Yard sat on the corner nearest the enemy and
+ * the first thing an attack met was the Yard itself.  Four tiles is two lines
+ * with a tile of daylight: a picket of walls right on the edge and the turrets
+ * behind it, still inside the plateau so nothing degrades on sand.
+ */
+#define SKIRMISH_BASE_DEFENCE 4
+#define SKIRMISH_DEFENCE_WALL_INSET   0
+#define SKIRMISH_DEFENCE_TURRET_INSET 2
+/**
+ * Gap between two neighbours on a defence line.  Deliberately not 1: a solid
+ * wall would seal the base, and the units inside -- harvesters included -- would
+ * have nowhere to drive out.  A picket absorbs a charge without being a gate.
+ */
+#define SKIRMISH_DEFENCE_SPACING      2
 
 typedef struct SkirmishPlanEntry {
 	uint8  type;                                            /*!< StructureType to build. */
@@ -111,6 +130,8 @@ typedef struct SkirmishBase {
 	 * (0,0) is the corner of the rectangle facing the middle of the map. */
 	uint16 cursorX, cursorY;
 	uint16 rowHeight;
+	/* Slots handed out on the two defence lines, walls and turrets separately. */
+	uint16 defenceWall, defenceTurret;
 } SkirmishBase;
 
 static bool s_active = false;
@@ -167,8 +188,51 @@ static const uint8 s_blueprint[] = {
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_HOUSE_OF_IX,
-	STRUCTURE_PALACE
+	STRUCTURE_PALACE,
+
+	/* The forward line, and it is deliberately long.  A pair of turrets is a
+	 * speed bump; what stops a team is enough of them that the team dies inside
+	 * their combined range, and they are cheap next to the tanks they kill -- a
+	 * Rocket Turret is 250 credits against a Siege Tank's 600.
+	 *
+	 * Walls interleave with them rather than going up first: a wall on its own
+	 * kills nothing, it only buys the turrets behind it another few seconds of
+	 * shooting.  Every entry here is military spending, so the whole line waits
+	 * behind the same budget switch the army does -- see Skirmish_War_Charge(). */
+	STRUCTURE_WINDTRAP,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_WALL,
+	STRUCTURE_WALL,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_WALL,
+	STRUCTURE_WALL,
+	STRUCTURE_WINDTRAP,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_WALL,
+	STRUCTURE_WALL,
+	STRUCTURE_TURRET,
+	STRUCTURE_TURRET,
+	STRUCTURE_WALL,
+	STRUCTURE_WALL,
+	STRUCTURE_WINDTRAP,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_ROCKET_TURRET,
+	STRUCTURE_WALL,
+	STRUCTURE_WALL,
+	STRUCTURE_TURRET,
+	STRUCTURE_TURRET,
+	STRUCTURE_WALL,
+	STRUCTURE_WALL
 };
+
+/** Whether a structure belongs on the forward line rather than in the base. */
+static bool Skirmish_IsDefenceStructure(uint8 type)
+{
+	return (type == STRUCTURE_WALL || type == STRUCTURE_TURRET || type == STRUCTURE_ROCKET_TURRET);
+}
 
 /**
  * Which side of the ledger a structure falls on.
@@ -183,6 +247,7 @@ static bool Skirmish_IsMilitaryStructure(uint8 type)
 	switch (type) {
 		case STRUCTURE_BARRACKS:
 		case STRUCTURE_WOR_TROOPER:
+		case STRUCTURE_WALL:
 		case STRUCTURE_TURRET:
 		case STRUCTURE_ROCKET_TURRET:
 		case STRUCTURE_REPAIR:
@@ -473,32 +538,72 @@ static void Skirmish_CarveRock(const SkirmishBase *b)
  * every trip, for the whole match.
  * @return The packed top-left tile, or 0xFFFF when the base is full.
  */
+/**
+ * Turn a base-local slot into the packed map tile it stands on.
+ *
+ * A western base grows east to west, so its slots are counted back from the
+ * eastern edge; a structure is anchored by its top-left tile, so a mirrored slot
+ * steps back by its own size as well.
+ */
+static uint16 Skirmish_Layout_Map(const SkirmishBase *b, uint16 lx, uint16 ly, uint16 width, uint16 height)
+{
+	const uint16 x = b->eastSide  ? (b->rectX + lx) : (b->rectX + SKIRMISH_BASE_WIDTH  - lx - width);
+	const uint16 y = b->southSide ? (b->rectY + ly) : (b->rectY + SKIRMISH_BASE_HEIGHT - ly - height);
+
+	return Tile_PackXY(x, y);
+}
+
+/**
+ * Reserve the next slot on the forward defence line.
+ *
+ * Two lines run along the two edges of the plateau that face the middle of the
+ * map: walls right on the edge, turrets a couple of tiles behind them.  Slots
+ * alternate between the two arms of that L so both faces of the base thicken
+ * together instead of one being finished before the other is started.
+ * @return The packed tile, or 0xFFFF when the line is full.
+ */
+static uint16 Skirmish_Layout_Defence(SkirmishBase *b, uint8 type)
+{
+	const bool wall  = (type == STRUCTURE_WALL);
+	const uint16 inset = wall ? SKIRMISH_DEFENCE_WALL_INSET : SKIRMISH_DEFENCE_TURRET_INSET;
+	uint16 *slot = wall ? &b->defenceWall : &b->defenceTurret;
+	uint16 lx, ly;
+
+	if ((*slot & 1) == 0) {
+		lx = inset + (*slot >> 1) * SKIRMISH_DEFENCE_SPACING;
+		ly = inset;
+	} else {
+		lx = inset;
+		ly = inset + ((*slot >> 1) + 1) * SKIRMISH_DEFENCE_SPACING;
+	}
+
+	if (lx >= SKIRMISH_BASE_WIDTH || ly >= SKIRMISH_BASE_HEIGHT) return 0xFFFF;
+
+	(*slot)++;
+
+	return Skirmish_Layout_Map(b, lx, ly, 1, 1);
+}
+
 static uint16 Skirmish_Layout_Next(SkirmishBase *b, uint8 type)
 {
 	const StructureInfo *si = &g_table_structureInfo[type];
 	const XYSize *size = &g_table_structure_layoutSize[si->layout];
-	uint16 x, y;
+	uint16 lx;
 
 	if (b->cursorX + size->width > SKIRMISH_BASE_WIDTH) {
-		b->cursorX   = 0;
+		b->cursorX   = SKIRMISH_BASE_DEFENCE;
 		b->cursorY  += b->rowHeight + 1;
 		b->rowHeight = 0;
 	}
 
 	if (b->cursorY + size->height > SKIRMISH_BASE_HEIGHT) return 0xFFFF;
 
-	/* A western base grows east to west, so its slots are counted back from the
-	 * eastern edge; a structure is anchored by its top-left tile, so a mirrored
-	 * slot steps back by its own size as well. */
-	x = b->eastSide ? (b->rectX + b->cursorX)
-	                : (b->rectX + SKIRMISH_BASE_WIDTH  - b->cursorX - size->width);
-	y = b->southSide ? (b->rectY + b->cursorY)
-	                 : (b->rectY + SKIRMISH_BASE_HEIGHT - b->cursorY - size->height);
+	lx = b->cursorX;
 
 	b->cursorX  += size->width + 1;
 	b->rowHeight = max(b->rowHeight, size->height);
 
-	return Tile_PackXY(x, y);
+	return Skirmish_Layout_Map(b, lx, b->cursorY, size->width, size->height);
 }
 
 /**
@@ -543,8 +648,10 @@ static void Skirmish_Plan_Create(SkirmishBase *b)
 {
 	uint8 i;
 
-	b->cursorX   = 0;
-	b->cursorY   = 0;
+	/* Behind the defence band, not on the corner: the band is what the enemy
+	 * arrives at, and it belongs to the walls and turrets. */
+	b->cursorX   = SKIRMISH_BASE_DEFENCE;
+	b->cursorY   = SKIRMISH_BASE_DEFENCE;
 	b->rowHeight = 0;
 
 	/* The Construction Yard is the only structure that exists from the start;
@@ -562,8 +669,15 @@ static void Skirmish_Plan_Create(SkirmishBase *b)
 		if (type >= STRUCTURE_MAX) continue;
 		if ((g_table_structureInfo[type].o.availableHouse & (1 << b->houseID)) == 0) continue;
 
-		position = Skirmish_Layout_Next(b, type);
-		if (position == 0xFFFF) break;
+		if (Skirmish_IsDefenceStructure(type)) {
+			position = Skirmish_Layout_Defence(b, type);
+			/* A full defence line is not a full base: keep reading the plan, the
+			 * economy behind it still has room. */
+			if (position == 0xFFFF) continue;
+		} else {
+			position = Skirmish_Layout_Next(b, type);
+			if (position == 0xFFFF) break;
+		}
 
 		b->entries[b->entryCount].type     = type;
 		b->entries[b->entryCount].taken    = false;
@@ -763,7 +877,9 @@ uint16 Skirmish_Plan_TakePosition(House *h, uint8 structureType)
 		e->taken = true;
 		if (b->historyCount < SKIRMISH_PLAN_MAX) b->history[b->historyCount++] = structureType;
 
-		Skirmish_LaySlabs(h, e->position, structureType);
+		/* A wall replaces the ground tile it stands on, so concrete under one is
+		 * paid for and immediately overwritten. */
+		if (structureType != STRUCTURE_WALL) Skirmish_LaySlabs(h, e->position, structureType);
 
 		return e->position;
 	}
@@ -1286,9 +1402,11 @@ static bool Skirmish_StartInternal(uint8 houseID1, uint8 houseID2, uint32 seed, 
 
 	s_active = true;
 
+	/* Two plateaus plus the jitter have to fit across 62 tiles without meeting in
+	 * the middle: 2*(2 + 4 + 24) is 60. */
 	margin  = 2;
-	jitterX = Tools_RandomLCG_Range(0, 6);
-	jitterY = Tools_RandomLCG_Range(0, 6);
+	jitterX = Tools_RandomLCG_Range(0, 4);
+	jitterY = Tools_RandomLCG_Range(0, 4);
 
 	if (houseID2 == HOUSE_INVALID) {
 		/* Solo: the base sits in a corner all the same, so a plan is scored on

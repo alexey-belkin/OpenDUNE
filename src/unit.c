@@ -2093,7 +2093,7 @@ static bool UnitSelection_IsAdvanceTarget(uint16 packed)
 static uint16 s_spreadTiles[UNIT_SELECTION_MAX];
 static uint16 s_spreadCount = 0;
 
-static void UnitSelection_SpreadReset(void)
+void UnitSelection_SpreadReset(void)
 {
 	s_spreadCount = 0;
 }
@@ -2103,7 +2103,7 @@ static void UnitSelection_SpreadReset(void)
  * is the single admissibility test: it already rejects impassable ground and
  * tiles held by another unit, while leaving the caller's own tile usable - a
  * unit already standing in the target area simply keeps its place. */
-static uint16 UnitSelection_SpreadTake(Unit *unit, uint16 packed)
+uint16 UnitSelection_SpreadTake(Unit *unit, uint16 packed)
 {
 	uint16 unitPacked;
 	uint16 radius;
@@ -2158,7 +2158,7 @@ static uint16 UnitSelection_SpreadTake(Unit *unit, uint16 packed)
 /* Order the recipients of a group order by their distance to its target point,
  * so the nearest unit claims the nearest tile.  Handing tiles out in selection
  * order instead makes the group walk through itself. */
-static void UnitSelection_SortOrderByDistance(uint16 *order, uint16 count, uint16 packed)
+void UnitSelection_SortOrderByDistance(uint16 *order, uint16 count, uint16 packed)
 {
 	uint16 i;
 

@@ -9,8 +9,10 @@ struct Structure;
 /** Number of houses taking part in a skirmish. */
 #define SKIRMISH_PLAYER_MAX 2
 
-/** Longest base plan a skirmish house can be given. */
-#define SKIRMISH_PLAN_MAX 32
+/** Longest base plan a skirmish house can be given.  Most of the room above the
+ *  two dozen buildings of an economy is the defence line, which is many cheap
+ *  entries rather than a few expensive ones. */
+#define SKIRMISH_PLAN_MAX 64
 
 /**
  * An economy opening under test: what to build, in which order, and how many
