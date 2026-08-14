@@ -125,6 +125,11 @@ static uint16 s_starportBought[HOUSE_MAX][2];               /*!< [0] harvesters,
  * them and missing" look identical on screen; these tell them apart. */
 static uint16 s_killedByFire[HOUSE_MAX];
 static uint16 s_killedByTracks[HOUSE_MAX];
+/* Hitpoints knocked off this House's own units and structures, cumulative.  In a
+ * two-house match "damage this House took" is "damage the other House dealt",
+ * which is the only way to attribute it at all: neither Unit_Damage() nor
+ * Structure_Damage() is told who fired. */
+static uint32 s_damageTaken[HOUSE_MAX];
 
 /**
  * The base build order.  It is deliberately prerequisite-consistent top to
@@ -280,6 +285,7 @@ void Skirmish_Reset(void)
 	memset(s_starportBought, 0, sizeof(s_starportBought));
 	memset(s_killedByFire, 0, sizeof(s_killedByFire));
 	memset(s_killedByTracks, 0, sizeof(s_killedByTracks));
+	memset(s_damageTaken, 0, sizeof(s_damageTaken));
 }
 
 static SkirmishBase *Skirmish_GetBase(uint8 houseID)
@@ -1597,6 +1603,88 @@ bool Skirmish_GetTeams(uint8 index, char *buf, uint16 length)
 		if (written <= 0) break;
 		used += (uint16)written;
 	}
+
+	return true;
+}
+
+void Skirmish_RecordDamage(uint8 houseID, uint16 damage)
+{
+	if (!s_active || houseID >= HOUSE_MAX) return;
+
+	s_damageTaken[houseID] += damage;
+}
+
+/**
+ * One sampled row of a match, for plotting how it actually went.
+ *
+ * Every counter here is a level except the last two, which are cumulative on
+ * purpose: a rate is the difference between two samples, and taking the
+ * difference of a running total is exact, while sampling a rate directly would
+ * miss whatever happened between two samples.
+ *
+ * @return False when there is no such skirmish house.
+ */
+bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
+{
+	const SkirmishBase *b;
+	const House *h;
+	PoolFindStruct find;
+	uint16 refineries = 0;
+	uint16 combatStructures = 0;
+	uint16 combatUnits = 0;
+	uint32 combatHitpoints = 0;
+	uint16 oldValidate = g_validateStrictIfZero;
+
+	if (!s_active || index >= SKIRMISH_PLAYER_MAX || buf == NULL) return false;
+
+	b = &s_bases[index];
+	if (b->entryCount == 0) return false;
+
+	h = House_Get_ByIndex(b->houseID);
+
+	find.houseID = b->houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+
+		if (s == NULL) break;
+		if (s->o.flags.s.isNotOnMap) continue;
+
+		if (s->o.type == STRUCTURE_REFINERY) refineries++;
+		if (Skirmish_IsMilitaryStructure((uint8)s->o.type)) combatStructures++;
+	}
+
+	/* Count the ones inside a refinery or a repair bay too: they are alive, and
+	 * a fleet that vanishes at every unload is not a useful curve. */
+	g_validateStrictIfZero = 1;
+
+	find.houseID = b->houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (!Skirmish_IsMilitaryUnit(u->o.type)) continue;
+		if (!g_table_unitInfo[u->o.type].o.flags.priority) continue;   /* Bullets are not an army. */
+
+		combatUnits++;
+		combatHitpoints += u->o.hitpoints;
+	}
+
+	g_validateStrictIfZero = oldValidate;
+
+	snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%d",
+	         g_table_houseInfo[b->houseID].name,
+	         refineries, combatStructures,
+	         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER),
+	         combatUnits, (unsigned)combatHitpoints,
+	         (unsigned)s_damageTaken[b->houseID],
+	         (unsigned)s_harvested[b->houseID],
+	         (int)h->powerProduction - (int)h->powerUsage);
 
 	return true;
 }

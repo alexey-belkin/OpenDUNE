@@ -4025,6 +4025,10 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 
 	if (unit->o.hitpoints != 0) alive = true;
 
+	if (Skirmish_IsActive()) {
+		Skirmish_RecordDamage(Unit_GetHouseID(unit), min(damage, unit->o.hitpoints));
+	}
+
 	if (unit->o.hitpoints >= damage) {
 		unit->o.hitpoints -= damage;
 	} else {

@@ -132,6 +132,9 @@ static bool s_warMatrix = false;
 static bool s_warTiming = false;
 static bool s_warLadder = false;
 static bool s_warPlay = false;
+static bool s_warTelemetry = false;
+static uint16 s_warTelemetryStep = 5000;
+static uint32 s_warSwitchTick = 30000;
 static uint32 s_warTicks = 150000;
 static uint16 s_warMaps = 2;
 static uint16 s_warPlayShare[SKIRMISH_PLAYER_MAX] = { 45, 45 };
@@ -1141,7 +1144,7 @@ static void GameLoop_Main(void)
 	}
 
 	if (s_ecoBaseline || s_ecoSearch || s_ecoGrid || s_ecoQueue || s_ecoCarryall ||
-	    s_warMatrix || s_warTiming || s_warLadder) {
+	    s_warMatrix || s_warTiming || s_warLadder || s_warTelemetry) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
 
@@ -1153,6 +1156,7 @@ static void GameLoop_Main(void)
 		if (s_warMatrix) WarSearch_RunMatrix(s_warTicks, s_warMaps);
 		if (s_warTiming) WarSearch_RunTiming(s_warTicks, s_warMaps);
 		if (s_warLadder) WarSearch_RunLadder(s_warTicks, s_warMaps);
+		if (s_warTelemetry) WarSearch_RunTelemetry(s_warTicks, s_warTelemetryStep, s_warPlayShare[0], s_warPlayShare[1], s_warSwitchTick, s_warPlaySeed);
 		return;
 	}
 
@@ -1757,6 +1761,9 @@ int main(int argc, char **argv)
 			} else if (strncmp(argv[i], "--war-timing", 12) == 0) {
 				s_warTiming = true;
 				if (argv[i][12] == '=') sscanf(argv[i] + 13, "%u,%hu", &s_warTicks, &s_warMaps);
+			} else if (strncmp(argv[i], "--war-telemetry", 15) == 0) {
+				s_warTelemetry = true;
+				if (argv[i][15] == '=') sscanf(argv[i] + 16, "%u,%hu,%u", &s_warTicks, &s_warTelemetryStep, &s_warPlaySeed);
 			} else if (strncmp(argv[i], "--war-ladder", 12) == 0) {
 				s_warLadder = true;
 				if (argv[i][12] == '=') sscanf(argv[i] + 13, "%u,%hu", &s_warTicks, &s_warMaps);

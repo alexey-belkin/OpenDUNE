@@ -8,6 +8,7 @@
 extern void WarSearch_SetTrace(bool trace);
 extern void WarSearch_MakePlan(uint16 share, uint16 shareLate, uint32 switchTick, SkirmishEconomyPlan *out);
 extern void WarSearch_RunMatrix(uint32 ticks, uint16 maps);
+extern void WarSearch_RunTelemetry(uint32 ticks, uint16 step, uint16 shareA, uint16 shareB, uint32 switchTick, uint32 seed);
 extern void WarSearch_RunTiming(uint32 ticks, uint16 maps);
 extern void WarSearch_RunLadder(uint32 ticks, uint16 maps);
 

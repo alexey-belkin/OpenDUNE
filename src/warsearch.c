@@ -246,6 +246,61 @@ static uint16 WarSearch_Duel(const SkirmishEconomyPlan *planA, const SkirmishEco
 }
 
 /**
+ * Play one match and print a sampled row per house per step, as CSV.
+ *
+ * This is the only entry point here that is not comparing anything: it exists to
+ * make the shape of a single match legible -- when the refineries go up, when the
+ * army appears, where the damage is actually being done -- rather than to score
+ * it.  Everything is a level except damage and spice, which are running totals so
+ * that a rate is an exact difference between two samples rather than whatever the
+ * sampler happened to catch.
+ */
+void WarSearch_RunTelemetry(uint32 ticks, uint16 step, uint16 shareA, uint16 shareB, uint32 switchTick, uint32 seed)
+{
+	SkirmishEconomyPlan planA, planB;
+	char line[256];
+	char row[320];
+	uint32 tick;
+	uint8 i;
+
+	if (step == 0) step = 5000;
+
+	WarSearch_MakePlan(shareA, 90, switchTick, &planA);
+	WarSearch_MakePlan(shareB, 90, switchTick, &planB);
+
+	Tools_RandomLCG_Seed((uint16)seed);
+
+	if (!Skirmish_StartWar(WAR_HOUSE_A, WAR_HOUSE_B, seed, &planA, &planB)) {
+		WarSearch_Print("war-telemetry: could not start a match");
+		return;
+	}
+
+	WarSearch_Print("tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,powerSurplus");
+
+	Timer_SetTimer(TIMER_GAME, false);
+
+	for (tick = 0; tick <= ticks; tick++) {
+		if ((tick % step) == 0) {
+			for (i = 0; i < SKIRMISH_PLAYER_MAX; i++) {
+				if (!Skirmish_GetTelemetry(i, line, sizeof(line))) continue;
+
+				snprintf(row, sizeof(row), "%u,%s", (unsigned)tick, line);
+				WarSearch_Print(row);
+			}
+		}
+
+		g_timerGame++;
+
+		GameLoop_Team();
+		GameLoop_Unit();
+		GameLoop_Structure();
+		GameLoop_House();
+	}
+
+	Timer_SetTimer(TIMER_GAME, true);
+}
+
+/**
  * Every share against every other share.
  *
  * The single most useful output here is not the winner but the shape: if one

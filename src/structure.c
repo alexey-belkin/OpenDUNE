@@ -1198,6 +1198,10 @@ bool Structure_Damage(Structure *s, uint16 damage, uint16 range)
 
 	si = &g_table_structureInfo[s->o.type];
 
+	if (Skirmish_IsActive()) {
+		Skirmish_RecordDamage((uint8)s->o.houseID, min(damage, s->o.hitpoints));
+	}
+
 	if (s->o.hitpoints >= damage) {
 		s->o.hitpoints -= damage;
 	} else {

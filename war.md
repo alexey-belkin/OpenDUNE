@@ -57,6 +57,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --war-ladder=200000,5
 | `--war-timing` | `ticks,maps` | schedules: flat shares against ones that change mid-match |
 | `--war-ladder` | `ticks,maps` | repeatedly finds the best counter to the current champion |
 | `--war-trace` | — | one line per house per 20000 ticks of every match |
+| `--war-telemetry` | `ticks,step[,seed]` | plays one match and prints a sampled CSV of how it went |
 | `--war` | `shareA,shareB[,seed]` | plays one pairing in the GUI, to watch |
 
 Watching one: the match opens on the first base, and at t0 the second house owns
@@ -159,6 +160,39 @@ schedule is really keyed to.
 So the rule the search settled on, and the default in
 `Skirmish_MakeDefaultPlan()`: **nothing on the army until the base is built,
 then most of the income.** 0% → 90% at t35000.
+
+## Watching one match instead of comparing many
+
+`--war-telemetry` is the only thing here that scores nothing. It plays a single
+match and prints one row per house per step:
+
+```
+tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,powerSurplus
+```
+
+Six of those are levels. `damageTaken` and `spiceRefined` are running totals on
+purpose: a rate is the difference between two samples, and differencing a total
+is exact, while sampling a rate directly misses whatever happened in between.
+
+Damage is recorded as **taken**, not dealt, because neither `Unit_Damage()` nor
+`Structure_Damage()` is told who fired. In a two-house match "damage A dealt" is
+"damage B took", with the caveat that Palace specials land in the same column --
+which is fair enough, since they are the summoner's doing.
+
+`./opendune --war=0,0,8919 --war-telemetry=200000,5000` is a contested one: level
+at t150000 on harvesters and damage taken, and decided only after. What it shows,
+and what the sweeps above cannot:
+
+* the whole opening is economy and nothing else -- combat structures sit at zero
+  for both until t30000, which is the default schedule doing its job;
+* the army then appears almost vertically, because the share is a share of
+  *accumulated* income and by t30000 there is a lot of it;
+* damage arrives in waves rather than as pressure -- teams fill to their minimum
+  size and leave together;
+* **power surplus leads the collapse.** It goes negative before structures start
+  falling: losing windtraps halves the hitpoints of everything else
+  (`Structure_CalculateHitpointsMax`), and the finishing off gets faster from
+  there. It is the earliest warning in the file.
 
 ## The Palace hands out an army the budget cannot see
 
