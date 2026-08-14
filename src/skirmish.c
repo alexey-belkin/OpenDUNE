@@ -170,6 +170,8 @@ static uint32 s_damageTaken[HOUSE_MAX];
  * read as "we have none of those" for ever, and the rule would order it again
  * and again -- which is the single-unit-type behaviour it exists to replace. */
 static uint16 s_unitsBuilt[HOUSE_MAX][UNIT_MAX];
+/* Whether each house is currently attacking or currently building up. */
+static bool s_waveOpen[HOUSE_MAX];
 
 void Skirmish_RecordBuilt(uint8 houseID, uint16 unitType)
 {
@@ -293,10 +295,13 @@ static const struct {
 	uint16 minMembers;
 	uint16 maxMembers;
 } s_teamPlan[] = {
-	{ MOVEMENT_FOOT,    4, 8 },
-	{ MOVEMENT_WHEELED, 2, 4 },
-	{ MOVEMENT_TRACKED, 3, 6 },
-	{ MOVEMENT_TRACKED, 3, 6 }
+	/* Bigger cohorts than the campaign's, because these have to read as waves.
+	 * A team of three leaves almost as soon as it is formed and the next one is
+	 * out before it lands, which is a stream, not an attack. */
+	{ MOVEMENT_FOOT,    6, 10 },
+	{ MOVEMENT_WHEELED, 4, 6 },
+	{ MOVEMENT_TRACKED, 5, 8 },
+	{ MOVEMENT_TRACKED, 5, 8 }
 };
 
 bool Skirmish_IsActive(void)
@@ -379,6 +384,7 @@ void Skirmish_Reset(void)
 	memset(s_killedByTracks, 0, sizeof(s_killedByTracks));
 	memset(s_damageTaken, 0, sizeof(s_damageTaken));
 	memset(s_unitsBuilt, 0, sizeof(s_unitsBuilt));
+	memset(s_waveOpen, 0, sizeof(s_waveOpen));
 }
 
 static SkirmishBase *Skirmish_GetBase(uint8 houseID)
@@ -1139,6 +1145,51 @@ uint16 Skirmish_AI_PickUnit(const House *h, uint32 buildable)
 	}
 
 	return best;
+}
+
+/** Units a house assembles before it sends a wave out. */
+#define SKIRMISH_WAVE_SIZE 12
+
+/**
+ * Whether this house may start a new attack right now.
+ *
+ * Four teams each deciding for itself when it is ready produces four
+ * independent trickles, and four trickles out of phase are a river: the shape
+ * was visible in the damage but never resolved into anything.  A house holds its
+ * teams until it has a wave's worth of units standing ready, then every team
+ * takes a target in the same tick and they leave together.  The window stays
+ * open until the wave is spent, and closes to let the next one build.
+ *
+ * Teams already committed are not affected -- they keep the target they have.
+ */
+bool Skirmish_AI_WaveReady(uint8 houseID)
+{
+	uint16 waiting = 0;
+	uint16 committed = 0;
+	PoolFindStruct find;
+
+	if (!s_active || houseID >= HOUSE_MAX) return true;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Team *t = Team_Find(&find);
+
+		if (t == NULL) break;
+		if (t->target != 0) committed += t->members; else waiting += t->members;
+	}
+
+	if (s_waveOpen[houseID]) {
+		/* Spent: what is left of it is the seed of the next one. */
+		if (committed * 3 < SKIRMISH_WAVE_SIZE) s_waveOpen[houseID] = false;
+		return s_waveOpen[houseID];
+	}
+
+	if (waiting >= SKIRMISH_WAVE_SIZE) s_waveOpen[houseID] = true;
+
+	return s_waveOpen[houseID];
 }
 
 bool Skirmish_AI_WantsCarryall(const House *h)

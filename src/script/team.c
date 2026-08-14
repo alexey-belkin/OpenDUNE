@@ -84,6 +84,19 @@ uint16 Script_Team_AddClosestUnit(ScriptEngine *script)
 
 	if (t->members >= t->maxMembers) return 0;
 
+	/* A wave does not grow while it is still a wave.
+	 *
+	 * Recruiting during the run is what dissolved attacks into a stream between
+	 * the two bases: every unit leaving a factory joined whichever team was out
+	 * and trickled after it alone.  A team that has a target keeps the cohort it
+	 * left with -- but only while that cohort is still at strength.  Once it has
+	 * been ground below its minimum the wave is spent, and the survivors are the
+	 * seed of the next one rather than a team that can never fill again. */
+	if (Skirmish_IsActive() && t->target != 0 && t->members >= t->minMembers) return 0;
+
+	/* A spent wave takes a fresh objective with its new cohort. */
+	if (Skirmish_IsActive() && t->members == 0) t->target = 0;
+
 	find.houseID = t->houseID;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
@@ -285,6 +298,9 @@ uint16 Script_Team_FindBestTarget(ScriptEngine *script)
 
 	t = g_scriptCurrentTeam;
 
+	/* Hold fire until the house is ready to attack with everything at once. */
+	if (Skirmish_IsActive() && t->target == 0 && !Skirmish_AI_WaveReady(t->houseID)) return 0;
+
 	find.houseID = t->houseID;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
@@ -414,31 +430,35 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 
 	for (i = 0; i < count; i++) {
 		Unit *u = Unit_Get_ByIndex(order[i]);
-		uint16 mine = t->target;
+		uint16 reach = g_table_unitInfo[u->o.type].fireDistance;
+		uint16 mine = 0;
 		uint16 distance;
 		uint16 packed;
-		Structure *blocker;
 
-		/* Whatever is shooting at this unit comes before the team's objective.
+		/* Clear the way, then do the job.
 		 *
-		 * A team picks its target once -- Script_Team_FindBestTarget() keeps the
-		 * one it has -- and this routine then puts every member on it.  So a team
-		 * that had settled on the Heavy Factory drove the whole length of the
-		 * defence line to reach it and died on the way without ever returning
-		 * fire, because the turret killing it was not the team's target.  A
-		 * turret close enough to be firing is this unit's problem now; the team
-		 * objective is still there afterwards. */
-		blocker = Tools_Index_GetStructure(Unit_FindBestTargetEncoded(u, 0));
-		if (blocker != NULL
-			&& (blocker->o.type == STRUCTURE_TURRET || blocker->o.type == STRUCTURE_ROCKET_TURRET)
-			&& !House_AreAllied(Unit_GetHouseID(u), blocker->o.houseID)) {
-			mine = Tools_Index_Encode(blocker->o.index, IT_STRUCTURE);
-			tile = Tools_Index_GetTile(mine);
-		} else {
-			tile = Tools_Index_GetTile(t->target);
+		 * A team picks its objective once -- Script_Team_FindBestTarget() keeps
+		 * the one it has -- and this routine used to put every member on it, so a
+		 * team that had settled on a factory drove the length of the defence line
+		 * to reach it and died without ever returning fire.  Anything in the way
+		 * counts, at one priority: enemy units, harvesters, turrets.
+		 *
+		 * Three tiles beyond the unit's own weapon range, so a unit meeting
+		 * something head-on has acquired it before either is in range and gets to
+		 * shoot first rather than being shot at.  What it picks it keeps until
+		 * that is dead or has left, and only then does the objective come back --
+		 * re-deciding every tick is what turned attacks into a smear. */
+		if (Tools_Index_IsValid(u->targetAttack)
+			&& Tile_GetDistance(u->o.position, Tools_Index_GetTile(u->targetAttack)) <= ((reach + 5) << 8)) {
+			mine = u->targetAttack;
 		}
 
-		distance = g_table_unitInfo[u->o.type].fireDistance << 8;
+		if (mine == 0) mine = Unit_Autonomy_FindTargetWithin(u, reach + 3);
+		if (mine == 0) mine = t->target;
+
+		tile = Tools_Index_GetTile(mine);
+
+		distance = reach << 8;
 		if (u->actionID == ACTION_ATTACK && u->targetAttack == mine) {
 			if (u->targetMove != 0) continue;
 			if (Tile_GetDistance(u->o.position, tile) >= distance) continue;

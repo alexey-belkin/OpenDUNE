@@ -884,12 +884,19 @@ static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
 	return ui->movementType == MOVEMENT_FOOT || ui->movementType == MOVEMENT_TRACKED || ui->movementType == MOVEMENT_WHEELED;
 }
 
+/* Set for the duration of Unit_Autonomy_FindTargetWithin(): while it is non-zero
+ * the sweep answers for this many tiles around the unit itself instead of for
+ * its guard post.  A team member on the march needs the same judgement a
+ * guarding unit makes, measured from where it is now. */
+static uint16 s_scanRadius = 0;
+
 static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 {
 	const AutonomousPost *post = &s_autonomousPost[unit->o.index];
 	ActionType action = (ActionType)unit->actionID;
 	uint16 fireDistance;
 
+	if (s_scanRadius != 0) return s_scanRadius;
 	if (s_manualHunt[unit->o.index]) return 63;
 
 	/* A unit in a sortie carries Attack or Move as its action, but the zone it
@@ -932,6 +939,12 @@ static bool Unit_Autonomy_TargetInArea(const Unit *unit, uint16 target)
 	uint16 anchor = unit->guardPosition;
 
 	if (radius == 0 || !Tools_Index_IsValid(target)) return false;
+
+	/* Anchored on the unit, not on a post it does not have. */
+	if (s_scanRadius != 0) {
+		return Tile_GetDistance(unit->o.position, Tools_Index_GetTile(target)) <= (s_scanRadius << 8);
+	}
+
 	if (s_manualHunt[unit->o.index] || unit->actionID == ACTION_HUNT) return true;
 
 	/* The zone is measured from the guard post, never from where the unit
@@ -1160,6 +1173,30 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit, uint32 *bestScoreOut)
 
 	if (bestScoreOut != NULL) *bestScoreOut = bestScore;
 	return best;
+}
+
+/**
+ * What the player's guard logic would shoot, looked for around the unit itself.
+ *
+ * This is that selection unchanged -- priority by type first, then hitpoints,
+ * incoming fire and how long the approach would take -- with only the search
+ * area redirected.  A team on the march has no guard post to measure from, and
+ * needed exactly this judgement about what is in front of it.
+ *
+ * @param radius How far to look, in tiles.
+ * @return The encoded target, or 0 when nothing there is worth shooting.
+ */
+uint16 Unit_Autonomy_FindTargetWithin(Unit *unit, uint16 radius)
+{
+	uint16 target;
+
+	if (unit == NULL || radius == 0 || unit->o.index >= UNIT_INDEX_MAX) return 0;
+
+	s_scanRadius = radius;
+	target = Unit_Autonomy_FindTarget(unit, NULL);
+	s_scanRadius = 0;
+
+	return target;
 }
 
 /* Break off a return and take up a fight again, without losing the post the
