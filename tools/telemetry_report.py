@@ -24,7 +24,9 @@ DEFAULT_OUT = "telemetry.html"
 COLUMNS = ["refineries", "combatStructures", "harvesters", "combatUnits",
            "combatHitpoints", "damageTaken", "spiceRefined", "credits", "powerSurplus",
            "shotsTurret", "shotsStructure", "shotsUnit", "shotsBypass",
-           "idleAttackers", "stalledHarvesters", "freeRefineries"]
+           "idleAttackers", "idleOnWave", "stalledHarvesters", "freeRefineries",
+           "wavePhase", "waveUnits", "waveAtLD", "waveColumn",
+           "wavesLaunched", "wavesAborted"]
 
 
 def read_match(path):

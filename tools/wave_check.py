@@ -75,7 +75,7 @@ def report(path):
         unitShare = 100.0 * unit / allShots if allShots else None
 
         # 3/4. Levels: worst sample, and how much of the match was bad.
-        idle = [int(r.get("idleAttackers", 0)) for r in mine]
+        idle = [int(r.get("idleOnWave", 0)) for r in mine]
         stalled = [(int(r.get("stalledHarvesters", 0)), int(r.get("freeRefineries", 0)))
                    for r in mine]
         # Only counts when a refinery was actually standing free.

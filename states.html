@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Состояния боевого юнита OpenDUNE и переходы между ними">
+  <title>OpenDUNE — состояния боевого юнита</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #20252b;
+      --muted: #68717a;
+      --paper: #f6f1e7;
+      --paper-strong: #fffdf8;
+      --line: #ddd3c2;
+      --line-strong: #c9bba5;
+      --sand: #ead9b6;
+      --sand-light: #f5ead3;
+      --orange: #b85b28;
+      --orange-dark: #83401f;
+      --blue: #17384c;
+      --blue-soft: #e5eef0;
+      --green: #3f6b3f;
+      --grey: #7a736a;
+      --shadow: 0 18px 45px rgba(70, 50, 25, .10);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 86% 4%, rgba(234, 217, 182, .75), transparent 28rem),
+        linear-gradient(180deg, #f1e7d3 0, var(--paper) 23rem, var(--paper) 100%);
+      font: 16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: var(--orange-dark); }
+    a:hover { color: var(--orange); }
+    code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: rgba(234, 217, 182, .5); padding: 1px 5px; border-radius: 5px; }
+
+    .page { width: min(1340px, calc(100% - 40px)); margin: 0 auto; padding: 42px 0 72px; }
+
+    .hero {
+      padding: clamp(26px, 4vw, 52px);
+      border: 1px solid rgba(201, 187, 165, .85);
+      border-radius: 28px;
+      background: linear-gradient(135deg, rgba(255, 253, 248, .94), rgba(245, 234, 211, .88));
+      box-shadow: var(--shadow);
+    }
+    .hero h1 { margin: 0 0 10px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.02em; }
+    .hero p { margin: 0; max-width: 78ch; color: var(--muted); }
+
+    h2 { margin: 46px 0 6px; font-size: clamp(21px, 2.4vw, 27px); letter-spacing: -.01em; }
+    h3 { margin: 28px 0 6px; font-size: 18px; }
+    .lede { margin: 0 0 18px; color: var(--muted); max-width: 82ch; }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--paper-strong);
+      box-shadow: var(--shadow);
+      padding: clamp(18px, 2.6vw, 30px);
+      margin-top: 18px;
+    }
+
+    .scroller { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    svg { display: block; min-width: 1080px; height: auto; }
+
+    table { border-collapse: collapse; width: 100%; min-width: 780px; font-size: 14.5px; }
+    th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+    th { background: var(--sand-light); font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--orange-dark); position: sticky; top: 0; }
+    tbody tr:hover { background: rgba(234, 217, 182, .28); }
+    td:first-child { white-space: nowrap; font-weight: 600; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 4px 0 18px; font-size: 14px; }
+    .legend span { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+    .chip { width: 26px; height: 4px; border-radius: 2px; display: inline-block; }
+
+    .note {
+      border-left: 4px solid var(--orange);
+      background: rgba(234, 217, 182, .35);
+      border-radius: 0 12px 12px 0;
+      padding: 12px 16px;
+      margin: 16px 0 0;
+      font-size: 14.5px;
+    }
+    .note strong { color: var(--orange-dark); }
+
+    ul.tight { margin: 8px 0 0; padding-left: 20px; }
+    ul.tight li { margin: 4px 0; }
+
+    footer { margin-top: 48px; color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <header class="hero">
+    <h1>Состояния боевого юнита</h1>
+    <p>Полная карта того, в каком состоянии может находиться наземный боевой юнит игрока, кто и чем его переключает.
+       Состояние живёт в трёх слоях сразу: действие в скрипте Westwood (<code>UNIT.EMC</code>), оборонительный пост и
+       тактическая позиция — оба наши, на C.</p>
+    <p style="margin-top:14px;max-width:78ch;color:var(--muted)">Схем две, и это честнее одной общей:
+       <b>схема 1</b> — то, что юнит решает сам, находясь в режиме охраны; <b>схема 2</b> — исполнение приказа
+       игрока. Стыкуются они в двух точках: приказ в любой момент отменяет автономную вылазку, а выполненный
+       приказ возвращает юнит в запомненный режим охраны, то есть обратно в первую схему.</p>
+  </header>
+
+  <h2>Три слоя состояния</h2>
+  <p class="lede">Слои независимы. Юнит всегда имеет ровно одно действие скрипта, ровно одно состояние поста и ровно
+     одно состояние тактической позиции; путаница в поведении почти всегда означает, что два слоя разошлись во мнениях.</p>
+
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Слой</th><th>Где хранится</th><th>Значения</th><th>Кто владеет</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Действие</td>
+          <td><code>unit->actionID</code>, оно же <code>script.variables[0]</code></td>
+          <td>GUARD, AREA&nbsp;GUARD, ATTACK, MOVE, RETREAT, HUNT, AMBUSH, STOP, DIE</td>
+          <td>Скрипт <code>UNIT.EMC</code>. <code>Unit_SetAction()</code> не вызывает код на C — он грузит байткод.</td>
+        </tr>
+        <tr>
+          <td>Пост</td>
+          <td><code>s_autonomousPost[]</code>, <code>guardPosition</code>, <code>guardAction</code></td>
+          <td>NONE, ENGAGING, RETURNING</td>
+          <td>Наш автономный слой. Помнит, откуда юнит вышел в бой и в какой режим вернуться.</td>
+        </tr>
+        <tr>
+          <td>Тактическая позиция</td>
+          <td><code>s_attackPosition*[]</code></td>
+          <td>OFF, IN&nbsp;RANGE, SLOT, STAGING, HOLD</td>
+
+          <td>Наш слой огневых позиций. Решает, куда именно ехать при атаке.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Схема 1 — автономная оборона</h2>
+  <p class="lede">Что юнит делает сам, без единого приказа: стоит на посту в одном из режимов охраны, выходит на
+     цель, дерётся и возвращается. Всё внутри этой схемы решает наш код на C; оригинальный скрипт здесь только
+     исполняет действие, в которое его перевели.</p>
+
+  <div class="legend">
+    <span><i class="chip" style="background:#b85b28"></i> приказ игрока</span>
+    <span><i class="chip" style="background:#17384c"></i> наш код на C (автоматика)</span>
+    <span><i class="chip" style="background:#7a736a"></i> оригинальный скрипт EMC</span>
+    <span><i class="chip" style="background:#3f6b3f"></i> тактический слой позиций</span>
+  </div>
+
+  <div class="card scroller">
+    <svg viewBox="0 0 1120 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Схема автономной обороны">
+      <defs>
+        <marker id="a-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#b85b28"/>
+        </marker>
+        <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#17384c"/>
+        </marker>
+        <marker id="a-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#7a736a"/>
+        </marker>
+        <marker id="a-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#3f6b3f"/>
+        </marker>
+        <style>
+          .n { fill: #fffdf8; stroke: #c9bba5; stroke-width: 1.5; }
+          .n-guard { fill: #f5ead3; }
+          .n-fight { fill: #e5eef0; }
+          .n-end { fill: #f0e2e2; }
+          .n-cmd { fill: #fbe6d8; }
+          .t { font: 600 15px Inter, system-ui, sans-serif; fill: #20252b; }
+          .s { font: 12.5px Inter, system-ui, sans-serif; fill: #68717a; }
+          .e-orange { stroke: #b85b28; stroke-width: 2; fill: none; marker-end: url(#a-orange); }
+          .e-orange-d { stroke: #b85b28; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; marker-end: url(#a-orange); }
+          .e-blue { stroke: #17384c; stroke-width: 2; fill: none; marker-end: url(#a-blue); }
+          .e-grey { stroke: #7a736a; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; marker-end: url(#a-grey); }
+          .e-green { stroke: #3f6b3f; stroke-width: 1.8; fill: none; marker-end: url(#a-green); }
+          .lo { font: 12px Inter, system-ui, sans-serif; fill: #83401f; }
+          .lb { font: 12px Inter, system-ui, sans-serif; fill: #17384c; }
+          .lg { font: 12px Inter, system-ui, sans-serif; fill: #6b6459; }
+          .lgr { font: 12px Inter, system-ui, sans-serif; fill: #3f6b3f; }
+          .box { fill: none; stroke: #ddd3c2; stroke-width: 1.5; stroke-dasharray: 4 4; }
+          .boxt { font: 600 12px Inter, system-ui, sans-serif; fill: #a3937a; letter-spacing: .08em; }
+        </style>
+      </defs>
+
+      <rect class="box" x="40" y="106" width="660" height="146" rx="16"/>
+      <text class="boxt" x="60" y="128">НА ПОСТУ · опрос целей раз в 2 секунды</text>
+
+      <rect class="n n-guard" x="70" y="142" width="180" height="82" rx="12"/>
+      <text class="t" x="160" y="168" text-anchor="middle">GUARD</text>
+      <text class="s" x="160" y="187" text-anchor="middle">радиус = дальность + 5</text>
+      <text class="s" x="160" y="205" text-anchor="middle">отход от поста ≤ 5</text>
+
+      <rect class="n n-guard" x="280" y="142" width="190" height="82" rx="12"/>
+      <text class="t" x="375" y="168" text-anchor="middle">AREA GUARD</text>
+      <text class="s" x="375" y="187" text-anchor="middle">max(14, дальность + 5)</text>
+      <text class="s" x="375" y="205" text-anchor="middle">режим по умолчанию</text>
+
+      <rect class="n n-guard" x="500" y="142" width="170" height="82" rx="12"/>
+      <text class="t" x="585" y="168" text-anchor="middle">HUNT</text>
+      <text class="s" x="585" y="187" text-anchor="middle">радиус 63</text>
+      <text class="s" x="585" y="205" text-anchor="middle">вся карта</text>
+
+      <rect class="n n-fight" x="280" y="320" width="270" height="120" rx="12"/>
+      <text class="t" x="415" y="348" text-anchor="middle">ATTACK · пост ENGAGING</text>
+      <text class="s" x="415" y="370" text-anchor="middle">цель взята из своей зоны</text>
+      <text class="s" x="415" y="388" text-anchor="middle">идём на огневую позицию,</text>
+      <text class="s" x="415" y="406" text-anchor="middle">а не в цель</text>
+      <text class="s" x="415" y="426" text-anchor="middle">вид движения 3</text>
+
+      <rect class="n" x="280" y="512" width="270" height="96" rx="12"/>
+      <text class="t" x="415" y="540" text-anchor="middle">MOVE · пост RETURNING</text>
+      <text class="s" x="415" y="562" text-anchor="middle">возврат к якорю поста</text>
+      <text class="s" x="415" y="582" text-anchor="middle">вид движения 4</text>
+
+      <rect class="box" x="740" y="106" width="340" height="286" rx="16"/>
+      <text class="boxt" x="760" y="128">ТАКТИЧЕСКАЯ ПОЗИЦИЯ · пересчёт раз в 30 тиков</text>
+
+      <rect class="n" x="770" y="142" width="280" height="46" rx="10"/>
+      <text class="t" x="910" y="164" text-anchor="middle">IN RANGE</text>
+      <text class="s" x="910" y="180" text-anchor="middle">цель в дистанции — стоим и стреляем</text>
+
+      <rect class="n" x="770" y="200" width="280" height="46" rx="10"/>
+      <text class="t" x="910" y="222" text-anchor="middle">SLOT</text>
+      <text class="s" x="910" y="238" text-anchor="middle">свободная огневая позиция — едем</text>
+
+      <rect class="n" x="770" y="258" width="280" height="46" rx="10"/>
+      <text class="t" x="910" y="280" text-anchor="middle">STAGING</text>
+      <text class="s" x="910" y="296" text-anchor="middle">всё занято — ждём у края боя</text>
+
+      <rect class="n" x="770" y="316" width="280" height="46" rx="10"/>
+      <text class="t" x="910" y="338" text-anchor="middle">HOLD</text>
+      <text class="s" x="910" y="354" text-anchor="middle">идти некуда — стоим на месте</text>
+
+      <rect class="n" x="740" y="440" width="340" height="150" rx="12"/>
+      <text class="t" x="910" y="468" text-anchor="middle">Песчаный червь</text>
+      <text class="s" x="910" y="490" text-anchor="middle">приоритет 1 — берётся последним</text>
+      <text class="s" x="910" y="508" text-anchor="middle">любая позиция — только на камне</text>
+      <text class="s" x="910" y="526" text-anchor="middle">маршрут в червя запрещён</text>
+      <text class="s" x="910" y="544" text-anchor="middle">шаг по песку в его сторону запрещён</text>
+      <text class="s" x="910" y="568" text-anchor="middle">огонь с места разрешён всегда</text>
+      <path class="e-green" d="M910 440 L910 398"/>
+
+
+      <path class="e-blue" d="M160 224 L300 318"/>
+      <path class="e-blue" d="M375 224 L400 316"/>
+      <path class="e-blue" d="M570 224 L520 318"/>
+      <text class="lb" x="596" y="268">цель в зоне от поста →</text>
+      <text class="lb" x="596" y="284">вылазка, пост запомнен</text>
+
+      <path class="e-blue" d="M280 356 Q232 348 232 380 Q232 412 278 404"/>
+      <text class="lb" x="140" y="300">переоценка раз в 2 с,</text>
+      <text class="lb" x="140" y="316">смена цели при +25%</text>
+
+      <path class="e-blue" d="M370 440 L370 508"/>
+      <text class="lb" x="272" y="466" text-anchor="end">цель уничтожена</text>
+      <text class="lb" x="272" y="482" text-anchor="end">или вышла из зоны</text>
+
+      <path class="e-blue" d="M470 512 L470 444"/>
+      <text class="lb" x="486" y="466">в зоне появилась цель —</text>
+      <text class="lb" x="486" y="482">возврат прерван</text>
+
+      <path class="e-grey" d="M280 560 L120 560 L120 236 L142 226"/>
+      <text class="lg" x="128" y="550">прибыл на пост,</text>
+      <text class="lg" x="128" y="592">SetActionDefault →</text>
+      <text class="lg" x="128" y="608">запомненный режим</text>
+
+      <path class="e-green" d="M550 340 L766 166"/>
+      <path class="e-green" d="M550 358 L766 224"/>
+      <path class="e-green" d="M550 376 L766 282"/>
+      <path class="e-green" d="M550 394 L766 340"/>
+      <text class="lgr" x="580" y="330">выбор позиции</text>
+
+      <text class="lo" x="600" y="612">приказ игрока в любой момент отменяет вылазку → схема 2</text>
+    </svg>
+  </div>
+
+  <h2>Автоматические переходы — наш слой</h2>
+  <p class="lede">Опрос идёт раз в 20 игровых тиков для каждого юнита, поиск цели — не чаще раза в 120 тиков,
+     выбор огневой позиции — раз в 30.</p>
+
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Из</th><th>В</th><th>Условие</th><th>Что происходит</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>GUARD / AREA GUARD</td>
+          <td>ATTACK</td>
+          <td>В радиусе поста нашлась цель с ненулевым приоритетом, до неё есть достижимая огневая позиция</td>
+          <td>Пост запоминается (<code>ENGAGING</code>): якорь = <code>guardPosition</code>, режим возврата = текущий. Радиус считается от поста, а не от текущей позиции.</td>
+        </tr>
+        <tr>
+          <td>ATTACK</td>
+          <td>MOVE (RETURNING)</td>
+          <td>Цель уничтожена <i>или вышла за радиус зоны от поста</i></td>
+          <td>Проверяется вне таймера, сразу. Цель, маршрут и тактическая позиция сбрасываются, юнит едет к якорю; если он уже ближе половины тайла — режим восстанавливается на месте. Проверка зоны и есть поводок: без неё скрипт вёл бы юнита за целью сколь угодно далеко.</td>
+        </tr>
+        <tr>
+          <td>ATTACK (ENGAGING)</td>
+          <td>ATTACK, другая цель</td>
+          <td>Опрос раз в 2 секунды нашёл в зоне цель с оценкой выше текущей более чем на четверть</td>
+          <td>Смена цели без потери поста. Порог и период вместе не дают юниту метаться.</td>
+        </tr>
+        <tr>
+          <td>MOVE (RETURNING)</td>
+          <td>ATTACK (ENGAGING)</td>
+          <td>Тот же опрос нашёл достойную цель по дороге домой</td>
+          <td>Возврат прерывается. Якорь и режим возврата берутся из того же поста, так что после боя юнит вернётся туда же.</td>
+        </tr>
+        <tr>
+          <td>MOVE (RETURNING)</td>
+          <td>исходный режим охраны</td>
+          <td>Прибытие на пост</td>
+          <td><code>Unit_GetDefaultActionAfterCompletion()</code> отдаёт запомненный в посте режим и очищает пост. Переякоривания здесь не происходит.</td>
+        </tr>
+        <tr>
+          <td>MOVE (ручной)</td>
+          <td>запомненный режим охраны</td>
+          <td>Прибытие</td>
+          <td>Пост уточняется до фактического тайла <i>только если</i> юнит остановился не дальше 2 тайлов от поста. Всё, что закончилось дальше, считается боевым перемещением и пост не двигает.</td>
+        </tr>
+        <tr>
+          <td>любое</td>
+          <td>ATTACK</td>
+          <td>Скрипт сам взял цель, находясь в режиме охраны</td>
+          <td><code>Unit_SetTarget()</code> ловит это и делает такой же снимок поста, иначе движение по приказу скрипта стало бы постоянным сносом строя.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note"><strong>Приоритет цели.</strong> Оценка кандидата — <code>priorityTarget + priorityBuild + damage × 12</code>,
+       затем поправки на время подхода, на уже нанесённый по цели урон союзниками и на общий сигнал угрозы дому.
+       Песчаный червь — жёсткое исключение с приоритетом 1: его выбирают, только если в зоне больше никого нет.</p>
+    <p class="note"><strong>Выбор цели не зависит от наличия огневой позиции.</strong> Свободна ли сейчас точка, с которой
+       можно стрелять, решает <em>куда юнит поедет</em>, но не <em>существует ли для него враг</em>. Пока эти два вопроса
+       решались вместе, кольцо вокруг цели занимали свои же соседи, время подхода не вычислялось, оценка выходила нулевой —
+       и вся техника второй линии врага просто не видела. Теперь при неудаче поиска позиции время подхода берётся оценочно,
+       по расстоянию и скорости юнита на его клетке, а «позиции нет» отрабатывает слой STAGING. Червь остаётся исключением:
+       ему нужна скала, и без достижимой скалы он действительно не цель.</p>
+  </div>
+
+  <h2>Тактическая позиция при атаке</h2>
+  <p class="lede">Подсостояния слоя огневых позиций. Проверка идёт раз в 30 тиков, порядок выбора сверху вниз —
+     первая подошедшая ветка выигрывает.</p>
+
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Состояние</th><th>Когда</th><th>Поведение</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>IN RANGE</td>
+          <td>Цель уже в пределах дальности огня</td>
+          <td>Резервация снимается, назначение гасится — юнит стоит и стреляет. Ни шагу вперёд.</td>
+        </tr>
+        <tr>
+          <td>SLOT</td>
+          <td>Есть свободный незанятый тайл на кольце «дальность … дальность−2» вокруг цели</td>
+          <td>Тайл резервируется за юнитом, туда идёт маршрут. Чужую резервацию можно перехватить, только если приедешь минимум на 60 тиков раньше — иначе двое будут вечно меняться местами.</td>
+        </tr>
+        <tr>
+          <td>STAGING</td>
+          <td>Своей огневой позиции нет: свободных тайлов в пределах дальности не осталось либо все они закреплены за теми, кто приедет раньше</td>
+          <td>Занимаем точку ожидания на кольце «дальность+1 … дальность+3» и резервируем её. Юнит стоит у края боя, вне досягаемости цели, и займёт освободившуюся огневую позицию на следующем проходе. Если он уже стоит на подходящей точке — остаётся на месте, а не перетаптывается. Это <b>единственный</b> ответ на «слота нет»: ехать на тайл, закреплённый за другим, значит менять его с ним на месте по прибытии.</td>
+        </tr>
+        <tr>
+          <td>HOLD</td>
+          <td>Нет ни огневой позиции, ни точки ожидания</td>
+          <td>Не двигаемся. Подход к цели ради самого подхода не делается никогда: сближение существует только как способ занять позицию. <b>Открытый вопрос:</b> достижимость клетки проверяется строго — путь должен дойти до неё точно, частичный маршрут отвергается. Насколько часто это состояние возникает на реальной карте, показывает отладочный оверлей.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Песчаный червь — сквозное исключение</h2>
+  <div class="card">
+    <ul class="tight">
+      <li><b>Приоритет 1.</b> Пока в зоне есть хоть один стреляющий враг, червя не выбирают. Иначе его урон 300
+          перевешивал любой танк, и оборона уходила от базы.</li>
+      <li><b>Позиция только на камне.</b> Фильтр грунта стоит и в оценке достижимости, и в выборе слота, и в выборе
+          точки ожидания. Червь ходит по песку и не может тронуть камень.</li>
+      <li><b>Маршрут в червя не строится.</b> Отказ стоит в самом <code>CalculateRoute</code>, куда скрипт приходит с
+          целью в качестве аргумента.</li>
+      <li><b>Шаг по песку в сторону червя запрещён</b> в точке, где юнит фиксирует переход на следующий тайл. Это
+          последний рубеж: скрипты крутятся вчетверо чаще любого нашего прохода, и всё, что можно переиграть выше,
+          рано или поздно переигрывается.</li>
+      <li><b>Огонь с места разрешён всегда.</b> Червь, подошедший на дистанцию выстрела, обстреливается оттуда, где
+          юнит стоит, даже если это песок.</li>
+      <li>В панели такой юнит показывает <code>VS WORM</code> и <code>ON SAND</code> / <code>ON ROCK</code>.</li>
+    </ul>
+  </div>
+
+  <h2>Схема 2 — исполнение приказов игрока</h2>
+  <p class="lede">Ручной приказ входит здесь и всегда начинает историю заново: он гасит цель, маршрут, пост и
+     тактическое состояние. Автоматика в него не вмешивается — она получает юнит обратно только в момент, когда
+     приказ выполнен.</p>
+
+  <div class="legend">
+    <span><i class="chip" style="background:#b85b28"></i> приказ игрока</span>
+    <span><i class="chip" style="background:#17384c"></i> наш код на C (автоматика)</span>
+    <span><i class="chip" style="background:#7a736a"></i> оригинальный скрипт EMC</span>
+    <span><i class="chip" style="background:#3f6b3f"></i> тактический слой позиций</span>
+  </div>
+
+  <div class="card scroller">
+    <svg viewBox="0 0 1120 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Схема исполнения приказов игрока">
+      <defs>
+        <marker id="b-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#b85b28"/>
+        </marker>
+        <marker id="b-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#17384c"/>
+        </marker>
+        <marker id="b-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#7a736a"/>
+        </marker>
+        <marker id="b-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#3f6b3f"/>
+        </marker>
+        <style>
+          .n { fill: #fffdf8; stroke: #c9bba5; stroke-width: 1.5; }
+          .n-guard { fill: #f5ead3; }
+          .n-fight { fill: #e5eef0; }
+          .n-end { fill: #f0e2e2; }
+          .n-cmd { fill: #fbe6d8; }
+          .t { font: 600 15px Inter, system-ui, sans-serif; fill: #20252b; }
+          .s { font: 12.5px Inter, system-ui, sans-serif; fill: #68717a; }
+          .e-orange { stroke: #b85b28; stroke-width: 2; fill: none; marker-end: url(#b-orange); }
+          .e-orange-d { stroke: #b85b28; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; marker-end: url(#b-orange); }
+          .e-blue { stroke: #17384c; stroke-width: 2; fill: none; marker-end: url(#b-blue); }
+          .e-grey { stroke: #7a736a; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; marker-end: url(#b-grey); }
+          .e-green { stroke: #3f6b3f; stroke-width: 1.8; fill: none; marker-end: url(#b-green); }
+          .lo { font: 12px Inter, system-ui, sans-serif; fill: #83401f; }
+          .lb { font: 12px Inter, system-ui, sans-serif; fill: #17384c; }
+          .lg { font: 12px Inter, system-ui, sans-serif; fill: #6b6459; }
+          .lgr { font: 12px Inter, system-ui, sans-serif; fill: #3f6b3f; }
+          .box { fill: none; stroke: #ddd3c2; stroke-width: 1.5; stroke-dasharray: 4 4; }
+          .boxt { font: 600 12px Inter, system-ui, sans-serif; fill: #a3937a; letter-spacing: .08em; }
+        </style>
+      </defs>
+
+      <rect class="n n-cmd" x="410" y="26" width="300" height="70" rx="12"/>
+      <text class="t" x="560" y="54" text-anchor="middle">Приказ игрока</text>
+      <text class="s" x="560" y="76" text-anchor="middle">сбрасывает цель, маршрут, пост, позицию</text>
+
+      <rect class="n" x="40" y="180" width="200" height="110" rx="12"/>
+      <text class="t" x="140" y="208" text-anchor="middle">MOVE</text>
+      <text class="s" x="140" y="229" text-anchor="middle">вид движения 1</text>
+      <text class="s" x="140" y="247" text-anchor="middle">пост = тайл назначения</text>
+      <text class="s" x="140" y="265" text-anchor="middle">запомнено: GUARD</text>
+      <text class="s" x="140" y="283" text-anchor="middle">автоматика не вмешивается</text>
+
+      <rect class="n n-fight" x="266" y="180" width="210" height="110" rx="12"/>
+      <text class="t" x="371" y="208" text-anchor="middle">ATTACK</text>
+      <text class="s" x="371" y="229" text-anchor="middle">вид движения 2</text>
+      <text class="s" x="371" y="247" text-anchor="middle">позицию выбирает</text>
+      <text class="s" x="371" y="265" text-anchor="middle">тактический слой</text>
+      <text class="s" x="371" y="283" text-anchor="middle">запомнено: AREA GUARD</text>
+
+      <rect class="n n-fight" x="502" y="180" width="180" height="110" rx="12"/>
+      <text class="t" x="592" y="208" text-anchor="middle">AMBUSH</text>
+      <text class="s" x="592" y="229" text-anchor="middle">Shift+A</text>
+      <text class="s" x="592" y="247" text-anchor="middle">огонь по цели</text>
+      <text class="s" x="592" y="265" text-anchor="middle">без выезда с места</text>
+
+      <rect class="n n-guard" x="708" y="180" width="200" height="110" rx="12"/>
+      <text class="t" x="808" y="208" text-anchor="middle">GUARD / AREA GUARD</text>
+      <text class="s" x="808" y="229" text-anchor="middle">G — широкий режим</text>
+      <text class="s" x="808" y="247" text-anchor="middle">Shift+G — узкий</text>
+      <text class="s" x="808" y="265" text-anchor="middle">пост = текущая позиция</text>
+      <text class="s" x="808" y="283" text-anchor="middle">режим запоминается</text>
+
+      <rect class="n n-guard" x="934" y="180" width="146" height="110" rx="12"/>
+      <text class="t" x="1007" y="208" text-anchor="middle">HUNT</text>
+      <text class="s" x="1007" y="229" text-anchor="middle">клавиша T</text>
+      <text class="s" x="1007" y="247" text-anchor="middle">радиус 63</text>
+      <text class="s" x="1007" y="265" text-anchor="middle">действие остаётся</text>
+      <text class="s" x="1007" y="283" text-anchor="middle">Area Guard</text>
+
+      <rect class="n" x="266" y="380" width="416" height="96" rx="12"/>
+      <text class="t" x="474" y="408" text-anchor="middle">Приказ выполнен</text>
+      <text class="s" x="474" y="430" text-anchor="middle">скрипт зовёт SetActionDefault</text>
+      <text class="s" x="474" y="448" text-anchor="middle">Move дополнительно уточняет пост до тайла прибытия,</text>
+      <text class="s" x="474" y="466" text-anchor="middle">если остановился не дальше 2 тайлов от него</text>
+
+      <rect class="n n-guard" x="266" y="516" width="416" height="60" rx="12"/>
+      <text class="t" x="474" y="542" text-anchor="middle">Запомненный режим охраны</text>
+      <text class="s" x="474" y="562" text-anchor="middle">→ схема 1: дальше юнит действует сам</text>
+
+      <rect class="n" x="40" y="380" width="200" height="96" rx="12"/>
+      <text class="t" x="140" y="408" text-anchor="middle">Что помнит юнит</text>
+      <text class="s" x="140" y="430" text-anchor="middle">пост — куда возвращаться</text>
+      <text class="s" x="140" y="448" text-anchor="middle">режим — чем быть на посту</text>
+      <text class="s" x="140" y="466" text-anchor="middle">переживает бой</text>
+
+      <path class="e-orange" d="M470 96 L160 176"/>
+      <text class="lo" x="286" y="130">M</text>
+      <path class="e-orange" d="M520 96 L390 176"/>
+      <text class="lo" x="446" y="140">A</text>
+      <path class="e-orange" d="M580 96 L594 176"/>
+      <text class="lo" x="596" y="140">Shift+A</text>
+      <path class="e-orange" d="M640 96 L790 176"/>
+      <text class="lo" x="700" y="140">G · Shift+G</text>
+      <path class="e-orange" d="M700 96 L990 176"/>
+      <text class="lo" x="878" y="128">T</text>
+
+      <path class="e-grey" d="M150 290 L150 348 L300 348 L340 376"/>
+      <path class="e-grey" d="M371 290 L371 376"/>
+      <path class="e-grey" d="M592 290 L592 348 L520 348 L500 376"/>
+      <text class="lg" x="384" y="330">приказ завершён</text>
+
+      <path class="e-blue" d="M474 476 L474 512"/>
+
+      <path class="e-blue" d="M808 290 Q808 500 690 542"/>
+      <text class="lb" x="716" y="330">режим охраны — уже конечное состояние</text>
+
+      <path class="e-orange-d" d="M240 428 L262 428"/>
+    </svg>
+  </div>
+
+  <h2>Переходы по приказу игрока</h2>
+  <p class="lede">Ручной приказ всегда сбрасывает пост и тактическое состояние: он начинает историю юнита заново.</p>
+
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Приказ</th><th>Куда переводит</th><th>Что ещё пишется</th><th>Код</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>A — Attack по цели</td>
+          <td>ATTACK</td>
+          <td>Пост очищается, тактический слой включается вручную, запомненный режим охраны становится <b>Area Guard</b>: после боя юнит остаётся широко в том месте, где дрался.</td>
+          <td><code>UnitSelection_ResetOrder()</code></td>
+        </tr>
+        <tr>
+          <td>A — Attack по пустой земле<br><b>наступление</b></td>
+          <td>MOVE + пост RETURNING</td>
+          <td>Это не выстрел по земле, а марш с инициативой. Каждому юниту группы выдаётся <i>свой</i> тайл в указанной точке, он становится якорем поста; режим поста — <b>Guard</b>, зона боя — гвардейский радиус <i>от выданного тайла</i>. По дороге юнит бьёт всё, что попало в эту зону, после боя возвращается к марш­руту, по прибытии садится в Guard. «Пустая земля» проверяется <b>точно по клику</b>: на самом тайле нет строения, нет юнита и это не <code>LST_BLOOM_FIELD</code>. Кольцо 3×3, по которому классическое целеуказание подтягивает соседа (<code>Unit_FindTargetAround</code>), здесь намеренно не используется — иначе приказ наступать мимо своей же линии хватал союзника в тайле от клика и стрелял по нему.</td>
+          <td><code>UnitSelection_BeginAdvance()</code>, <code>Unit_Autonomy_BeginAdvance()</code></td>
+        </tr>
+        <tr>
+          <td>Shift+A — Ambush</td>
+          <td>AMBUSH</td>
+          <td>То же, но скрипт не выезжает: юнит бьёт по цели, оставаясь на месте.</td>
+          <td>там же</td>
+        </tr>
+        <tr>
+          <td>M — Move</td>
+          <td>MOVE</td>
+          <td>Пост немедленно переносится на <i>тайл назначения</i>, запомненный режим становится <b>Guard</b>. По прибытии пост уточняется до фактического тайла.</td>
+          <td>там же + <code>Unit_GetDefaultActionAfterCompletion()</code></td>
+        </tr>
+        <tr>
+          <td>G — кнопка охраны</td>
+          <td>AREA GUARD</td>
+          <td>Пост = текущая позиция, запомненный режим = Area Guard. Кнопка подписана «Area Guard», но шорткат остался G.</td>
+          <td><code>UnitSelection_GetPanelAction()</code></td>
+        </tr>
+        <tr>
+          <td>Shift+G</td>
+          <td>GUARD</td>
+          <td>Узкий вариант той же команды.</td>
+          <td>там же</td>
+        </tr>
+        <tr>
+          <td>T — Hunt</td>
+          <td>AREA GUARD + флаг ручной охоты</td>
+          <td>Радиус поиска становится 63 (вся карта). Легаси-скрипт Hunt намеренно не грузится — он умеет рекурсивно падать на движущемся Quad.</td>
+          <td><code>UnitSelection_OrderHunt()</code></td>
+        </tr>
+        <tr>
+          <td>Y — Air Transit</td>
+          <td>без смены действия</td>
+          <td>Заказывается перевозка Carryall до выбранного тайла; пост очищается.</td>
+          <td><code>UnitSelection_BeginAirTransit()</code></td>
+        </tr>
+        <tr>
+          <td>Правый клик по врагу</td>
+          <td>ATTACK</td>
+          <td>То же, что приказ A по цели: цель берётся <b>точно с тайла</b>, вся группа бьёт в одно. Врагом считается юнит или строение недружественного дома на самом тайле; всё остальное остаётся обычным Move. Кто стрелять не умеет (харвестер) — просто едет.</td>
+          <td><code>UnitSelection_IssueDefaultOrder()</code></td>
+        </tr>
+        <tr>
+          <td>Stop</td>
+          <td>STOP</td>
+          <td>Сброс цели и маршрута. Дальше юнит подхватывает режим по умолчанию.</td>
+          <td>—</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note"><strong>Группы на цифрах.</strong> <code>Ctrl</code> или <code>Option</code> с цифрой привязывают
+       текущее выделение, голая цифра возвращает его. Работает и для строения: цифра запоминает завод, и по нажатию
+       он снова выделен. <code>Cmd</code> использовать нельзя — <code>Video_Key_Callback()</code> отбрасывает все
+       события с зажатым Command, чтобы macOS сохранил Command-Tab. Привязки живут в сессии и не пишутся в сейв;
+       при смене сценария сбрасываются, потому что индексы пула переиспользуются.</p>
+    <p class="note"><strong>Точка сбора завода.</strong> Правый клик при выделенном заводе задаёт тайл, куда уезжает
+       всё, что он построит: при выходе юнита из ворот ему выдаётся обычный приказ Move
+       (<code>Script_Structure_Unknown0C5A</code>). Харвестер — исключение: его собственная логика везёт его к спайсу,
+       и перебивать её парковкой значило бы заставлять игрока переотдавать приказ. Пока завод выделен, до точки
+       рисуется белая линия. Точка тоже сессионная: в формате сейва под тайл на строение места нет.</p>
+  </div>
+
+  <h2>Пять видов движения</h2>
+  <p class="lede">Движение — не отдельное состояние, а свойство сразу нескольких. Отсюда и ответ на вопрос «почему
+     RETURNING и MOVE — одно»: в машине состояний скрипта видов движения действительно два, оба они
+     <code>ACTION_MOVE</code>, и различает их только состояние поста. Ещё два вида происходят <b>внутри</b>
+     <code>ACTION_ATTACK</code> — там юнит идёт не в цель, а на выбранную ему огневую позицию.</p>
+
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Вид</th><th>actionID</th><th>Пост</th><th>Кто ставит назначение</th><th>Инициатива</th><th>Чем ограничено</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>1 · приказ M</td>
+          <td>MOVE</td>
+          <td>NONE</td>
+          <td>Игрок. Пост сразу переносится на тайл назначения.</td>
+          <td><b>Нет.</b> Приказ игрока автоматика не перебивает: юнит доедет и только там снова начнёт искать цели.</td>
+          <td>Ничем — едет куда сказали.</td>
+        </tr>
+        <tr>
+          <td>2 · выход на позицию по приказу A</td>
+          <td>ATTACK</td>
+          <td>NONE</td>
+          <td>Тактический слой: огневая позиция либо точка ожидания.</td>
+          <td><b>Нет.</b> Цель назначена игроком и сама не меняется.</td>
+          <td>Кольцо вокруг цели «дальность … дальность−2», при нехватке — «дальность+1 … +3».</td>
+        </tr>
+        <tr>
+          <td>3 · выход на позицию из охраны</td>
+          <td>ATTACK</td>
+          <td>ENGAGING</td>
+          <td>Тот же тактический слой.</td>
+          <td><b>Да.</b> Раз в 2 секунды юнит заново перебирает цели своей зоны и переключается на более ценную,
+              если её оценка выше текущей минимум на четверть. Пост при смене цели сохраняется.</td>
+          <td>Зона охраны от поста плюс правило позиции. Цель, вышедшая из зоны, бросается немедленно.</td>
+        </tr>
+        <tr>
+          <td>4 · возврат на пост</td>
+          <td>MOVE</td>
+          <td>RETURNING</td>
+          <td>Автономный слой: назначение — якорь поста.</td>
+          <td><b>Да.</b> Тот же опрос раз в 2 секунды; цель, появившаяся в зоне, прерывает возврат — юнит снова
+              уходит в бой, сохранив тот же пост на будущее.</td>
+          <td>Зона охраны от поста. По прибытии восстанавливается запомненный режим охраны.</td>
+        </tr>
+        <tr>
+          <td>5 · наступление (A по земле)</td>
+          <td>MOVE</td>
+          <td>RETURNING</td>
+          <td>Игрок задаёт точку, раздача выдаёт каждому юниту свой тайл в ней; он же становится якорем поста.</td>
+          <td><b>Да.</b> Механически это тот же вид 4: тот же опрос раз в 2 секунды, тот же перехват марша ради боя,
+              то же возвращение к маршруту после него.</td>
+          <td>Гвардейский радиус <i>от выданного тайла</i>, то есть от цели наступления, а не от места, где юнит
+              сейчас едет. По дороге к далёкой точке он не отвлекается; подойдя — вычищает окрестность.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note"><strong>Раздача точек группе.</strong> Виды 1 и 5 выдают каждому получателю приказа свой тайл:
+       спираль от точки клика, юниты в порядке близости к ней, каждому — ближайший к нему свободный проходимый
+       незанятый тайл, занятые вычёркиваются. Допустимость тайла проверяет
+       <code>Unit_GetTileEnterScore()</code>, который уже отвергает непроходимое и занятое чужим юнитом, но
+       разрешает собственный тайл юнита — стоящий в нужном месте просто остаётся на месте. Приказ A по <i>цели</i>
+       раздачу не использует: там вся группа стреляет в одно и то же.</p>
+    <p class="note"><strong>Ритм пересмотра.</strong> Немедленно — только по факту: цель уничтожена или вышла за
+       радиус зоны. Всё остальное решается по таймеру, раз в 120 тиков игрового таймера. Таймер идёт с частотой
+       60&nbsp;Гц по стенным часам и не зависит от выбранной скорости игры, так что это ровно две секунды
+       и на x1, и на x2. Порог смены цели в четверть оценки — второй ограничитель: без него две сопоставимые цели
+       перебрасывали бы юнит друг другу на каждом опросе.</p>
+    <p class="note"><strong>Как это видно в панели.</strong> Вид 1 — <code>MOVING · TO x,y</code>; вид 2 —
+       <code>ATTACKING · TO POSITION</code>; вид 3 — <code>DEFENDING · POST x,y</code>; вид 4 —
+       <code>RETURNING · POST x,y</code>. Деталь <code>TARGET LOCK</code> вместо <code>TO POSITION</code> означает,
+       что юнит уже на позиции и стреляет, а не едет.</p>
+  </div>
+
+  <h2>Автоматические переходы — оригинальный скрипт</h2>
+  <p class="lede">Это чужой код в байткоде <code>UNIT.EMC</code>; адреса ниже — слова, их видно через
+     <code>tools/dis_emc.py</code>. Наш C только подставляется в его вызовы.</p>
+
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Где</th><th>Что делает</th><th>Наша поправка</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>GUARD, слово 964</td>
+          <td>Бесконечный цикл: ищет цель в пределах собственной дальности от текущей позиции, стреляет, сбрасывает цель, вышедшую за дальность. Не двигается вообще.</td>
+          <td>Не трогаем. Выдвижение из Guard целиком обеспечивает наш слой.</td>
+        </tr>
+        <tr>
+          <td>AREA GUARD, слово 453</td>
+          <td>Ищет цель в пределах двух дальностей от <code>originEncoded</code> и едет прямо на неё; за пределами этой зоны бросает цель и возвращается домой.</td>
+          <td><code>originEncoded</code> держим равным нашему посту, чтобы обе логики считали дом одинаково.</td>
+        </tr>
+        <tr>
+          <td>ATTACK, слово 213</td>
+          <td>Вне дальности прокладывает маршрут <b>прямо в цель</b>, не используя <code>targetMove</code>. Это и есть тот самый лобовой подъезд.</td>
+          <td>Маршрут подменяется на выбранную тактическую позицию, а если её нет — не строится совсем.</td>
+        </tr>
+        <tr>
+          <td>ATTACK, слово 229</td>
+          <td>Бой окончен: если <code>targetMove</code> ещё стоит — переход в MOVE, иначе жёстко в GUARD.</td>
+          <td>Ветка MOVE уходит в <code>SetActionDefault</code>, где мы возвращаем запомненный игроком режим вместо «широкого по умолчанию».</td>
+        </tr>
+        <tr>
+          <td>MOVE, слова 697 / 709 / 726</td>
+          <td>Единственное место во всём файле, которое зовёт <code>SetActionDefault</code>.</td>
+          <td>Сначала пробуем вернуть юнит на пост, потом отдаём запомненный режим охраны.</td>
+        </tr>
+        <tr>
+          <td>RETREAT (диспетчер, слово 1406)</td>
+          <td>Сбрасывает цель, ставит назначением <code>originEncoded</code> и уходит в подпрограмму MOVE.</td>
+          <td>Не трогаем; выход из неё идёт через ту же точку возврата режима.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note"><strong>Ловушка.</strong> Пехотный отряд ниже половины HP распадается в одиночного бойца
+       (<code>type += 2</code>) и с вероятностью от «стойкости» дома уходит в RETREAT. В этом состоянии радиус
+       автономного поиска равен нулю — юнит полностью выпадает из обороны, пока отход не закончится.</p>
+  </div>
+
+  <h2>Отладочный оверлей</h2>
+  <p class="lede">Game Controls → <b>DEBUG LINES</b>. Рисует поверх карты то, что каждый юнит игрока решил на самом
+     деле, и снимает необходимость угадывать по поведению.</p>
+
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Линия</th><th>Куда ведёт</th><th>Что означает её отсутствие</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Белая</td>
+          <td><code>targetMove</code> — текущее назначение движения</td>
+          <td>Юнит никуда не едет. Для стоящего на посту это норма, для того, кто должен сближаться — нет.</td>
+        </tr>
+        <tr>
+          <td>Жёлтая</td>
+          <td>Зарезервированная тактическая позиция: огневая клетка или точка ожидания</td>
+          <td>Позиция не выбрана. Либо юнит уже в дистанции огня, либо ни одна клетка кольца не прошла проверку.</td>
+        </tr>
+        <tr>
+          <td>Красная</td>
+          <td>Выбранная цель</td>
+          <td>Цели нет: в зоне от поста никого не нашлось, либо всё отсеяно по приоритету.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note"><strong>Как читать.</strong> Красная есть, жёлтой и белой нет, юнит вне дистанции — позиция не
+       нашлась (состояние HOLD). Жёлтая и белая ведут в разные места — за назначение борются два слоя. Линий нет
+       вовсе, а враг рядом — цель не выбрана: смотреть надо на зону от поста, а не на расстояние до врага.
+       Пока оверлей включён, тактическая карта перерисовывается целиком каждый кадр, иначе линии смазываются.</p>
+  </div>
+
+  <h2>Что видно в панели</h2>
+  <div class="card scroller">
+    <table>
+      <thead><tr><th>Строка</th><th>Значит</th></tr></thead>
+      <tbody>
+        <tr><td>GUARD / AREA GUARD</td><td>Режим охраны, стоит на посту, целей нет.</td></tr>
+        <tr><td>DEFENDING · POST x,y</td><td>Вылазка: дерётся, помнит пост и вернётся на него.</td></tr>
+        <tr><td>RETURNING · POST x,y</td><td>Бой окончен, едет обратно. В этом состоянии новые цели не ищутся.</td></tr>
+        <tr><td>ATTACKING · TO POSITION</td><td>Едет на выбранную огневую позицию (виды движения 2 и 3).</td></tr>
+        <tr><td>ATTACKING · TARGET LOCK / NO TARGET</td><td>Приказ игрока на атаку; TARGET LOCK — уже на позиции, стреляет.</td></tr>
+        <tr><td>VS WORM · ON SAND / ON ROCK</td><td>Целью стал червь; действуют все ограничения выше.</td></tr>
+        <tr><td>HUNTING · SEEK TARGET</td><td>Ручная охота, радиус 63.</td></tr>
+        <tr><td>MOVING · TO x,y</td><td>Едет по приказу или возвращается на пост.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    Источники: <code>src/unit.c</code> (автономная оборона, огневые позиции, посты), <code>src/script/unit.c</code>
+    (опкоды скрипта), <code>src/gui/widget_click.c</code> и <code>widget_draw.c</code> (панель приказов),
+    байткод <code>UNIT.EMC</code> из <code>DUNE.PAK</code> — читается через <code>tools/dis_emc.py</code>.
+    См. также <a href="emc-scripts.md">emc-scripts.md</a> и <a href="units.html">units.html</a>.
+  </footer>
+
+</div>
+</body>
+</html>

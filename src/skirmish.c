@@ -22,6 +22,7 @@
 #include "skirmish.h"
 
 #include "audio/sound.h"
+#include "doctrine.h"
 #include "gui/gui.h"
 #include "house.h"
 #include "map.h"
@@ -219,6 +220,17 @@ static const uint8 s_blueprint[] = {
 	STRUCTURE_HOUSE_OF_IX,
 	STRUCTURE_PALACE,
 
+	/* A second production line of each kind.  One Heavy Factory is a hard
+	 * ceiling on how fast a house can replace what it loses: a Siege Tank takes
+	 * as long to build whether the house has 2000 credits or 8000, so a grown
+	 * economy spends the second half of a match unable to turn money into an
+	 * army.  Two of each roughly doubles that rate, and by this point in the plan
+	 * the income is there to keep them both busy. */
+	STRUCTURE_HEAVY_VEHICLE,
+	STRUCTURE_LIGHT_VEHICLE,
+	STRUCTURE_WINDTRAP,
+	STRUCTURE_HEAVY_VEHICLE,
+
 	/* The forward line, and it is deliberately long.  A pair of turrets is a
 	 * speed bump; what stops a team is enough of them that the team dies inside
 	 * their combined range, and they are cheap next to the tanks they kill -- a
@@ -399,6 +411,7 @@ void Skirmish_Reset(void)
 	memset(s_shotsStructure, 0, sizeof(s_shotsStructure));
 	memset(s_shotsUnit, 0, sizeof(s_shotsUnit));
 	memset(s_shotsBypass, 0, sizeof(s_shotsBypass));
+	Doctrine_Reset();
 }
 
 static SkirmishBase *Skirmish_GetBase(uint8 houseID)
@@ -505,6 +518,87 @@ uint16 Skirmish_GetBaseOrigin(uint8 index)
 	if (!s_active || index >= SKIRMISH_PLAYER_MAX || s_bases[index].entryCount == 0) return 0xFFFF;
 
 	return s_bases[index].origin;
+}
+
+/** The House holding base slot @p index, or HOUSE_INVALID. */
+uint8 Skirmish_GetBaseHouse(uint8 index)
+{
+	if (!s_active || index >= SKIRMISH_PLAYER_MAX || s_bases[index].entryCount == 0) return HOUSE_INVALID;
+
+	return s_bases[index].houseID;
+}
+
+/**
+ * The plateau a House was given, by House rather than by slot.
+ *
+ * A doctrine needs this to reason about the faces of an enemy base: the defence
+ * line only covers the two that look at the middle of the map, and the shape of
+ * the rectangle is what says which two those are.
+ */
+bool Skirmish_GetBaseRect(uint8 houseID, uint16 *x, uint16 *y, uint16 *width, uint16 *height)
+{
+	uint8 index;
+
+	if (!s_active) return false;
+
+	for (index = 0; index < SKIRMISH_PLAYER_MAX; index++) {
+		if (s_bases[index].entryCount == 0 || s_bases[index].houseID != houseID) continue;
+
+		if (x != NULL)      *x = s_bases[index].rectX;
+		if (y != NULL)      *y = s_bases[index].rectY;
+		if (width != NULL)  *width = SKIRMISH_BASE_WIDTH;
+		if (height != NULL) *height = SKIRMISH_BASE_HEIGHT;
+
+		return true;
+	}
+
+	return false;
+}
+
+uint16 Skirmish_GetUnitsBuilt(uint8 houseID, uint16 unitType)
+{
+	if (houseID >= HOUSE_MAX || unitType >= UNIT_MAX) return 0;
+
+	return s_unitsBuilt[houseID][unitType];
+}
+
+static uint16 Skirmish_CountUnits(uint8 houseID, uint16 type);
+
+uint16 Skirmish_CountUnitsOfType(uint8 houseID, uint16 unitType)
+{
+	if (houseID >= HOUSE_MAX || unitType >= UNIT_MAX) return 0;
+
+	return Skirmish_CountUnits(houseID, unitType);
+}
+
+/** Combat units this House has standing, counting the ones inside a building. */
+uint16 Skirmish_CountCombatUnits(uint8 houseID)
+{
+	PoolFindStruct find;
+	uint16 count = 0;
+	uint16 oldValidate = g_validateStrictIfZero;
+
+	if (houseID >= HOUSE_MAX) return 0;
+
+	g_validateStrictIfZero = 1;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (!Skirmish_IsMilitaryUnit(u->o.type)) continue;
+		if (!g_table_unitInfo[u->o.type].o.flags.priority) continue;   /* Bullets are not an army. */
+
+		count++;
+	}
+
+	g_validateStrictIfZero = oldValidate;
+
+	return count;
 }
 
 uint32 Skirmish_War_GetIncome(uint8 index)
@@ -1045,6 +1139,10 @@ bool Skirmish_AI_AllowUnit(const House *h, uint16 unitType)
 
 	if (!Skirmish_IsMilitaryUnit(unitType)) return true;
 
+	/* Composition, before the budget: a doctrine that asked for a mix has to be
+	 * able to refuse the type that is already over its share. */
+	if (Doctrine_GetForHouse((uint8)h->index) != DOCTRINE_LEGACY && !Doctrine_AllowUnit(h, unitType)) return false;
+
 	/* Economy mode measures spice, not war: a soldier built here is credits
 	 * burned and a unit slot spent, so nothing but the economy is allowed.  In a
 	 * war the same question is a budget question -- has this house spent its
@@ -1131,6 +1229,10 @@ uint16 Skirmish_AI_PickUnit(const House *h, uint32 buildable)
 
 	if (!s_active || h == NULL) return 0xFFFF;
 
+	/* Composition is a doctrine's business: what an army should be made of is
+	 * inseparable from what it is going to be asked to do with it. */
+	if (Doctrine_GetForHouse((uint8)h->index) != DOCTRINE_LEGACY) return Doctrine_PickUnit(h, buildable);
+
 	for (i = 0; i < UNIT_MAX; i++) {
 		count[i] = 0;
 		if ((buildable & (1u << i)) == 0 || s_armyMix[i] == 0) continue;
@@ -1161,9 +1263,6 @@ uint16 Skirmish_AI_PickUnit(const House *h, uint32 buildable)
 	return best;
 }
 
-/** Units a house assembles before it sends a wave out. */
-#define SKIRMISH_WAVE_SIZE 12
-
 /**
  * Whether this house may start a new attack right now.
  *
@@ -1176,7 +1275,7 @@ uint16 Skirmish_AI_PickUnit(const House *h, uint32 buildable)
  *
  * Teams already committed are not affected -- they keep the target they have.
  */
-bool Skirmish_AI_WaveReady(uint8 houseID)
+bool Skirmish_LegacyWaveReady(uint8 houseID, uint16 waveSize)
 {
 	uint16 waiting = 0;
 	uint16 committed = 0;
@@ -1197,13 +1296,18 @@ bool Skirmish_AI_WaveReady(uint8 houseID)
 
 	if (s_waveOpen[houseID]) {
 		/* Spent: what is left of it is the seed of the next one. */
-		if (committed * 3 < SKIRMISH_WAVE_SIZE) s_waveOpen[houseID] = false;
+		if (committed * 3 < waveSize) s_waveOpen[houseID] = false;
 		return s_waveOpen[houseID];
 	}
 
-	if (waiting >= SKIRMISH_WAVE_SIZE) s_waveOpen[houseID] = true;
+	if (waiting >= waveSize) s_waveOpen[houseID] = true;
 
 	return s_waveOpen[houseID];
+}
+
+bool Skirmish_AI_WaveReady(uint8 houseID)
+{
+	return Doctrine_WaveReady(houseID);
 }
 
 /**
@@ -1258,12 +1362,20 @@ void Skirmish_RecordShot(uint8 houseID, uint16 target)
 }
 
 /**
- * Combat units of this house that are out on a wave with nothing to do.
+ * Combat units of this house with nothing whatsoever to do.
  *
- * No target, nowhere to be, while their team is committed.  During an attack
- * this must be zero; anything else is a unit standing on the verge.
+ * No target, nowhere to be.  The first version of this asked the same question
+ * only of units on a committed team, and read 1 bad sample in 164 while forty
+ * vehicles stood at the factory door -- because a unit no team ever recruited
+ * has no team, and was skipped.  That is not a detail: engine teams recruit one
+ * unit per script pass and cap at 32 members between them, so more than half of
+ * a grown army is outside them by construction, and the metric was blind to
+ * exactly the population it was meant to police.
+ *
+ * So: every military unit, wave or no wave.  A unit standing in the base with
+ * nothing to shoot is still a unit that was paid for and is not being used.
  */
-static uint16 Skirmish_CountIdleAttackers(uint8 houseID)
+static uint16 Skirmish_CountIdleAttackers(uint8 houseID, bool onWaveOnly)
 {
 	PoolFindStruct find;
 	uint16 idle = 0;
@@ -1274,14 +1386,12 @@ static uint16 Skirmish_CountIdleAttackers(uint8 houseID)
 
 	while (true) {
 		const Unit *u = Unit_Find(&find);
-		const Team *t;
 
 		if (u == NULL) break;
-		if (u->o.flags.s.isNotOnMap || u->team == 0) continue;
+		if (u->o.flags.s.isNotOnMap) continue;
 		if (!Skirmish_IsMilitaryUnit(u->o.type)) continue;
-
-		t = Team_Get_ByIndex(u->team - 1);
-		if (t == NULL || t->target == 0) continue;          /* Not on a wave. */
+		if (!g_table_unitInfo[u->o.type].o.flags.priority) continue;   /* Bullets are not an army. */
+		if (onWaveOnly && !Doctrine_IsOnWave(u)) continue;
 
 		if (Tools_Index_IsValid(u->targetAttack)) continue;
 		if (u->targetMove != 0) continue;
@@ -1669,6 +1779,10 @@ void Skirmish_Economy_Tick(House *h)
 	if (b == NULL) return;
 
 	Skirmish_Economy_SampleQueue(b, h);
+
+	/* The war layer.  Deliberately after the economy sample: what a doctrine may
+	 * spend has already been decided by the time it decides what to do. */
+	Doctrine_Tick(h);
 }
 
 uint16 Skirmish_House_MaxCredits(const House *h)
@@ -1776,9 +1890,17 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
 	s->o.flags.s.degrades = false;
 	s->state = STRUCTURE_STATE_IDLE;
 
+	Doctrine_HouseStart(houseID);
+
 	/* Teams are what makes an AI attack at all: on their own, factory units
 	 * roll out and guard.  One team per movement type, because a team only ever
-	 * recruits units that move like it does.  Economy mode has no enemy. */
+	 * recruits units that move like it does.  Economy mode has no enemy.
+	 *
+	 * Only doctrine A wants them.  B drives its units from C on its own clock,
+	 * and an engine team underneath would fight it for the same fields -- so it
+	 * gets none, and TEAM.EMC never sees its army. */
+	if (!Doctrine_UsesEngineTeams(houseID)) return;
+
 	for (i = 0; !s_economyMode && i < lengthof(s_teamPlan); i++) {
 		Team_Create(houseID, TEAM_ACTION_NORMAL, s_teamPlan[i].movementType,
 		            s_teamPlan[i].minMembers, s_teamPlan[i].maxMembers);
@@ -2189,6 +2311,10 @@ bool Skirmish_GetTeams(uint8 index, char *buf, uint16 length)
 
 	buf[0] = '\0';
 
+	/* Doctrine B has no teams to print: its roster is its own, and this is the
+	 * line the self-test reads to see what an AI is doing with its army. */
+	if (!Doctrine_UsesEngineTeams(b->houseID)) return Doctrine_GetSummary(b->houseID, buf, length);
+
 	find.houseID = b->houseID;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
@@ -2284,22 +2410,30 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 
 	g_validateStrictIfZero = oldValidate;
 
-	snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u",
-	         g_table_houseInfo[b->houseID].name,
-	         refineries, combatStructures,
-	         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER),
-	         combatUnits, (unsigned)combatHitpoints,
-	         (unsigned)s_damageTaken[b->houseID],
-	         (unsigned)s_harvested[b->houseID],
-	         h->credits,
-	         (int)h->powerProduction - (int)h->powerUsage,
-	         (unsigned)s_shotsTurret[b->houseID],
-	         (unsigned)s_shotsStructure[b->houseID],
-	         (unsigned)s_shotsUnit[b->houseID],
-	         (unsigned)s_shotsBypass[b->houseID],
-	         Skirmish_CountIdleAttackers(b->houseID),
-	         Skirmish_CountStalledHarvesters(b->houseID),
-	         Skirmish_CountFreeRefineries(b->houseID));
+	{
+		char doctrine[64];
+
+		if (!Doctrine_GetTelemetry(b->houseID, doctrine, sizeof(doctrine))) strcpy(doctrine, "0,0,0,0,0,0");
+
+		snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%s",
+		         g_table_houseInfo[b->houseID].name,
+		         refineries, combatStructures,
+		         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER),
+		         combatUnits, (unsigned)combatHitpoints,
+		         (unsigned)s_damageTaken[b->houseID],
+		         (unsigned)s_harvested[b->houseID],
+		         h->credits,
+		         (int)h->powerProduction - (int)h->powerUsage,
+		         (unsigned)s_shotsTurret[b->houseID],
+		         (unsigned)s_shotsStructure[b->houseID],
+		         (unsigned)s_shotsUnit[b->houseID],
+		         (unsigned)s_shotsBypass[b->houseID],
+		         Skirmish_CountIdleAttackers(b->houseID, false),
+		         Skirmish_CountIdleAttackers(b->houseID, true),
+		         Skirmish_CountStalledHarvesters(b->houseID),
+		         Skirmish_CountFreeRefineries(b->houseID),
+		         doctrine);
+	}
 
 	return true;
 }

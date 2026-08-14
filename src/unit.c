@@ -27,6 +27,7 @@
 #include "pool/structure.h"
 #include "pool/unit.h"
 #include "pool/team.h"
+#include "doctrine.h"
 #include "skirmish.h"
 #include "sprites.h"
 #include "string.h"
@@ -2107,11 +2108,9 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	 * leave to chase it, alone; the defence dissolved a unit at a time and both
 	 * fixed seeds ended with a house wiped out.  At exactly weapon range there
 	 * is nothing to chase: it fires or it does not. */
-	{
-		const Team *team = (unit->team != 0) ? Team_Get_ByIndex(unit->team - 1) : NULL;
-
-		onWave = (team != NULL && team->target != 0);
-	}
+	/* What counts as "on a wave" is the doctrine's answer, not this function's:
+	 * under A it is a Team with a target, under B a unit its house committed. */
+	onWave = Doctrine_IsOnWave(unit);
 
 	/* A target already taken is finished off first -- but only if it is itself
 	 * something in the way.  Holding the team's objective here too is what kept
@@ -2148,6 +2147,11 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	 * destination.  There is nothing else for it to be doing. */
 	if (!onWave || Tools_Index_IsValid(unit->targetAttack)) return;
 	if (unit->targetMove != 0 || unit->currentDestination.x != 0 || unit->currentDestination.y != 0) return;
+
+	/* Doctrine B has no team to read the objective back from, and does not need
+	 * one: its own tick re-issues the order every thirty ticks, which is thirty
+	 * times more often than this would. */
+	if (unit->team == 0) return;
 
 	{
 		const Team *team = Team_Get_ByIndex(unit->team - 1);
@@ -4424,6 +4428,9 @@ void Unit_UntargetMe(Unit *unit)
 	}
 
 	Unit_RemoveFromTeam(unit);
+	/* The pool hands this slot to the next unit built, so a role left behind
+	 * would be inherited by something of a different type entirely. */
+	Doctrine_ForgetUnit(unit->o.index);
 
 	find.houseID = HOUSE_INVALID;
 	find.type    = 0xFFFF;

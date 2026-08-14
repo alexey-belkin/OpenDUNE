@@ -63,6 +63,7 @@
 #include "pool/team.h"
 #include "rev.h"
 #include "scenario.h"
+#include "doctrine.h"
 #include "skirmish.h"
 #include "sprites.h"
 #include "string.h"
@@ -1728,6 +1729,14 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--selection-self-test") == 0) s_selectionSelfTest = true;
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
 			if (strcmp(argv[i], "--economy-trace") == 0) EcoSearch_SetTrace(true);
+			/* "--doctrine=B" for both sides, "--doctrine=A,B" to play one against
+			 * the other on the same map: the only honest test of a battle
+			 * strategy is the strategy it replaces, on the same seed. */
+			if (strncmp(argv[i], "--doctrine=", 11) == 0) {
+				if (!Doctrine_ParseArgument(argv[i] + 11)) {
+					Warning("--doctrine expects doctrine names, e.g. --doctrine=A,B\n");
+				}
+			}
 			if (strncmp(argv[i], "--economy-play", 14) == 0) {
 				s_ecoPlay = true;
 				if (argv[i][14] == '=') sscanf(argv[i] + 15, "%hu,%hu,%hu,%hu,%hu,%u", &s_ecoPlayRefineries, &s_ecoPlayHarvesters, &s_ecoPlayCarryalls, &s_ecoPlayWait, &s_ecoPlayCarryallWait, &s_ecoPlaySeed);

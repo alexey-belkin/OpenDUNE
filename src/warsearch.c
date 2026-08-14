@@ -36,6 +36,7 @@
 #include "opendune.h"
 #include "pool/house.h"
 #include "pool/pool.h"
+#include "doctrine.h"
 #include "skirmish.h"
 #include "structure.h"
 #include "team.h"
@@ -319,7 +320,13 @@ void WarSearch_RunTelemetry(uint8 houseA, uint8 houseB, uint32 ticks, uint16 ste
 	fprintf(fp, "# seed %u\n", (unsigned)seed);
 	fprintf(fp, "# ticks %u\n", (unsigned)ticks);
 	fprintf(fp, "# step %u\n", (unsigned)step);
-	fprintf(fp, "tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus,shotsTurret,shotsStructure,shotsUnit,shotsBypass,idleAttackers,stalledHarvesters,freeRefineries\n");
+	{
+		char doctrine[32];
+
+		Doctrine_GetSelection(doctrine, sizeof(doctrine));
+		fprintf(fp, "# doctrine %s\n", doctrine);
+	}
+	fprintf(fp, "tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus,shotsTurret,shotsStructure,shotsUnit,shotsBypass,idleAttackers,idleOnWave,stalledHarvesters,freeRefineries,wavePhase,waveUnits,waveAtLD,waveColumn,wavesLaunched,wavesAborted\n");
 
 	Timer_SetTimer(TIMER_GAME, false);
 

@@ -76,6 +76,7 @@ crashlog/crashlog_win32.c
 crashlog/crashlog_none.c
 #endif
 cutscene.c
+doctrine.c
 ecosearch.c
 explosion.c
 file.c
@@ -225,6 +226,7 @@ codec/format80.h
 config.h
 crashlog/crashlog.h
 cutscene.h
+doctrine.h
 explosion.h
 file.h
 gfx.h
