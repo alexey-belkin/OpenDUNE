@@ -21,6 +21,7 @@
 #include "../pool/pool.h"
 #include "../pool/structure.h"
 #include "../scenario.h"
+#include "../skirmish.h"
 #include "../structure.h"
 #include "../table/strings.h"
 #include "../tools.h"
@@ -660,6 +661,10 @@ uint16 Script_Unit_Fire(ScriptEngine *script)
 
 		if (diff >= 8) return 0;
 	}
+
+	/* Past every early return: this is a shot actually leaving the barrel, which
+	 * is the only honest place to count what the army is shooting at. */
+	Skirmish_RecordShot(Unit_GetHouseID(u), target);
 
 	damage = Unit_CombatBalance_ApplyHouseDamage(u, ui->damage);
 	typeID = ui->bulletType;

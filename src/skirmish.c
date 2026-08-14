@@ -173,6 +173,16 @@ static uint16 s_unitsBuilt[HOUSE_MAX][UNIT_MAX];
 /* Whether each house is currently attacking or currently building up. */
 static bool s_waveOpen[HOUSE_MAX];
 
+/* What the army is shooting at, cumulative.  Shots, not orders: an order that
+ * never turns into a shot is exactly the failure these are here to catch. */
+static uint32 s_shotsTurret[HOUSE_MAX];
+static uint32 s_shotsStructure[HOUSE_MAX];
+static uint32 s_shotsUnit[HOUSE_MAX];
+/* Shots at a building while an enemy turret stood within reach.  This is the
+ * one that says "walked past it" rather than "there was none": a low turret
+ * share can mean either, and only this tells them apart. */
+static uint32 s_shotsBypass[HOUSE_MAX];
+
 void Skirmish_RecordBuilt(uint8 houseID, uint16 unitType)
 {
 	if (!s_active || houseID >= HOUSE_MAX || unitType >= UNIT_MAX) return;
@@ -385,6 +395,10 @@ void Skirmish_Reset(void)
 	memset(s_damageTaken, 0, sizeof(s_damageTaken));
 	memset(s_unitsBuilt, 0, sizeof(s_unitsBuilt));
 	memset(s_waveOpen, 0, sizeof(s_waveOpen));
+	memset(s_shotsTurret, 0, sizeof(s_shotsTurret));
+	memset(s_shotsStructure, 0, sizeof(s_shotsStructure));
+	memset(s_shotsUnit, 0, sizeof(s_shotsUnit));
+	memset(s_shotsBypass, 0, sizeof(s_shotsBypass));
 }
 
 static SkirmishBase *Skirmish_GetBase(uint8 houseID)
@@ -1190,6 +1204,140 @@ bool Skirmish_AI_WaveReady(uint8 houseID)
 	if (waiting >= SKIRMISH_WAVE_SIZE) s_waveOpen[houseID] = true;
 
 	return s_waveOpen[houseID];
+}
+
+/**
+ * Count one shot, classified by what it was aimed at.
+ *
+ * Turrets are counted apart from the rest of the base because they are the one
+ * thing that is always on the way in: a wave that reaches a factory without
+ * having shot at the turrets it drove past did not fight, it commuted.
+ */
+void Skirmish_RecordShot(uint8 houseID, uint16 target)
+{
+	const Structure *s;
+
+	if (!s_active || houseID >= HOUSE_MAX) return;
+
+	if (Tools_Index_GetType(target) == IT_UNIT) {
+		s_shotsUnit[houseID]++;
+		return;
+	}
+
+	s = Tools_Index_GetStructure(target);
+	if (s == NULL) return;
+
+	if (s->o.type == STRUCTURE_TURRET || s->o.type == STRUCTURE_ROCKET_TURRET) {
+		s_shotsTurret[houseID]++;
+		return;
+	}
+
+	s_shotsStructure[houseID]++;
+
+	/* Was a turret in reach at that moment?  Then this shot went past it. */
+	{
+		PoolFindStruct find;
+		uint16 reach = 8;
+
+		find.houseID = HOUSE_INVALID;
+		find.index   = 0xFFFF;
+		find.type    = 0xFFFF;
+
+		while (true) {
+			const Structure *t = Structure_Find(&find);
+
+			if (t == NULL) break;
+			if (t->o.type != STRUCTURE_TURRET && t->o.type != STRUCTURE_ROCKET_TURRET) continue;
+			if (House_AreAllied(houseID, t->o.houseID)) continue;
+			if (Tile_GetDistanceRoundedUp(s->o.position, t->o.position) > reach) continue;
+
+			s_shotsBypass[houseID]++;
+			break;
+		}
+	}
+}
+
+/**
+ * Combat units of this house that are out on a wave with nothing to do.
+ *
+ * No target, nowhere to be, while their team is committed.  During an attack
+ * this must be zero; anything else is a unit standing on the verge.
+ */
+static uint16 Skirmish_CountIdleAttackers(uint8 houseID)
+{
+	PoolFindStruct find;
+	uint16 idle = 0;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+		const Team *t;
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap || u->team == 0) continue;
+		if (!Skirmish_IsMilitaryUnit(u->o.type)) continue;
+
+		t = Team_Get_ByIndex(u->team - 1);
+		if (t == NULL || t->target == 0) continue;          /* Not on a wave. */
+
+		if (Tools_Index_IsValid(u->targetAttack)) continue;
+		if (u->targetMove != 0) continue;
+		if (u->currentDestination.x != 0 || u->currentDestination.y != 0) continue;
+
+		idle++;
+	}
+
+	return idle;
+}
+
+/** Loaded harvesters standing still with nowhere booked to unload. */
+static uint16 Skirmish_CountStalledHarvesters(uint8 houseID)
+{
+	PoolFindStruct find;
+	uint16 stalled = 0;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = UNIT_HARVESTER;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.flags.s.isNotOnMap || u->amount < 100) continue;
+		if (u->targetMove != 0) continue;
+		if (u->currentDestination.x != 0 || u->currentDestination.y != 0) continue;
+
+		stalled++;
+	}
+
+	return stalled;
+}
+
+/** Refineries of this house standing free right now. */
+static uint16 Skirmish_CountFreeRefineries(uint8 houseID)
+{
+	PoolFindStruct find;
+	uint16 free = 0;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = STRUCTURE_REFINERY;
+
+	while (true) {
+		const Structure *s = Structure_Find(&find);
+
+		if (s == NULL) break;
+		if (s->o.flags.s.isNotOnMap) continue;
+		if (s->state != STRUCTURE_STATE_IDLE || s->o.linkedID != 0xFF) continue;
+
+		free++;
+	}
+
+	return free;
 }
 
 bool Skirmish_AI_WantsCarryall(const House *h)
@@ -2136,7 +2284,7 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 
 	g_validateStrictIfZero = oldValidate;
 
-	snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d",
+	snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u",
 	         g_table_houseInfo[b->houseID].name,
 	         refineries, combatStructures,
 	         Skirmish_CountUnits(b->houseID, UNIT_HARVESTER),
@@ -2144,7 +2292,14 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 	         (unsigned)s_damageTaken[b->houseID],
 	         (unsigned)s_harvested[b->houseID],
 	         h->credits,
-	         (int)h->powerProduction - (int)h->powerUsage);
+	         (int)h->powerProduction - (int)h->powerUsage,
+	         (unsigned)s_shotsTurret[b->houseID],
+	         (unsigned)s_shotsStructure[b->houseID],
+	         (unsigned)s_shotsUnit[b->houseID],
+	         (unsigned)s_shotsBypass[b->houseID],
+	         Skirmish_CountIdleAttackers(b->houseID),
+	         Skirmish_CountStalledHarvesters(b->houseID),
+	         Skirmish_CountFreeRefineries(b->houseID));
 
 	return true;
 }

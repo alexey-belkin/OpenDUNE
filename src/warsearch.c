@@ -319,7 +319,7 @@ void WarSearch_RunTelemetry(uint8 houseA, uint8 houseB, uint32 ticks, uint16 ste
 	fprintf(fp, "# seed %u\n", (unsigned)seed);
 	fprintf(fp, "# ticks %u\n", (unsigned)ticks);
 	fprintf(fp, "# step %u\n", (unsigned)step);
-	fprintf(fp, "tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus\n");
+	fprintf(fp, "tick,house,refineries,combatStructures,harvesters,combatUnits,combatHitpoints,damageTaken,spiceRefined,credits,powerSurplus,shotsTurret,shotsStructure,shotsUnit,shotsBypass,idleAttackers,stalledHarvesters,freeRefineries\n");
 
 	Timer_SetTimer(TIMER_GAME, false);
 

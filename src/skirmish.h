@@ -61,6 +61,7 @@ extern bool Skirmish_AI_AllowUnit(const struct House *h, uint16 unitType);
 extern uint16 Skirmish_AI_PickUnit(const struct House *h, uint32 buildable);
 extern void Skirmish_RecordBuilt(uint8 houseID, uint16 unitType);
 extern bool Skirmish_AI_WaveReady(uint8 houseID);
+extern void Skirmish_RecordShot(uint8 houseID, uint16 target);
 extern bool Skirmish_AI_StarportOrder(struct House *h, struct Structure *s);
 
 extern void Skirmish_Economy_AddHarvested(uint8 houseID, uint16 credits, uint16 structureIndex);

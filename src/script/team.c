@@ -453,7 +453,7 @@ uint16 Script_Team_Unknown0788(ScriptEngine *script)
 			mine = u->targetAttack;
 		}
 
-		if (mine == 0) mine = Unit_Autonomy_FindTargetWithin(u, reach + 3);
+		if (mine == 0) mine = Unit_Autonomy_FindTargetWithin(u, reach + 3, true);
 		if (mine == 0) mine = t->target;
 
 		tile = Tools_Index_GetTile(mine);

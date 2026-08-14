@@ -145,6 +145,7 @@ void Unit_CombatBalance_Init(void)
 	};
 	uint16 attacker;
 	uint16 target;
+	bool onWave;
 
 	s_combatBalance.enabled = IniFile_GetInteger("class_balance_enabled", 1) != 0;
 	s_combatBalance.sharedInfantryProduction = IniFile_GetInteger("class_balance_shared_infantry", 1) != 0;
@@ -889,6 +890,11 @@ static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
  * its guard post.  A team member on the march needs the same judgement a
  * guarding unit makes, measured from where it is now. */
 static uint16 s_scanRadius = 0;
+/* Set with it when the caller only wants what is physically in the way: enemy
+ * units, and the turrets that shoot from where they stand.  Everything else a
+ * base is made of is an objective, not an obstacle, and belongs to whoever
+ * issued the objective. */
+static bool s_scanWayOnly = false;
 
 static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 {
@@ -1154,6 +1160,7 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit, uint32 *bestScoreOut)
 
 		if (target == NULL) break;
 		if (target->o.type == STRUCTURE_SLAB_1x1 || target->o.type == STRUCTURE_SLAB_2x2 || target->o.type == STRUCTURE_WALL) continue;
+		if (s_scanWayOnly && target->o.type != STRUCTURE_TURRET && target->o.type != STRUCTURE_ROCKET_TURRET) continue;
 		encoded = Tools_Index_Encode(target->o.index, IT_STRUCTURE);
 		if (!Unit_Autonomy_TargetInArea(unit, encoded)) continue;
 		priority = Unit_Autonomy_BasePriority(unit, encoded, &maxHitpoints, &hitpoints);
@@ -1186,14 +1193,16 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit, uint32 *bestScoreOut)
  * @param radius How far to look, in tiles.
  * @return The encoded target, or 0 when nothing there is worth shooting.
  */
-uint16 Unit_Autonomy_FindTargetWithin(Unit *unit, uint16 radius)
+uint16 Unit_Autonomy_FindTargetWithin(Unit *unit, uint16 radius, bool wayOnly)
 {
 	uint16 target;
 
 	if (unit == NULL || radius == 0 || unit->o.index >= UNIT_INDEX_MAX) return 0;
 
 	s_scanRadius = radius;
+	s_scanWayOnly = wayOnly;
 	target = Unit_Autonomy_FindTarget(unit, NULL);
+	s_scanWayOnly = false;
 	s_scanRadius = 0;
 
 	return target;
@@ -2044,6 +2053,20 @@ static void Unit_Harvester_RecoverFullCargo(Unit *unit)
 /* Periodic maintenance for player harvesters, on top of the legacy script.
  * Everything here is a recovery path: it may only act when the script has left
  * the unit with nothing useful to do. */
+/* Whether an encoded target is an obstacle rather than an objective: an enemy
+ * unit, or a turret, which shoots from where it stands and so is one too. */
+static bool Unit_Skirmish_IsInTheWay(uint16 encoded)
+{
+	const Structure *s;
+
+	if (Tools_Index_GetType(encoded) == IT_UNIT) return true;
+
+	s = Tools_Index_GetStructure(encoded);
+	if (s == NULL) return false;
+
+	return (s->o.type == STRUCTURE_TURRET || s->o.type == STRUCTURE_ROCKET_TURRET);
+}
+
 /**
  * Clear the way: engage whatever is in front of this unit, every tick.
  *
@@ -2065,6 +2088,7 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	const UnitInfo *ui = &g_table_unitInfo[unit->o.type];
 	uint16 reach = ui->fireDistance;
 	uint16 target;
+	bool onWave;
 
 	if (!Skirmish_IsActive()) return;
 	if (Unit_GetHouseID(unit) == g_playerHouseID) return;
@@ -2072,30 +2096,41 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || reach == 0) return;
 	if (unit->o.type == UNIT_HARVESTER || unit->o.type == UNIT_MCV) return;
 
-	/* Only a unit that is out on a wave.
+	/* How far this unit is allowed to look depends on what it is doing.
 	 *
-	 * Applied to everything, this emptied the bases: a guard that acquired an
-	 * enemy harvester wandering past left its post to chase it, alone, and the
-	 * defence dissolved one unit at a time.  Both fixed seeds ended with one
-	 * house wiped out.  Clearing the way is a marching behaviour -- what a unit
-	 * standing on its post does is the guard layer's business, not this. */
-	if (unit->team == 0) return;
+	 * On a wave: weapon range plus three, so something met head-on is acquired
+	 * before either side can fire and this unit shoots first.
+	 *
+	 * Anywhere else -- and most of an army is not in a team at any moment --
+	 * only what it can already shoot from where it stands.  Giving base guards
+	 * the wider radius let one acquire an enemy harvester passing its post and
+	 * leave to chase it, alone; the defence dissolved a unit at a time and both
+	 * fixed seeds ended with a house wiped out.  At exactly weapon range there
+	 * is nothing to chase: it fires or it does not. */
 	{
-		const Team *team = Team_Get_ByIndex(unit->team - 1);
+		const Team *team = (unit->team != 0) ? Team_Get_ByIndex(unit->team - 1) : NULL;
 
-		if (team == NULL || team->target == 0) return;
+		onWave = (team != NULL && team->target != 0);
 	}
 
-	/* A target already taken is finished off first: re-deciding every tick is
-	 * what turned an attack into a smear.  Two tiles of slack past the search
-	 * radius so a target backing away is still pursued rather than dropped and
-	 * immediately re-acquired. */
+	/* A target already taken is finished off first -- but only if it is itself
+	 * something in the way.  Holding the team's objective here too is what kept
+	 * the turret share at nothing: a unit that had come within range of the
+	 * factory it was sent for stopped looking, and shot the factory while the
+	 * turret beside it fired back unopposed.  Measured, 941 shots at buildings
+	 * against 0 at turrets.  Two tiles of slack past the search radius so a
+	 * target backing away is pursued rather than dropped and re-acquired. */
 	if (Tools_Index_IsValid(unit->targetAttack)
-		&& Tile_GetDistance(unit->o.position, Tools_Index_GetTile(unit->targetAttack)) <= ((reach + 5) << 8)) return;
+		&& Unit_Skirmish_IsInTheWay(unit->targetAttack)
+		&& Tile_GetDistance(unit->o.position, Tools_Index_GetTile(unit->targetAttack)) <= ((reach + (onWave ? 5 : 1)) << 8)) return;
 
 	/* Weapon range plus three, so something met head-on is acquired before
 	 * either side can fire and this unit shoots first. */
-	target = Unit_Autonomy_FindTargetWithin(unit, reach + 3);
+	/* On a wave, never look less far than a turret can shoot back from.  A tank
+	 * reaches four or five tiles, a rocket turret further, so a radius tied only
+	 * to the unit's own gun left it shooting a building while a turret it could
+	 * not "see" fired at it: measured at 210 such shots in one match. */
+	target = Unit_Autonomy_FindTargetWithin(unit, onWave ? max(reach + 3, 8) : reach, true);
 
 	if (target != 0) {
 		Unit_SetTarget(unit, target);
@@ -2103,14 +2138,26 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 		return;
 	}
 
-	/* Nothing near: leave the unit alone.
+	/* Way clear.  A unit still on a wave with nothing at all to do is sent back
+	 * to the objective -- and only such a unit.
 	 *
-	 * Re-issuing the team's objective from here as well looked like the obvious
-	 * other half and is not: it fires for every idle member every tick, so the
-	 * cohort left one at a time as each finished its own fight, which is the
-	 * trickle the wave gate exists to stop.  Measured, it cost one house the
-	 * whole match on both fixed seeds.  Resuming the objective belongs to the
-	 * team script, which owns it. */
+	 * The first version of this resumed for anything idle, which fires for every
+	 * member every tick and dribbled the cohort out one at a time; it cost a
+	 * house the whole match on both fixed seeds.  The condition here is exactly
+	 * the one the telemetry counts as an idle attacker: on a wave, no target, no
+	 * destination.  There is nothing else for it to be doing. */
+	if (!onWave || Tools_Index_IsValid(unit->targetAttack)) return;
+	if (unit->targetMove != 0 || unit->currentDestination.x != 0 || unit->currentDestination.y != 0) return;
+
+	{
+		const Team *team = Team_Get_ByIndex(unit->team - 1);
+
+		if (team == NULL || team->target == 0) return;
+
+		Unit_SetTarget(unit, team->target);
+		if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
+		Unit_SetDestination(unit, team->target);
+	}
 }
 
 static void Unit_Harvester_Update(Unit *unit)

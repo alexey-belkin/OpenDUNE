@@ -22,7 +22,9 @@ DEFAULT_OUT = "telemetry.html"
 
 # Columns as written by WarSearch_RunTelemetry(), minus tick and house.
 COLUMNS = ["refineries", "combatStructures", "harvesters", "combatUnits",
-           "combatHitpoints", "damageTaken", "spiceRefined", "credits", "powerSurplus"]
+           "combatHitpoints", "damageTaken", "spiceRefined", "credits", "powerSurplus",
+           "shotsTurret", "shotsStructure", "shotsUnit", "shotsBypass",
+           "idleAttackers", "stalledHarvesters", "freeRefineries"]
 
 
 def read_match(path):
