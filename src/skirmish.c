@@ -546,10 +546,15 @@ uint16 Skirmish_GetBaseRally(uint8 houseID)
 
 		if (b->entryCount == 0 || b->houseID != houseID) continue;
 
-		x = b->eastSide  ? (uint16)(b->rectX + SKIRMISH_BASE_DEFENCE + 2)
-		                 : (uint16)(b->rectX + SKIRMISH_BASE_WIDTH  - SKIRMISH_BASE_DEFENCE - 2);
-		y = b->southSide ? (uint16)(b->rectY + SKIRMISH_BASE_DEFENCE + 2)
-		                 : (uint16)(b->rectY + SKIRMISH_BASE_HEIGHT - SKIRMISH_BASE_DEFENCE - 2);
+		/* One tile behind the turrets, which stand at SKIRMISH_DEFENCE_TURRET_INSET
+		 * from the plateau edge.  Six tiles in -- behind the whole four-tile
+		 * defence band -- reads on screen as "gathering in the middle of the
+		 * base", which is not where a reserve is any use: the point of standing
+		 * with the guns is that the guns shoot at whatever comes for you. */
+		x = b->eastSide  ? (uint16)(b->rectX + SKIRMISH_DEFENCE_TURRET_INSET + 1)
+		                 : (uint16)(b->rectX + SKIRMISH_BASE_WIDTH  - SKIRMISH_DEFENCE_TURRET_INSET - 1);
+		y = b->southSide ? (uint16)(b->rectY + SKIRMISH_DEFENCE_TURRET_INSET + 1)
+		                 : (uint16)(b->rectY + SKIRMISH_BASE_HEIGHT - SKIRMISH_DEFENCE_TURRET_INSET - 1);
 
 		return Tile_PackXY(x, y);
 	}
