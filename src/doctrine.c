@@ -200,7 +200,9 @@ typedef struct DoctrineHouse {
 	uint32 wavesAborted;
 	uint32 wavesDeclined;                                   /*!< Counted itself against the line and stayed home. */
 	uint32 firstAssault;                                    /*!< Tick the first assault began, or 0. */
-	uint32 declineUntil;                                    /*!< Not worth re-asking before this tick. */
+	uint32 declineUntil;
+	uint32 attackStrength;                                  /*!< Last reading of the trigger, so it can be read off the screen. */
+	uint32 defenceStrength;                                    /*!< Not worth re-asking before this tick. */
 	uint32 suppressShots;
 	uint8  enemy;
 } DoctrineHouse;
@@ -1405,15 +1407,29 @@ static uint32 Doctrine_AttackStrength(uint8 houseID)
 	return total;
 }
 
-static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy)
+static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy, uint16 objective)
 {
 	PoolFindStruct find;
 	uint32 total = 0;
+	uint16 aim = (objective != 0) ? Tools_Index_GetPackedTile(objective) : 0;
 
 	find.houseID = enemy;
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
 
+	/* Mobile units count by where they are.
+	 *
+	 * A wave does not have to beat the enemy's whole army -- it has to beat what
+	 * is at the objective, plus whatever can get back there in time.  Counting
+	 * every unit on the map at full weight made the test say "not yet" with
+	 * twelve artillery and twenty-five assault standing ready, because the
+	 * defender's own raiders, out hunting on the far side of the map, were being
+	 * counted as though they were parked on the objective.
+	 *
+	 * Discounting the distant ones was tried and measured worse -- three wins in
+	 * six became two, because a defender does concentrate and arrives home before
+	 * a wave that has to cross the map.  They count in full, wherever they
+	 * are. */
 	while (true) {
 		const Unit *u = Unit_Find(&find);
 
@@ -1429,16 +1445,34 @@ static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy)
 	find.index   = 0xFFFF;
 	find.type    = 0xFFFF;
 
+	/* Turrets, unlike units, cannot be somewhere else -- so only the ones the
+	 * wave is going to meet count.
+	 *
+	 * Counting the whole line was the mistake that made the test unreachable: a
+	 * grown base has twenty-odd turrets spread over two faces, the wave meets
+	 * perhaps five of them on the approach it chose, and weighing all twenty at
+	 * double their hitpoints put the bar four times higher than the fight it
+	 * describes.  With twelve artillery and twenty-five assault standing ready
+	 * the test still said no, and the army went on accumulating for the rest of
+	 * the match.
+	 *
+	 * Twelve tiles around the objective is the envelope the assault has to live
+	 * inside; a turret outside that is somebody else's problem. */
 	while (true) {
 		const Structure *s = Structure_Find(&find);
 
 		if (s == NULL) break;
 		if (Doctrine_TurretReach(s->o.type) == 0) continue;
 		if (s->o.flags.s.isNotOnMap) continue;
+		if (aim != 0 && Tile_GetDistancePacked(aim, Tile_PackTile(s->o.position)) > 20) continue;
 
-		/* A turret is worth more than its hitpoints say: it shoots for free from
-		 * outside the reach of almost everything, so it costs more to remove than
-		 * a tank of the same size. */
+		/* Worth double its hitpoints: it fires for free from outside the reach of
+		 * nearly everything, so removing it costs more than a tank of the same
+		 * size.  Three shapes of this test were measured over six seeds --
+		 * turrets at 1.5x within twelve tiles, the same with distant units
+		 * discounted, and this one -- and the strictest won most: three wins in
+		 * six against two.  For a House that cannot outrange a turret, patience
+		 * is not timidity, it is the only edge it has. */
 		total += (uint32)s->o.hitpoints * 2;
 	}
 
@@ -1558,6 +1592,12 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	 * house that is not strong enough waits and keeps raiding instead. */
 	if (dh->declineUntil > g_timerGame) return;
 
+	approach = Doctrine_PickApproach(houseID, enemy);
+	if (approach == 0) return;
+
+	objective = Doctrine_PickObjective(houseID, enemy, approach, reserve);
+	if (objective == 0) return;
+
 	/* Against everything this House could send, not against what happens to be
 	 * unassigned.
 	 *
@@ -1568,7 +1608,10 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	 * is a stall.  The aggregate is the honest quantity: if everything that is
 	 * not garrison cannot beat the line, nothing can, and the raiders keep
 	 * strangling instead. */
-	if (Doctrine_AttackStrength(houseID) * 100 < Doctrine_DefenceStrength(houseID, enemy) * p->assaultRatio) {
+	dh->attackStrength = Doctrine_AttackStrength(houseID);
+	dh->defenceStrength = Doctrine_DefenceStrength(houseID, enemy, objective);
+
+	if (dh->attackStrength * 100 < dh->defenceStrength * p->assaultRatio) {
 		dh->wavesDeclined++;
 		dh->declineUntil = g_timerGame + 600;
 		return;
@@ -1580,12 +1623,6 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	 * in its base with seven of them and launched nothing for the rest of the
 	 * match. */
 	keep = (reserve > (uint16)(p->minWave + p->garrisonKeep)) ? p->garrisonKeep : (uint16)(reserve - p->minWave);
-
-	approach = Doctrine_PickApproach(houseID, enemy);
-	if (approach == 0) return;
-
-	objective = Doctrine_PickObjective(houseID, enemy, approach, (uint16)(reserve - keep));
-	if (objective == 0) return;
 
 	dh->objective = objective;
 	dh->ldPacked  = Doctrine_FindLD(houseID, approach, objective);
@@ -2684,12 +2721,13 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 
 	if (near != 0xFFFF && far > near) spread = (uint16)(far - near);
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         dh->phase, dh->waveCount, dh->atLD, dh->columnLength,
 	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted,
 	         (unsigned)dh->wavesDeclined,
 	         inAssault, inMuster, idleGarrison, spread,
-	         (unsigned)dh->firstAssault, raiders, hunting);
+	         (unsigned)dh->firstAssault, raiders, hunting,
+	         (unsigned)dh->attackStrength, (unsigned)dh->defenceStrength);
 
 	return true;
 }
@@ -2726,7 +2764,7 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 		role[s_unitRole[u->o.index]]++;
 	}
 
-	snprintf(buf, length, "B %s w%u/LD%u T%u a%us%ur%ug%u L%uA%uD%u",
+	snprintf(buf, length, "B %s w%u/LD%u T%u a%us%ur%ug%u %u:%u L%uA%uD%u",
 	         phaseName[dh->phase & 3], dh->waveCount, dh->atLD,
 	         /* Tiles from the rally to the nearest own turret.  A reserve that is
 	          * not standing with the guns is not covering them, and the number is
@@ -2734,6 +2772,7 @@ bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length)
 	         min(Skirmish_GetTurretDistance(houseID, dh->musterPacked), 99),
 	         role[DOCTRINE_ROLE_ARTILLERY], role[DOCTRINE_ROLE_ASSAULT],
 	         role[DOCTRINE_ROLE_RAID], role[DOCTRINE_ROLE_GARRISON],
+	         (unsigned)dh->attackStrength, (unsigned)dh->defenceStrength,
 	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted,
 	         (unsigned)dh->wavesDeclined);
 
