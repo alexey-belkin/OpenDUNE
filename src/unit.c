@@ -2814,10 +2814,19 @@ void GameLoop_Unit(void)
 
 		if (tickUnknown4) {
 			Unit_Autonomy_Update(u);
-			/* Before the sweep, not after: a unit that has just been pushed out
-			 * of an envelope must not be handed a target inside it again on the
-			 * same tick. */
-			if (!Doctrine_TurretExclusion(u)) Unit_Skirmish_ClearTheWay(u);
+			/* Both, always, and in this order.
+			 *
+			 * Skipping the sweep whenever the exclusion had something to say was
+			 * a serious mistake: the fence reaches fourteen tiles for a fast
+			 * unit, so anywhere near the enemy base every unit stopped looking
+			 * for anything to shoot and simply drove.  What that looks like on
+			 * screen is a column filing past enemy tanks on its way to a
+			 * building, which is the exact behaviour the sweep exists to stop.
+			 *
+			 * The sweep decides what to shoot; the exclusion decides where to
+			 * stand.  They are not alternatives. */
+			Unit_Skirmish_ClearTheWay(u);
+			Doctrine_TurretExclusion(u);
 			Unit_Harvester_Update(u);
 			Unit_AirTransit_Update(u);
 			Unit_AttackPosition_Update(u);

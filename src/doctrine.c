@@ -196,7 +196,8 @@ typedef struct DoctrineHouse {
 	uint16 columnLength;
 	uint32 wavesLaunched;
 	uint32 wavesAborted;
-	uint32 wavesDeclined;                                   /*!< Formed, looked at the line, and went home. */
+	uint32 wavesDeclined;                                   /*!< Counted itself against the line and stayed home. */
+	uint32 declineUntil;                                    /*!< Not worth re-asking before this tick. */
 	uint32 suppressShots;
 	uint8  enemy;
 } DoctrineHouse;
@@ -1103,8 +1104,12 @@ bool Doctrine_TurretExclusion(Unit *unit)
 			                                         (uint16)((worstReach + 2) << 8)));
 		}
 
-		if (unit->actionID != ACTION_MOVE) Unit_SetAction(unit, ACTION_MOVE);
-		Unit_SetTarget(unit, 0);
+		/* Moved, not disarmed.  Clearing the target here is what let a unit walk
+		 * out of an envelope past something shooting at it without answering:
+		 * leaving is about where it stands, not about whether it fights. */
+		if (unit->actionID != ACTION_ATTACK || !Tools_Index_IsValid(unit->targetAttack)) {
+			if (unit->actionID != ACTION_MOVE) Unit_SetAction(unit, ACTION_MOVE);
+		}
 		Unit_SetDestination(unit, Tools_Index_Encode(out, IT_TILE));
 	}
 
@@ -1439,6 +1444,7 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 {
 	const DoctrineParams *p = Doctrine_ParamsOf(houseID);
 	uint16 reserve;
+	uint32 reserveHp = 0;
 	uint16 keep;
 	uint16 approach;
 	uint16 objective;
@@ -1448,8 +1454,27 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	dh->musterPacked = Doctrine_MusterPoint(houseID, enemy);
 	if (dh->musterPacked == 0) return;
 
-	reserve = Doctrine_CountReserve(houseID, NULL);
+	reserve = Doctrine_CountReserve(houseID, &reserveHp);
 	if (reserve < p->minWave) return;
+
+	/* Weighed here, before anybody moves.
+	 *
+	 * Deciding this at the line of departure meant the wave formed, marched
+	 * forty tiles, looked at what it was facing, and went home -- hundreds of
+	 * times a match.  From outside that is not a wave and not a decision, it is
+	 * a column shuttling back and forth, which is exactly the trickle this
+	 * doctrine exists to replace.
+	 *
+	 * Declining also has to stick for a while.  Re-asking the same question
+	 * thirty ticks later gets the same answer and re-forms the same wave, so a
+	 * house that is not strong enough waits and keeps raiding instead. */
+	if (dh->declineUntil > g_timerGame) return;
+
+	if (reserveHp * 100 < Doctrine_DefenceStrength(houseID, enemy) * p->assaultRatio) {
+		dh->wavesDeclined++;
+		dh->declineUntil = g_timerGame + 3000;
+		return;
+	}
 
 	/* The keep comes out of what is left above the minimum, not on top of it.
 	 * Demanding minWave + garrisonKeep before anything moves put the bar at ten
@@ -1598,13 +1623,6 @@ static void Doctrine_PhaseApproach(uint8 houseID, DoctrineHouse *dh)
 		 * half of the strategy -- the raiders are out hunting harvesters, and an
 		 * enemy whose economy is being taken apart has to come out to us, where
 		 * there are no turrets. */
-		if (hp * 100 < Doctrine_DefenceStrength(houseID, dh->enemy) * p->assaultRatio) {
-			dh->wavesDeclined++;
-			Doctrine_DismissWave(houseID);
-			Doctrine_EnterPhase(dh, PHASE_MUSTER);
-			return;
-		}
-
 		Doctrine_EnterPhase(dh, PHASE_SUPPRESS);
 	}
 }
