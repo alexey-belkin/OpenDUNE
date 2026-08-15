@@ -135,11 +135,16 @@ static int WarSearch_Match(const SkirmishEconomyPlan *planA, const SkirmishEcono
 	*valueA = 0;
 	*valueB = 0;
 
+	/* Off before the match is built: see WarSearch_RunMetrics() for what the
+	 * timer thread does to a match that starts while it is running. */
+	Timer_SetTimer(TIMER_GAME, false);
+
 	Tools_RandomLCG_Seed((uint16)seed);
 
-	if (!Skirmish_StartWar(WAR_HOUSE_A, WAR_HOUSE_B, seed, planA, planB)) return 0;
-
-	Timer_SetTimer(TIMER_GAME, false);
+	if (!Skirmish_StartWar(WAR_HOUSE_A, WAR_HOUSE_B, seed, planA, planB)) {
+		Timer_SetTimer(TIMER_GAME, true);
+		return 0;
+	}
 
 	for (tick = 0; tick < ticks; tick++) {
 		g_timerGame++;
@@ -248,6 +253,287 @@ static uint16 WarSearch_Duel(const SkirmishEconomyPlan *planA, const SkirmishEco
 	*realB = (uint16)((incomeB != 0) ? militaryB * 100 / incomeB : 0);
 
 	return points;
+}
+
+/* -------------------------------------------------------------------------- */
+/* The metrics suite                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A fixed battery of matches, scored against fixed targets.
+ *
+ * Everything else in this file compares two strategies and answers "which".
+ * This answers "is it still working", which is a different question and needs a
+ * different shape: the same maps every time, a named list of numbers, and a
+ * target beside each one.  It exists because every behavioural fix in this fork
+ * so far has broken something that had already been fixed -- the turret fence
+ * stopped units leaving, the flank route stopped them fighting, a rule written
+ * for one doctrine leaked into the other -- and each was found by eye, matches
+ * later, rather than by the run that caused it.
+ *
+ * Both sides are measured, not just the one under test.  The leak that put a
+ * doctrine B rule into doctrine A was invisible precisely because nobody was
+ * looking at A's numbers, and a baseline that drifts is not a baseline.
+ *
+ * Each map is played twice with the doctrines swapped between Houses, so House
+ * identity and the corner of the map cancel out instead of being read as a
+ * result.
+ */
+typedef struct MetricTotals {
+	DoctrineMetrics d;
+	uint32 spice;
+	uint32 matches;
+	uint32 assaultMatches;                                  /*!< Matches with at least one assault. */
+	uint32 assaultTickSum;
+	uint32 wipeouts;                                        /*!< Times this side lost its last building. */
+	uint32 points;                                          /*!< 2 per win, 1 per draw. */
+} MetricTotals;
+
+/** Which way a metric is good, and where the line is. */
+typedef enum MetricSense { METRIC_LOWER, METRIC_HIGHER } MetricSense;
+
+static void WarSearch_MetricAdd(MetricTotals *t, uint8 houseID)
+{
+	DoctrineMetrics m;
+
+	Doctrine_GetMetrics(houseID, &m);
+
+	t->d.turretEntries       += m.turretEntries;
+	t->d.turretDwell         += m.turretDwell;
+	t->d.turretDeathsLoose   += m.turretDeathsLoose;
+	t->d.turretDeathsAssault += m.turretDeathsAssault;
+	t->d.turretsKilled       += m.turretsKilled;
+	t->d.harvesterLost       += m.harvesterLost;
+	t->d.harvesterLostEarly  += m.harvesterLostEarly;
+	t->d.harvesterKilled     += m.harvesterKilled;
+	t->d.harvesterExposed    += m.harvesterExposed;
+	t->d.harvesterSamples    += m.harvesterSamples;
+	t->d.cohesionOn          += m.cohesionOn;
+	t->d.cohesionAll         += m.cohesionAll;
+	t->d.wavesLaunched       += m.wavesLaunched;
+	t->d.wavesAborted        += m.wavesAborted;
+	t->d.wavesDeclined       += m.wavesDeclined;
+
+	if (m.firstAssault != 0) {
+		t->assaultMatches++;
+		t->assaultTickSum += m.firstAssault;
+	}
+
+	t->spice += Skirmish_Economy_GetHarvested(houseID);
+	t->matches++;
+}
+
+/** Per match, rounded, with an empty battery reading zero rather than dividing by it. */
+static uint32 WarSearch_PerMatch(uint32 total, uint32 matches)
+{
+	if (matches == 0) return 0;
+	return (total + matches / 2) / matches;
+}
+
+static uint32 WarSearch_Percent(uint32 part, uint32 whole)
+{
+	if (whole == 0) return 0;
+	return part * 100 / whole;
+}
+
+/**
+ * One row: name, both sides' readings, the gate, the goal, the verdict.
+ *
+ * Two numbers rather than one, because they answer different questions and
+ * collapsing them makes the suite useless in one direction or the other.  The
+ * goal is where the behaviour should end up and several of them are nowhere near
+ * met; the gate is where it stands now with room for noise, and breaking one is
+ * a regression -- something that worked this morning does not any more.  A suite
+ * that only carried goals would print FAIL for ever and be ignored; one that only
+ * carried gates would quietly bless whatever it happened to measure first.
+ */
+static void WarSearch_MetricRow(const char *name, uint32 test, uint32 base,
+                                uint32 gate, uint32 goal, MetricSense sense,
+                                uint16 *failures, uint16 *offGoal)
+{
+	const bool held = (sense == METRIC_LOWER) ? (test <= gate) : (test >= gate);
+	const bool met  = (sense == METRIC_LOWER) ? (test <= goal) : (test >= goal);
+	const char *op = (sense == METRIC_LOWER) ? "<=" : ">=";
+	char line[200];
+
+	if (!held) (*failures)++;
+	if (!met) (*offGoal)++;
+
+	snprintf(line, sizeof(line), "  %-22s %10u %10u   %s%-8u %s%-8u %s",
+	         name, (unsigned)test, (unsigned)base,
+	         op, (unsigned)gate, op, (unsigned)goal,
+	         !held ? "REGRESSION" : (met ? "on goal" : "off goal"));
+	WarSearch_Print(line);
+}
+
+/**
+ * Play the battery and print the scorecard.
+ *
+ * @param houseA The House the tested doctrine starts as; it plays the other one
+ *               on the return leg of every map.
+ */
+void WarSearch_RunMetrics(uint8 houseA, uint8 houseB, uint32 ticks, uint16 maps)
+{
+	MetricTotals test, base;
+	SkirmishEconomyPlan plan;
+	char line[256];
+	char doctrine[32];
+	uint16 failures = 0;
+	uint16 offGoal = 0;
+	uint16 map;
+	uint32 value;
+
+	if (maps < 1) maps = 1;
+	if (ticks == 0) ticks = 200000;
+
+	memset(&test, 0, sizeof(test));
+	memset(&base, 0, sizeof(base));
+
+	/* The tuned opening, the same for both sides.  A doctrine is a way of using
+	 * an army, and measuring it on top of two different economies would be
+	 * measuring the economies. */
+	WarSearch_MakePlan(0, 90, 30000, &plan);
+
+	Doctrine_GetSelection(doctrine, sizeof(doctrine));
+	snprintf(line, sizeof(line), "doctrine metrics: %s, %u maps x2 legs, %u ticks",
+	         doctrine, maps, (unsigned)ticks);
+	WarSearch_Print(line);
+
+	for (map = 0; map < maps; map++) {
+		const uint32 seed = 1000 + map * 7919;
+		uint8 leg;
+
+		for (leg = 0; leg < 2; leg++) {
+			const uint8 first  = (leg == 0) ? houseA : houseB;
+			const uint8 second = (leg == 0) ? houseB : houseA;
+			uint32 tick;
+
+			/* The clock goes off before the match is built, not after.
+			 *
+			 * Starting a war takes real time -- a map is generated and two bases
+			 * are placed -- and with the timer thread still running, however many
+			 * of its ticks land inside that window is a property of machine load.
+			 * The match then begins at a different absolute tick every run, and
+			 * everything the engine gates on tick parity falls differently.  Two
+			 * runs of this suite on the same binary disagreed by a third on spice
+			 * and by half on time spent under turrets, which is more than most of
+			 * the changes it is meant to be measuring. */
+			Timer_SetTimer(TIMER_GAME, false);
+
+			Tools_RandomLCG_Seed((uint16)seed);
+			if (!Skirmish_StartWar(first, second, seed, &plan, &plan)) {
+				Timer_SetTimer(TIMER_GAME, true);
+				continue;
+			}
+
+			for (tick = 0; tick < ticks; tick++) {
+				g_timerGame++;
+
+				GameLoop_Team();
+				GameLoop_Unit();
+				GameLoop_Structure();
+				GameLoop_House();
+
+				if ((tick & 0x3FF) == 0
+					&& (Skirmish_War_IsDefeated(0) || Skirmish_War_IsDefeated(1))) break;
+			}
+
+			Timer_SetTimer(TIMER_GAME, true);
+
+			/* Base index 0 always carries the tested doctrine -- that is what
+			 * swapping the Houses between legs is for. */
+			WarSearch_MetricAdd(&test, Skirmish_GetBaseHouse(0));
+			WarSearch_MetricAdd(&base, Skirmish_GetBaseHouse(1));
+
+			if (Skirmish_War_IsDefeated(0)) test.wipeouts++;
+			if (Skirmish_War_IsDefeated(1)) base.wipeouts++;
+
+			{
+				const uint32 a = Skirmish_War_GetValue(0);
+				const uint32 b = Skirmish_War_GetValue(1);
+
+				if (Skirmish_War_IsDefeated(1) && !Skirmish_War_IsDefeated(0)) {
+					test.points += 2;
+				} else if (Skirmish_War_IsDefeated(0) && !Skirmish_War_IsDefeated(1)) {
+					base.points += 2;
+				} else if (a > b + b * WAR_MARGIN_PERCENT / 100) {
+					test.points += 2;
+				} else if (b > a + a * WAR_MARGIN_PERCENT / 100) {
+					base.points += 2;
+				} else {
+					test.points++;
+					base.points++;
+				}
+			}
+
+			snprintf(line, sizeof(line), "  map %u leg %u: seed %u done at t%u", map + 1, leg + 1, (unsigned)seed, (unsigned)tick);
+			WarSearch_Print(line);
+		}
+	}
+
+	WarSearch_Print("");
+	snprintf(line, sizeof(line), "  %-22s %10s %10s   %-10s %-10s %s",
+	         "metric", "tested", "baseline", "gate", "goal", "verdict");
+	WarSearch_Print(line);
+
+	/* Discipline: the turret rule, which is the one that keeps regressing.
+	 * Entries counts decisions, dwell counts what those decisions cost -- a fence
+	 * that turns units at the line and a fence they walk through and sit behind
+	 * produce the same entry count and wildly different dwell. */
+	WarSearch_MetricRow("turret.entries/match", WarSearch_PerMatch(test.d.turretEntries, test.matches),
+	                    WarSearch_PerMatch(base.d.turretEntries, base.matches), 24, 8, METRIC_LOWER, &failures, &offGoal);
+	WarSearch_MetricRow("turret.dwell/match", WarSearch_PerMatch(test.d.turretDwell, test.matches),
+	                    WarSearch_PerMatch(base.d.turretDwell, base.matches), 13000, 400, METRIC_LOWER, &failures, &offGoal);
+	WarSearch_MetricRow("turret.deaths.loose", test.d.turretDeathsLoose,
+	                    base.d.turretDeathsLoose, 0, 0, METRIC_LOWER, &failures, &offGoal);
+
+	/* Died to a turret during an assault, and the turret died too: the trade the
+	 * doctrine is willing to make.  No assault deaths at all reads as 999, which
+	 * passes -- nothing was spent, so there is nothing to have bought. */
+	value = (test.d.turretDeathsAssault == 0) ? 999
+	      : test.d.turretsKilled * 100 / test.d.turretDeathsAssault;
+	WarSearch_MetricRow("turret.trade %", value,
+	                    (base.d.turretDeathsAssault == 0) ? 999
+	                    : base.d.turretsKilled * 100 / base.d.turretDeathsAssault,
+	                    100, 100, METRIC_HIGHER, &failures, &offGoal);
+
+	/* Money likes quiet.  The loss count is the outcome and the exposure is the
+	 * cause; both are here because the first is what matters and the second is
+	 * what moves first. */
+	WarSearch_MetricRow("harv.lost.early", test.d.harvesterLostEarly,
+	                    base.d.harvesterLostEarly, 6, 0, METRIC_LOWER, &failures, &offGoal);
+	WarSearch_MetricRow("harv.lost/match", WarSearch_PerMatch(test.d.harvesterLost, test.matches),
+	                    WarSearch_PerMatch(base.d.harvesterLost, base.matches), 2, 0, METRIC_LOWER, &failures, &offGoal);
+	WarSearch_MetricRow("harv.exposure %", WarSearch_Percent(test.d.harvesterExposed, test.d.harvesterSamples),
+	                    WarSearch_Percent(base.d.harvesterExposed, base.d.harvesterSamples), 12, 5, METRIC_LOWER, &failures, &offGoal);
+	WarSearch_MetricRow("harv.killed/match", WarSearch_PerMatch(test.d.harvesterKilled, test.matches),
+	                    WarSearch_PerMatch(base.d.harvesterKilled, base.matches), 6, 10, METRIC_HIGHER, &failures, &offGoal);
+
+	/* Waves: that they happen, that they are not shuttled back and forth, and
+	 * that when one goes in the army goes with it. */
+	WarSearch_MetricRow("wave.launched/match", WarSearch_PerMatch(test.d.wavesLaunched, test.matches),
+	                    WarSearch_PerMatch(base.d.wavesLaunched, base.matches), 2, 3, METRIC_HIGHER, &failures, &offGoal);
+	WarSearch_MetricRow("wave.declined/match", WarSearch_PerMatch(test.d.wavesDeclined, test.matches),
+	                    WarSearch_PerMatch(base.d.wavesDeclined, base.matches), 60, 20, METRIC_LOWER, &failures, &offGoal);
+	WarSearch_MetricRow("wave.cohesion %", WarSearch_Percent(test.d.cohesionOn, test.d.cohesionAll),
+	                    WarSearch_Percent(base.d.cohesionOn, base.d.cohesionAll), 70, 85, METRIC_HIGHER, &failures, &offGoal);
+	WarSearch_MetricRow("wave.first.tick", WarSearch_PerMatch(test.assaultTickSum, test.assaultMatches),
+	                    WarSearch_PerMatch(base.assaultTickSum, base.assaultMatches), 130000, 90000, METRIC_LOWER, &failures, &offGoal);
+	WarSearch_MetricRow("wave.matches %", WarSearch_Percent(test.assaultMatches, test.matches),
+	                    WarSearch_Percent(base.assaultMatches, base.matches), 60, 90, METRIC_HIGHER, &failures, &offGoal);
+
+	/* And whether any of it won anything. */
+	WarSearch_MetricRow("econ.spice/match", WarSearch_PerMatch(test.spice, test.matches),
+	                    WarSearch_PerMatch(base.spice, base.matches), 50000, 65000, METRIC_HIGHER, &failures, &offGoal);
+	WarSearch_MetricRow("result.points %", WarSearch_Percent(test.points, test.matches * 2),
+	                    WarSearch_Percent(base.points, base.matches * 2), 55, 75, METRIC_HIGHER, &failures, &offGoal);
+	WarSearch_MetricRow("result.wipeouts %", WarSearch_Percent(test.wipeouts, test.matches),
+	                    WarSearch_Percent(base.wipeouts, base.matches), 25, 10, METRIC_LOWER, &failures, &offGoal);
+
+	WarSearch_Print("");
+	snprintf(line, sizeof(line), "doctrine metrics: %s -- %u regressions, %u of 16 still short of goal",
+	         (failures == 0) ? "PASS" : "FAIL", failures, offGoal);
+	WarSearch_Print(line);
 }
 
 /**

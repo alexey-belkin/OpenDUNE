@@ -36,6 +36,30 @@ typedef enum DoctrineRole {
 	DOCTRINE_ROLE_NONE      = 0xFF
 } DoctrineRole;
 
+/**
+ * Everything the metrics suite scores a doctrine on, for one House, for one
+ * match.  Raw counts only -- the ratios and the pass marks are the suite's job,
+ * because a target value is a judgement and this is measurement.
+ */
+typedef struct DoctrineMetrics {
+	uint32 turretEntries;                                   /*!< Crossings into an envelope. */
+	uint32 turretDwell;                                     /*!< Samples taken inside one, i.e. time spent. */
+	uint32 turretDeathsLoose;                               /*!< Killed by a turret outside an assault. */
+	uint32 turretDeathsAssault;                             /*!< Killed by a turret during one. */
+	uint32 turretsKilled;                                   /*!< Enemy turrets destroyed, the other half of the trade. */
+	uint32 harvesterLost;
+	uint32 harvesterLostEarly;                              /*!< Before t100000. */
+	uint32 harvesterKilled;                                 /*!< Enemy harvesters killed. */
+	uint32 harvesterExposed;                                /*!< Samples with one within eight tiles of a gun. */
+	uint32 harvesterSamples;
+	uint32 cohesionOn;                                      /*!< Attackers on the wave, summed over assault samples. */
+	uint32 cohesionAll;                                     /*!< Attackers in existence, over the same samples. */
+	uint32 wavesLaunched;
+	uint32 wavesAborted;
+	uint32 wavesDeclined;
+	uint32 firstAssault;                                    /*!< Tick, or 0 if there never was one. */
+} DoctrineMetrics;
+
 extern DoctrineID Doctrine_ParseName(const char *name);
 extern const char *Doctrine_GetName(DoctrineID id);
 extern void Doctrine_SetForIndex(uint8 index, DoctrineID id);
@@ -57,6 +81,10 @@ extern uint16 Doctrine_ThreatDistance(uint8 houseID, uint16 packed);
 extern void Doctrine_HarvesterExposure(uint8 houseID, uint16 *near8, uint16 *worst);
 extern uint16 Doctrine_DangerAt(uint8 houseID, uint16 packed);
 extern bool Doctrine_IsTurretTarget(uint16 encoded);
+extern bool Doctrine_MayEnterTurretZone(const struct Unit *u);
+extern bool Doctrine_TargetIsCovered(uint8 houseID, uint16 encoded);
+extern bool Doctrine_IsInTurretZone(const struct Unit *u);
+extern bool Doctrine_IsLeaving(const struct Unit *u);
 extern uint16 Doctrine_CoveringTurret(uint8 houseID, uint16 packed);
 extern bool Doctrine_TurretExclusion(struct Unit *unit);
 extern void Doctrine_RecordHit(struct Unit *victim, uint16 originEncoded);
@@ -66,5 +94,6 @@ extern void Doctrine_RecordHarvesterLoss(uint8 owner, uint8 killer);
 extern bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length);
 extern bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length);
 extern bool Doctrine_GetSummary(uint8 houseID, char *buf, uint16 length);
+extern void Doctrine_GetMetrics(uint8 houseID, DoctrineMetrics *out);
 
 #endif /* DOCTRINE_H */

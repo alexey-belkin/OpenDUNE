@@ -11,5 +11,6 @@ extern void WarSearch_RunMatrix(uint32 ticks, uint16 maps);
 extern void WarSearch_RunTelemetry(uint8 houseA, uint8 houseB, uint32 ticks, uint16 step, uint16 shareA, uint16 shareB, uint32 switchTick, uint32 seed);
 extern void WarSearch_RunTiming(uint32 ticks, uint16 maps);
 extern void WarSearch_RunLadder(uint32 ticks, uint16 maps);
+extern void WarSearch_RunMetrics(uint8 houseA, uint8 houseB, uint32 ticks, uint16 maps);
 
 #endif /* WARSEARCH_H */

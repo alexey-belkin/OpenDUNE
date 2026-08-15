@@ -2257,6 +2257,20 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	if (target != 0 && !onWave && Doctrine_GetForHouse(Unit_GetHouseID(unit)) != DOCTRINE_LEGACY
 		&& Doctrine_IsTurretTarget(target)) target = 0;
 
+	/* Nothing is fought from inside an envelope, and a unit on its way out of one
+	 * does not take a new target back inside it.
+	 *
+	 * Without this the two rules take turns: the fence clears the target and
+	 * orders the unit out, this hands the same target straight back twenty ticks
+	 * later, and the unit spends the match on the line being shot at for free by
+	 * a gun neither rule ever let it fight.  Measured, that ping-pong was most of
+	 * the time doctrine B's army spent under turrets -- thousands of ticks inside
+	 * against a handful of crossings, which is not a discipline problem but a
+	 * siege nobody ordered. */
+	if (target != 0 && !Doctrine_MayEnterTurretZone(unit)
+		&& (Doctrine_IsInTurretZone(unit)
+		    || (Doctrine_IsLeaving(unit) && Doctrine_TargetIsCovered(Unit_GetHouseID(unit), target)))) target = 0;
+
 	if (target != 0) {
 		Unit_SetTarget(unit, target);
 		if (unit->actionID != ACTION_ATTACK) Unit_SetAction(unit, ACTION_ATTACK);
@@ -4495,12 +4509,22 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 			}
 		}
 
-		if (Skirmish_IsActive()) Skirmish_RecordKill(houseID, false);
-		if (Skirmish_IsActive()) Doctrine_RecordDeath(houseID, unit->o.index);
-		/* Both halves of "money likes quiet" in one place: whose harvester it
-		 * was, and who is the only other House on the map. */
-		if (Skirmish_IsActive() && unit->o.type == UNIT_HARVESTER) {
-			Doctrine_RecordHarvesterLoss(houseID, Skirmish_GetOpponent(houseID));
+		/* Once per unit, not once per hit.  This block runs for every shot that
+		 * lands on something already at zero hitpoints -- a corpse takes a moment
+		 * to finish dying and everything shooting at it keeps shooting -- so the
+		 * kill counters were counting bullets.  A wreck lying in the open under a
+		 * turret booked over a thousand harvester losses in one match, which is
+		 * several times the whole unit pool.  "alive" is the hitpoints as they
+		 * were on the way in, which is the only place the distinction survives. */
+		if (Skirmish_IsActive() && alive) {
+			Skirmish_RecordKill(houseID, false);
+			Doctrine_RecordDeath(houseID, unit->o.index);
+
+			/* Both halves of "money likes quiet" in one place: whose harvester it
+			 * was, and who is the only other House on the map. */
+			if (unit->o.type == UNIT_HARVESTER) {
+				Doctrine_RecordHarvesterLoss(houseID, Skirmish_GetOpponent(houseID));
+			}
 		}
 
 		Unit_SetAction(unit, ACTION_DIE);

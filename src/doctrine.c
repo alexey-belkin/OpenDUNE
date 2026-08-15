@@ -166,6 +166,9 @@ static uint8  s_unitPicket[UNIT_INDEX_MAX];
 /* Where each unit stood at its last check, so a turret finished on top of a unit
  * is not booked as the unit walking into one. */
 static uint16 s_lastTile[UNIT_INDEX_MAX];
+/* The tile a unit was told to leave by, kept until it is either reached or no
+ * longer clear.  Re-deciding it every call is re-planning, not walking. */
+static uint16 s_exitTile[UNIT_INDEX_MAX];
 /* Tick each unit was last hit by a turret, so a death can be attributed to one.
  * Nothing in Unit_Damage() is told who fired; the bullet knows, and this is
  * where that is written down before it is lost. */
@@ -186,6 +189,17 @@ static uint32 s_harvesterKilled[HOUSE_MAX];
  * tick is the economy being built, and a harvester lost then is worth several
  * lost later. */
 static uint32 s_harvesterLostEarly[HOUSE_MAX];
+/* Doctrine ticks with at least one harvester within eight tiles of something
+ * that shoots.  Losses are the outcome; this is the exposure that produces them,
+ * and it moves long before the outcome does -- which is what makes it usable as
+ * a test rather than as a post-mortem. */
+static uint32 s_harvesterExposed[HOUSE_MAX];
+static uint32 s_harvesterSamples[HOUSE_MAX];
+/* Cohesion, sampled while an assault is under way: how many of the House's
+ * attackers were on the wave, against how many it had.  "They do not all go
+ * together" is a complaint about this ratio and nothing else. */
+static uint32 s_cohesionOn[HOUSE_MAX];
+static uint32 s_cohesionAll[HOUSE_MAX];
 
 typedef struct DoctrineHouse {
 	uint8  phase;
@@ -310,8 +324,24 @@ static const DoctrineParams *Doctrine_ParamsOf(uint8 houseID)
 	return &s_doctrine[Doctrine_GetForHouse(houseID)];
 }
 
+/* When the current match started, on a clock that never restarts.
+ *
+ * g_timerGame runs for the life of the process, and a search plays hundreds of
+ * matches inside one: everything the doctrine phrases as "by tick N" was true of
+ * the first match and of no other.  Resetting the global was tried and broke the
+ * economy outright -- too much of the engine stamps absolute ticks -- so the
+ * baseline is kept here and every deadline is measured against it. */
+static uint32 s_matchStart;
+
+/** Ticks since this match began. */
+static uint32 Doctrine_Elapsed(void)
+{
+	return (g_timerGame > s_matchStart) ? (g_timerGame - s_matchStart) : 0;
+}
+
 void Doctrine_Reset(void)
 {
+	s_matchStart = g_timerGame;
 	memset(s_doctrineOf, DOCTRINE_LEGACY, sizeof(s_doctrineOf));
 	memset(s_unitRole, DOCTRINE_ROLE_NONE, sizeof(s_unitRole));
 	memset(s_unitOnWave, 0, sizeof(s_unitOnWave));
@@ -324,6 +354,7 @@ void Doctrine_Reset(void)
 	memset(s_turnedBack, 0, sizeof(s_turnedBack));
 	memset(s_unitPicket, 0, sizeof(s_unitPicket));
 	memset(s_lastTile, 0, sizeof(s_lastTile));
+	memset(s_exitTile, 0, sizeof(s_exitTile));
 	memset(s_hitByTurret, 0, sizeof(s_hitByTurret));
 	memset(s_killedByTurretLoose, 0, sizeof(s_killedByTurretLoose));
 	memset(s_killedByTurretAssault, 0, sizeof(s_killedByTurretAssault));
@@ -331,6 +362,10 @@ void Doctrine_Reset(void)
 	memset(s_harvesterLost, 0, sizeof(s_harvesterLost));
 	memset(s_harvesterKilled, 0, sizeof(s_harvesterKilled));
 	memset(s_harvesterLostEarly, 0, sizeof(s_harvesterLostEarly));
+	memset(s_harvesterExposed, 0, sizeof(s_harvesterExposed));
+	memset(s_harvesterSamples, 0, sizeof(s_harvesterSamples));
+	memset(s_cohesionOn, 0, sizeof(s_cohesionOn));
+	memset(s_cohesionAll, 0, sizeof(s_cohesionAll));
 	memset(s_danger, 0, sizeof(s_danger));
 	memset(s_dangerUntil, 0, sizeof(s_dangerUntil));
 	memset(s_house, 0, sizeof(s_house));
@@ -364,6 +399,7 @@ void Doctrine_ForgetUnit(uint16 unitIndex)
 	s_unitRole[unitIndex] = DOCTRINE_ROLE_NONE;
 	s_unitOnWave[unitIndex] = 0;
 	s_inZone[unitIndex] = 0;
+	s_exitTile[unitIndex] = 0;
 	s_hitByTurret[unitIndex] = 0;
 	s_unitPicket[unitIndex] = 0;
 }
@@ -954,6 +990,53 @@ uint16 Doctrine_CoveringTurret(uint8 houseID, uint16 packed)
 }
 
 /**
+ * Whether this unit is one of the few allowed inside a turret's reach.
+ *
+ * Exactly one case: committed to a wave, and that wave in the assault.  That is
+ * the organised attack the doctrine is willing to spend units on -- anyone else
+ * standing there is a unit dying alone for nothing.
+ */
+bool Doctrine_MayEnterTurretZone(const Unit *u)
+{
+	uint8 houseID;
+
+	if (u == NULL || u->o.index >= UNIT_INDEX_MAX) return false;
+
+	/* Unit_GetHouseID() wants a mutable unit and this is a question, not an
+	 * order; a deviated unit is not on anybody's wave anyway. */
+	houseID = u->o.houseID;
+	if (houseID >= HOUSE_MAX) return false;
+
+	return (s_unitOnWave[u->o.index] != 0 && s_house[houseID].phase == PHASE_ASSAULT);
+}
+
+/** Whether the ground an encoded target stands on is covered by an enemy turret. */
+bool Doctrine_TargetIsCovered(uint8 houseID, uint16 encoded)
+{
+	if (encoded == 0 || !Tools_Index_IsValid(encoded)) return false;
+
+	return (Doctrine_CoveringTurret(houseID, Tools_Index_GetPackedTile(encoded)) != 0);
+}
+
+/** Whether this unit is standing inside an enemy turret's reach right now. */
+bool Doctrine_IsInTurretZone(const Unit *u)
+{
+	if (u == NULL || u->o.index >= UNIT_INDEX_MAX) return false;
+	if (Doctrine_GetForHouse(u->o.houseID) == DOCTRINE_LEGACY) return false;
+
+	return (s_inZone[u->o.index] != 0);
+}
+
+/** Whether this unit was just pushed out of an envelope and is still leaving. */
+bool Doctrine_IsLeaving(const Unit *u)
+{
+	if (u == NULL || u->o.index >= UNIT_INDEX_MAX) return false;
+	if (Doctrine_GetForHouse(u->o.houseID) == DOCTRINE_LEGACY) return false;
+
+	return (s_turnedBack[u->o.index] > g_timerGame);
+}
+
+/**
  * Keep a unit out of a turret's reach unless that turret is what it came for.
  *
  * A tank fighting another tank drifts, and the ground it drifts onto is often
@@ -990,6 +1073,28 @@ bool Doctrine_TurretExclusion(Unit *unit)
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit) return false;
 	if (unit->o.type == UNIT_SABOTEUR) return false;                 /* Its job is to arrive. */
 
+	/* Harvesters stay in.  They read as normal ground units and the harvester
+	 * layer has its own, wider rule about keeping away from guns, so letting the
+	 * fence take them too looks like two systems arguing over one unit -- but it
+	 * was tried and it costs: exposure doubled from 8 per cent of samples to 16
+	 * and both doctrines' spice moved with it.  The fence turns a harvester at
+	 * the edge of a gun's reach faster than a flee that only re-decides when the
+	 * harvest cycle next asks. */
+
+	/* The one case that is allowed in: a unit committed to a wave, and that wave
+	 * in the assault.  That is the organised attack the whole doctrine is built
+	 * to produce, and inside it the turrets are the wave's problem.
+	 *
+	 * The first version of this permitted only a unit whose own target was the
+	 * particular turret covering it, which reads as the stricter rule and is
+	 * actually the opposite: an assault is a wave going at a factory, so every
+	 * unit in it is shooting something that is not a turret, so the fence pushed
+	 * the entire assault back out of the base it had just been ordered into.
+	 * They walked in under orders, were turned round under the rule, walked in
+	 * again, and the counter recorded the argument -- 27195 ticks inside per
+	 * match, taking fire the whole way, for an attack that never landed. */
+	if (Doctrine_MayEnterTurretZone(unit)) return false;
+
 	/* The fence has to be as wide as the ground a unit covers between two looks.
 	 *
 	 * This runs under tickUnknown4, which fires every twenty game ticks, and a
@@ -1015,13 +1120,6 @@ bool Doctrine_TurretExclusion(Unit *unit)
 		if (House_AreAllied(houseID, s->o.houseID)) continue;
 		if (s->o.flags.s.isNotOnMap) continue;
 
-		/* Its own target: being here is the point.  Only a unit committed to a
-		 * wave that is in the assault may hold a turret as a target at all --
-		 * everything else that wants to be here is a unit about to die alone. */
-		if (s_unitOnWave[unit->o.index] != 0 && s_house[houseID].phase == PHASE_ASSAULT
-			&& Tools_Index_IsValid(unit->targetAttack)
-			&& Tools_Index_GetType(unit->targetAttack) == IT_STRUCTURE
-			&& Tools_Index_GetStructure(unit->targetAttack) == s) return false;
 
 		/* Turned back a tile early, on purpose.
 		 *
@@ -1050,6 +1148,7 @@ bool Doctrine_TurretExclusion(Unit *unit)
 	 * when it comes back. */
 	if (worst == NULL) {
 		s_inZone[unit->o.index] = 0;
+		s_exitTile[unit->o.index] = 0;
 		return false;
 	}
 
@@ -1096,6 +1195,22 @@ bool Doctrine_TurretExclusion(Unit *unit)
 		uint16 out = 0;
 		int16 ring;
 
+		/* The way out is chosen once and kept.
+		 *
+		 * The search below takes the first clear tile of the innermost clear ring,
+		 * which moves as the unit does -- so recomputing it on every call handed a
+		 * different destination every few ticks, the unit re-planned instead of
+		 * walking, and it stood in the envelope re-planning until something killed
+		 * it.  The trace read the same each time: ACTION_MOVE, a fresh targetMove,
+		 * and a position that had not changed.
+		 *
+		 * So the tile survives between calls and is only re-chosen when it stops
+		 * being clear, or when the unit is out and the state is dropped. */
+		if (s_exitTile[unit->o.index] != 0
+			&& Doctrine_CoveringTurret(houseID, s_exitTile[unit->o.index]) == 0) {
+			out = s_exitTile[unit->o.index];
+		}
+
 		for (ring = 1; ring <= 14 && out == 0; ring++) {
 			int16 dx, dy;
 
@@ -1130,12 +1245,43 @@ bool Doctrine_TurretExclusion(Unit *unit)
 			                                         (uint16)((worstReach + 2) << 8)));
 		}
 
-		/* Moved, not disarmed.  Clearing the target here is what let a unit walk
-		 * out of an envelope past something shooting at it without answering:
-		 * leaving is about where it stands, not about whether it fights. */
-		if (unit->actionID != ACTION_ATTACK || !Tools_Index_IsValid(unit->targetAttack)) {
+		/* Inside the envelope, leaving is an order.  Outside it -- in the margin,
+		 * which is the tile or six of slack the fence is built with -- it is a
+		 * destination and nothing more.
+		 *
+		 * That difference is the whole fix.  The first version never forced the
+		 * action on a unit that was attacking something, reasoning that walking
+		 * out should not mean walking out unarmed; what it meant in practice is
+		 * that nothing walked out at all.  ACTION_ATTACK re-approaches its target
+		 * every time the script runs and overwrites the destination underneath,
+		 * so the unit stood in the envelope and fought while a gun shot it for
+		 * free.  Measured: 37085 ticks spent inside against 40 crossings, which
+		 * is not forty visits but a handful of units that got in and never came
+		 * out, and the counter was reporting discipline while measuring a siege.
+		 *
+		 * Keeping the fence advisory in the margin is deliberate and is the other
+		 * half of the trade: a rocket turret plus a Raider's margin reaches
+		 * fourteen tiles, and forcing a move at fourteen tiles is how an army
+		 * stops fighting anywhere near the enemy line at all. */
+		if (inside) {
+			/* The target goes only if it is standing in the envelope too.  Then
+			 * there is no clear ground to shoot it from and holding it is just a
+			 * promise to walk back in; anything else is re-acquired the moment
+			 * the unit is somewhere legal, which is exactly what should happen. */
+			/* Assigned rather than set through Unit_SetTarget(): that one takes an
+			 * encoded index and rejects an invalid one, so "no target" is not
+			 * something it can be asked for. */
+			if (Tools_Index_IsValid(unit->targetAttack)
+				&& Doctrine_CoveringTurret(houseID, Tools_Index_GetPackedTile(unit->targetAttack)) != 0) {
+				unit->targetAttack = 0;
+			}
+
+			if (unit->actionID != ACTION_MOVE) Unit_SetAction(unit, ACTION_MOVE);
+		} else if (unit->actionID != ACTION_ATTACK || !Tools_Index_IsValid(unit->targetAttack)) {
 			if (unit->actionID != ACTION_MOVE) Unit_SetAction(unit, ACTION_MOVE);
 		}
+
+		s_exitTile[unit->o.index] = out;
 		Unit_SetDestination(unit, Tools_Index_Encode(out, IT_TILE));
 	}
 
@@ -1540,7 +1686,7 @@ static void Doctrine_Reinforce(uint8 houseID, DoctrineHouse *dh)
 
 static void Doctrine_EnterPhase(DoctrineHouse *dh, uint8 phase)
 {
-	if (phase == PHASE_ASSAULT && dh->firstAssault == 0) dh->firstAssault = g_timerGame;
+	if (phase == PHASE_ASSAULT && dh->firstAssault == 0) dh->firstAssault = Doctrine_Elapsed();
 
 	dh->phase = phase;
 	dh->phaseStart = g_timerGame;
@@ -2351,6 +2497,52 @@ static void Doctrine_Saboteurs(uint8 houseID, DoctrineHouse *dh)
 	}
 }
 
+/**
+ * The two things a post-mortem cannot tell you, sampled while they are true.
+ *
+ * Harvester exposure and assault cohesion are both states, not events: by the
+ * time they show up in a loss or a failed attack the run is over and the number
+ * says only that something went wrong.  Sampled every doctrine tick they are
+ * usable as a regression test -- exposure climbs before a harvester dies, and
+ * cohesion falls before an assault is thrown away piecemeal.
+ */
+static void Doctrine_SampleMetrics(uint8 houseID, const DoctrineHouse *dh)
+{
+	PoolFindStruct find;
+	uint16 near8 = 0, worst = 99;
+	uint16 onWave = 0, attackers = 0;
+
+	Doctrine_HarvesterExposure(houseID, &near8, &worst);
+	s_harvesterSamples[houseID]++;
+	if (near8 > 0) s_harvesterExposed[houseID]++;
+
+	/* Only while an assault is actually under way.  Outside one there is no wave
+	 * to be part of, and averaging in the muster would answer a question nobody
+	 * asked. */
+	if (dh->phase != PHASE_ASSAULT) return;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+		uint8 role;
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+
+		role = s_unitRole[u->o.index];
+		if (!Doctrine_IsAttacker(role)) continue;
+
+		attackers++;
+		if (s_unitOnWave[u->o.index] != 0) onWave++;
+	}
+
+	s_cohesionOn[houseID]  += onWave;
+	s_cohesionAll[houseID] += attackers;
+}
+
 void Doctrine_Tick(House *h)
 {
 	uint8 houseID;
@@ -2386,6 +2578,7 @@ void Doctrine_Tick(House *h)
 	Doctrine_Saboteurs(houseID, dh);
 	Doctrine_Patrol(houseID, dh);
 
+	Doctrine_SampleMetrics(houseID, dh);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -2655,6 +2848,36 @@ bool Doctrine_GetProduction(uint8 houseID, char *buf, uint16 length)
 	return true;
 }
 
+/** Every counter the metrics suite reads, for one House, as they stand now. */
+void Doctrine_GetMetrics(uint8 houseID, DoctrineMetrics *out)
+{
+	const DoctrineHouse *dh;
+
+	if (out == NULL) return;
+
+	memset(out, 0, sizeof(DoctrineMetrics));
+	if (houseID >= HOUSE_MAX) return;
+
+	dh = &s_house[houseID];
+
+	out->turretEntries       = s_turretEntries[houseID];
+	out->turretDwell         = s_turretZone[houseID];
+	out->turretDeathsLoose   = s_killedByTurretLoose[houseID];
+	out->turretDeathsAssault = s_killedByTurretAssault[houseID];
+	out->turretsKilled       = s_turretsKilled[houseID];
+	out->harvesterLost       = s_harvesterLost[houseID];
+	out->harvesterLostEarly  = s_harvesterLostEarly[houseID];
+	out->harvesterKilled     = s_harvesterKilled[houseID];
+	out->harvesterExposed    = s_harvesterExposed[houseID];
+	out->harvesterSamples    = s_harvesterSamples[houseID];
+	out->cohesionOn          = s_cohesionOn[houseID];
+	out->cohesionAll         = s_cohesionAll[houseID];
+	out->wavesLaunched       = dh->wavesLaunched;
+	out->wavesAborted        = dh->wavesAborted;
+	out->wavesDeclined       = dh->wavesDeclined;
+	out->firstAssault        = dh->firstAssault;
+}
+
 /** A bullet landed on @p victim; @p originEncoded is whatever fired it. */
 void Doctrine_RecordHit(struct Unit *victim, uint16 originEncoded)
 {
@@ -2700,7 +2923,7 @@ void Doctrine_RecordHarvesterLoss(uint8 owner, uint8 killer)
 {
 	if (owner < HOUSE_MAX) {
 		s_harvesterLost[owner]++;
-		if (g_timerGame < 100000) s_harvesterLostEarly[owner]++;
+		if (Doctrine_Elapsed() < 100000) s_harvesterLostEarly[owner]++;
 	}
 	if (killer < HOUSE_MAX) s_harvesterKilled[killer]++;
 }

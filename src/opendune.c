@@ -132,6 +132,7 @@ static uint16 s_ecoMaps = 2;
 static bool s_warMatrix = false;
 static bool s_warTiming = false;
 static bool s_warLadder = false;
+static bool s_warMetrics = false;
 static bool s_warPlay = false;
 static bool s_warTelemetry = false;
 static uint16 s_warTelemetryStep = 5000;
@@ -1145,7 +1146,7 @@ static void GameLoop_Main(void)
 	}
 
 	if (s_ecoBaseline || s_ecoSearch || s_ecoGrid || s_ecoQueue || s_ecoCarryall ||
-	    s_warMatrix || s_warTiming || s_warLadder || s_warTelemetry) {
+	    s_warMatrix || s_warTiming || s_warLadder || s_warTelemetry || s_warMetrics) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
 
@@ -1157,6 +1158,7 @@ static void GameLoop_Main(void)
 		if (s_warMatrix) WarSearch_RunMatrix(s_warTicks, s_warMaps);
 		if (s_warTiming) WarSearch_RunTiming(s_warTicks, s_warMaps);
 		if (s_warLadder) WarSearch_RunLadder(s_warTicks, s_warMaps);
+		if (s_warMetrics) WarSearch_RunMetrics(s_skirmishHouse[0], s_skirmishHouse[1], s_warTicks, s_warMaps);
 		if (s_warTelemetry) WarSearch_RunTelemetry(s_skirmishHouse[0], s_skirmishHouse[1], s_warTicks, s_warTelemetryStep, s_warPlayShare[0], s_warPlayShare[1], s_warSwitchTick, s_warPlaySeed);
 		return;
 	}
@@ -1773,6 +1775,9 @@ int main(int argc, char **argv)
 			} else if (strncmp(argv[i], "--war-telemetry", 15) == 0) {
 				s_warTelemetry = true;
 				if (argv[i][15] == '=') sscanf(argv[i] + 16, "%u,%hu,%u", &s_warTicks, &s_warTelemetryStep, &s_warPlaySeed);
+			} else if (strncmp(argv[i], "--war-metrics", 13) == 0) {
+				s_warMetrics = true;
+				if (argv[i][13] == '=') sscanf(argv[i] + 14, "%u,%hu", &s_warTicks, &s_warMaps);
 			} else if (strncmp(argv[i], "--war-ladder", 12) == 0) {
 				s_warLadder = true;
 				if (argv[i][12] == '=') sscanf(argv[i] + 13, "%u,%hu", &s_warTicks, &s_warMaps);

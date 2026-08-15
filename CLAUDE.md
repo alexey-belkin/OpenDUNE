@@ -155,7 +155,14 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-tes
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --selection-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish-self-test=200000
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --economy-baseline=80000,3
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --doctrine=B,A --war-metrics=200000,6
 ```
+
+**The last one is the guard on every behavioural change**, and it is the one to
+run before and after touching `doctrine.c`, `skirmish.c` or the AI hooks in
+`unit.c`. Six maps played twice with the doctrines swapped, about forty seconds,
+sixteen named numbers with a regression gate and a goal beside each. It is
+deterministic: the same binary gives the same table. → [metrics.md](metrics.md).
 
 The selection test replays the saves in `~/Library/Application Support/OpenDUNE/`.
 The skirmish test simulates a match as fast as the CPU allows and prints each
@@ -190,6 +197,8 @@ leaving it running.
   found, and which drivers actually matter
 * [war.md](war.md) — the economy/army split: the budget model, the win matrix,
   and why the timing of the split beats its level
+* [metrics.md](metrics.md) — the regression suite: the sixteen numbers, their
+  gates and goals, and what had to be fixed before any of them could be trusted
 * [telemetry.md](telemetry.md) — recording one match: the CSV format, the report
   generator, and how to add a metric
 * [units.md](units.md) / [units.html](units.html) — complete unit-type table, and
