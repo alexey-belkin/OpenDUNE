@@ -82,6 +82,8 @@ typedef struct DoctrineParams {
 	uint16 abortPercent;                                    /*!< Strength below which the wave gives up and re-forms. */
 	uint32 graceTicks;                                      /*!< Longest a phase may wait for stragglers. */
 	uint16 escortDistance;                                  /*!< How far behind the artillery the assault stands. */
+	uint16 picketPercent;                                   /*!< Most of the reserve that may be posted to flank spice.  0 disables it. */
+	uint16 picketFrom;                                      /*!< Reserve size above which posting starts at all. */
 	uint16 etaSlack;                                        /*!< Arrival-time difference treated as "together". */
 	uint16 assaultRatio;                                    /*!< Percent of the enemy's defence a wave must be worth before it goes in. */
 	uint32 assaultTicks;                                    /*!< Longest one assault may run before the wave is spent. */
@@ -93,7 +95,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 	{
 		"A", "legacy: engine teams, one wave gate, fixed army mix",
 		12,
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		{ 0, 0, 0, 0 }
 	},
 	{
@@ -108,6 +110,8 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 		/* abortPercent */   40,
 		/* graceTicks */     1500,
 		/* escortDistance */ 3,
+		/* picketPercent */  30,
+		/* picketFrom */     20,
 		/* etaSlack */       600,
 		/* assaultRatio */   100,
 		/* assaultTicks */   12000,
@@ -155,6 +159,10 @@ static uint8  s_inZone[UNIT_INDEX_MAX];
 /* Ticks during which a turned-back unit is left alone: without it the doctrine
  * re-issues on its next pass the very order that sent it there. */
 static uint32 s_turnedBack[UNIT_INDEX_MAX];
+/* Assault units posted to a flank spice field instead of standing in the yard.
+ * They are still wave material -- a muster takes them back -- but until then
+ * they hold ground that pays, off the line the attacks run down. */
+static uint8  s_unitPicket[UNIT_INDEX_MAX];
 /* Where each unit stood at its last check, so a turret finished on top of a unit
  * is not booked as the unit walking into one. */
 static uint16 s_lastTile[UNIT_INDEX_MAX];
@@ -314,6 +322,7 @@ void Doctrine_Reset(void)
 	memset(s_turretEntries, 0, sizeof(s_turretEntries));
 	memset(s_inZone, 0, sizeof(s_inZone));
 	memset(s_turnedBack, 0, sizeof(s_turnedBack));
+	memset(s_unitPicket, 0, sizeof(s_unitPicket));
 	memset(s_lastTile, 0, sizeof(s_lastTile));
 	memset(s_hitByTurret, 0, sizeof(s_hitByTurret));
 	memset(s_killedByTurretLoose, 0, sizeof(s_killedByTurretLoose));
@@ -356,6 +365,7 @@ void Doctrine_ForgetUnit(uint16 unitIndex)
 	s_unitOnWave[unitIndex] = 0;
 	s_inZone[unitIndex] = 0;
 	s_hitByTurret[unitIndex] = 0;
+	s_unitPicket[unitIndex] = 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1407,7 +1417,7 @@ static uint32 Doctrine_AttackStrength(uint8 houseID)
 	return total;
 }
 
-static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy, uint16 objective)
+static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy, uint16 objective, uint16 turretWeight)
 {
 	PoolFindStruct find;
 	uint32 total = 0;
@@ -1458,7 +1468,7 @@ static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy, uint16 object
 	 *
 	 * Twelve tiles around the objective is the envelope the assault has to live
 	 * inside; a turret outside that is somebody else's problem. */
-	while (true) {
+	while (turretWeight != 0) {
 		const Structure *s = Structure_Find(&find);
 
 		if (s == NULL) break;
@@ -1473,7 +1483,7 @@ static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy, uint16 object
 		 * discounted, and this one -- and the strictest won most: three wins in
 		 * six against two.  For a House that cannot outrange a turret, patience
 		 * is not timidity, it is the only edge it has. */
-		total += (uint32)s->o.hitpoints * 2;
+		total += (uint32)s->o.hitpoints * turretWeight;
 	}
 
 	VARIABLE_NOT_USED(houseID);
@@ -1570,6 +1580,7 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	uint16 keep;
 	uint16 approach;
 	uint16 objective;
+	bool uncovered;
 	PoolFindStruct find;
 	uint16 taken = 0;
 
@@ -1608,8 +1619,18 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	 * is a stall.  The aggregate is the honest quantity: if everything that is
 	 * not garrison cannot beat the line, nothing can, and the raiders keep
 	 * strangling instead. */
+	/* A way in that no turret covers is not a fight with the line, so the line
+	 * is not in the price.
+	 *
+	 * The objective picker already prefers an uncovered target by a wide margin,
+	 * and when it finds one the wave is going somewhere the defence was not
+	 * built to hold -- charging it what the turrets cost would refuse an attack
+	 * on the grounds of guns that will never fire at it.  Covered, they count
+	 * double as before. */
+	uncovered = (Doctrine_CoveringTurret(houseID, Tools_Index_GetPackedTile(objective)) == 0);
+
 	dh->attackStrength = Doctrine_AttackStrength(houseID);
-	dh->defenceStrength = Doctrine_DefenceStrength(houseID, enemy, objective);
+	dh->defenceStrength = Doctrine_DefenceStrength(houseID, enemy, objective, uncovered ? 1 : 2);
 
 	if (dh->attackStrength * 100 < dh->defenceStrength * p->assaultRatio) {
 		dh->wavesDeclined++;
@@ -1643,6 +1664,7 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 		if (taken + keep >= reserve) break;
 
 		s_unitOnWave[u->o.index] = 1;
+		s_unitPicket[u->o.index] = 0;
 		taken++;
 	}
 
@@ -2151,6 +2173,78 @@ static void Doctrine_Patrol(uint8 houseID, DoctrineHouse *dh)
 	}
 }
 
+/**
+ * Post part of the reserve onto flank spice instead of the yard.
+ *
+ * A crowd standing at home is capital doing nothing, and it is also a target:
+ * it is on the line the enemy's attacks come down, so it is ground away by
+ * fights it did not choose and gains nothing for the losses.  The same units on
+ * a spice field away from that line hold something worth holding -- they push
+ * the enemy's raiders off it, which is the same strangling our own raiders do,
+ * from the other end.
+ *
+ * They remain wave material: a muster takes them straight back, so this costs
+ * the assault nothing and only decides where they wait.
+ *
+ * The field is chosen away from the line of departure, not near it, which is
+ * what "flank" means here: standing next to the corridor the wave uses would
+ * put them back in the path of everything coming the other way.
+ */
+static void Doctrine_Picket(uint8 houseID, DoctrineHouse *dh)
+{
+	const DoctrineParams *p = Doctrine_ParamsOf(houseID);
+	PoolFindStruct find;
+	uint16 reserve;
+	uint16 want;
+	uint16 posted = 0;
+	uint16 field;
+
+	if (p->picketPercent == 0) return;
+
+	reserve = Doctrine_CountReserve(houseID, NULL);
+	if (reserve < p->picketFrom) return;
+
+	want = (uint16)(reserve * p->picketPercent / 100);
+	if (want == 0) return;
+
+	/* Away from the corridor: measured from home rather than from the line of
+	 * departure, so the field picked is one on our own flank. */
+	field = Doctrine_FindHuntingGround(houseID, dh->musterPacked);
+	if (field == 0) return;
+	if (dh->ldPacked != 0 && Tile_GetDistancePacked(field, dh->ldPacked) < 12) return;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	UnitSelection_SpreadReset();
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+		if (s_unitOnWave[u->o.index] != 0) continue;
+		if (s_unitRole[u->o.index] != DOCTRINE_ROLE_ASSAULT) continue;
+		if (posted >= want) break;
+
+		s_unitPicket[u->o.index] = 1;
+		posted++;
+
+		if (Tools_Index_IsValid(u->targetAttack)) continue;
+		if (Doctrine_JustTurnedBack(u)) continue;
+
+		if (Tile_GetDistancePacked(Tile_PackTile(u->o.position), field) <= 5) {
+			if (u->actionID != ACTION_GUARD) Doctrine_OrderHold(u);
+			continue;
+		}
+
+		if (u->targetMove != 0 && u->actionID == ACTION_MOVE) continue;
+
+		Doctrine_OrderMove(u, UnitSelection_SpreadTake(u, field));
+	}
+}
+
 static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
 {
 	PoolFindStruct find;
@@ -2175,6 +2269,7 @@ static void Doctrine_Rally(uint8 houseID, DoctrineHouse *dh)
 		if (s_unitRole[u->o.index] == DOCTRINE_ROLE_NONE) continue;
 		if (u->o.type == UNIT_SABOTEUR) continue;                  /* Has its own errand. */
 		if (s_unitRole[u->o.index] == DOCTRINE_ROLE_RAID) continue; /* Out hunting harvesters. */
+		if (s_unitPicket[u->o.index] != 0) continue;                /* Holding a flank field. */
 
 		/* Shooting at something is the job; do not interrupt it. */
 		if (Tools_Index_IsValid(u->targetAttack)) continue;
@@ -2286,6 +2381,7 @@ void Doctrine_Tick(House *h)
 		default:             Doctrine_PhaseAssault(houseID, dh, enemy);  break;
 	}
 
+	Doctrine_Picket(houseID, dh);
 	Doctrine_Rally(houseID, dh);
 	Doctrine_Saboteurs(houseID, dh);
 	Doctrine_Patrol(houseID, dh);
@@ -2661,6 +2757,7 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 	uint16 near = 0xFFFF, far = 0;
 	uint16 raiders = 0;
 	uint16 hunting = 0;
+	uint16 picket = 0;
 
 	if (houseID >= HOUSE_MAX || buf == NULL || length == 0) return false;
 
@@ -2701,7 +2798,7 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 		}
 
 		if (Doctrine_IsAttacker(role)) {
-			inMuster++;
+			if (s_unitPicket[u->o.index] != 0) picket++; else inMuster++;
 			continue;
 		}
 
@@ -2721,13 +2818,13 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 
 	if (near != 0xFFFF && far > near) spread = (uint16)(far - near);
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         dh->phase, dh->waveCount, dh->atLD, dh->columnLength,
 	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted,
 	         (unsigned)dh->wavesDeclined,
 	         inAssault, inMuster, idleGarrison, spread,
 	         (unsigned)dh->firstAssault, raiders, hunting,
-	         (unsigned)dh->attackStrength, (unsigned)dh->defenceStrength);
+	         (unsigned)dh->attackStrength, (unsigned)dh->defenceStrength, picket);
 
 	return true;
 }

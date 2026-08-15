@@ -2604,7 +2604,7 @@ bool Skirmish_GetTelemetry(uint8 index, char *buf, uint16 length)
 		char doctrine[64];
 		char production[96];
 
-		if (!Doctrine_GetTelemetry(b->houseID, doctrine, sizeof(doctrine))) strcpy(doctrine, "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
+		if (!Doctrine_GetTelemetry(b->houseID, doctrine, sizeof(doctrine))) strcpy(doctrine, "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
 		if (!Doctrine_GetProduction(b->houseID, production, sizeof(production))) strcpy(production, "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0");
 
 		snprintf(buf, length, "%s,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%s,%s",
