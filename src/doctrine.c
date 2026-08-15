@@ -100,7 +100,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 		"B", "echelon: roles, line of departure, artillery suppression",
 		0,
 		/* minWave */        6,
-		/* garrisonKeep */   4,
+		/* garrisonKeep */   0,
 		/* ldStandoff */     14,
 		/* columnHold */     10,
 		/* columnRelease */  6,
@@ -199,6 +199,7 @@ typedef struct DoctrineHouse {
 	uint32 wavesLaunched;
 	uint32 wavesAborted;
 	uint32 wavesDeclined;                                   /*!< Counted itself against the line and stayed home. */
+	uint32 firstAssault;                                    /*!< Tick the first assault began, or 0. */
 	uint32 declineUntil;                                    /*!< Not worth re-asking before this tick. */
 	uint32 suppressShots;
 	uint8  enemy;
@@ -450,9 +451,20 @@ static bool Doctrine_IsTurret(uint16 encoded)
 	return (s->o.type == STRUCTURE_TURRET || s->o.type == STRUCTURE_ROCKET_TURRET);
 }
 
+/**
+ * Who a wave is made of.
+ *
+ * Not the raiders.  They have a job that pays better than standing in a line of
+ * battle -- a Trike reaches three tiles and dies to anything, but it is the
+ * fastest thing on the map and an enemy harvester is unarmed and standing where
+ * its owner cannot do without it.  Pulling them into an assault costs the
+ * strangling and buys almost no weight, so they stay out and keep hunting.
+ *
+ * Everything else that is not garrison goes, all of it, every time.
+ */
 static bool Doctrine_IsAttacker(uint8 role)
 {
-	return (role == DOCTRINE_ROLE_ARTILLERY || role == DOCTRINE_ROLE_ASSAULT || role == DOCTRINE_ROLE_RAID);
+	return (role == DOCTRINE_ROLE_ARTILLERY || role == DOCTRINE_ROLE_ASSAULT);
 }
 
 bool Doctrine_IsOnWave(const Unit *u)
@@ -1368,6 +1380,31 @@ static void Doctrine_DismissWave(uint8 houseID)
  * What the enemy has to be got through, in hitpoints: everything that shoots,
  * plus the line itself.
  */
+/** Everything this House could put into a wave, in hitpoints: every unit whose
+ *  role is not garrison, whether it is already committed or not. */
+static uint32 Doctrine_AttackStrength(uint8 houseID)
+{
+	PoolFindStruct find;
+	uint32 total = 0;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+		if (!Doctrine_IsAttacker(s_unitRole[u->o.index])) continue;
+		if (u->o.type == UNIT_SABOTEUR) continue;
+
+		total += u->o.hitpoints;
+	}
+
+	return total;
+}
+
 static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy)
 {
 	PoolFindStruct find;
@@ -1459,6 +1496,8 @@ static void Doctrine_Reinforce(uint8 houseID, DoctrineHouse *dh)
 
 static void Doctrine_EnterPhase(DoctrineHouse *dh, uint8 phase)
 {
+	if (phase == PHASE_ASSAULT && dh->firstAssault == 0) dh->firstAssault = g_timerGame;
+
 	dh->phase = phase;
 	dh->phaseStart = g_timerGame;
 }
@@ -1519,9 +1558,19 @@ static void Doctrine_PhaseMuster(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 	 * house that is not strong enough waits and keeps raiding instead. */
 	if (dh->declineUntil > g_timerGame) return;
 
-	if (reserveHp * 100 < Doctrine_DefenceStrength(houseID, enemy) * p->assaultRatio) {
+	/* Against everything this House could send, not against what happens to be
+	 * unassigned.
+	 *
+	 * Measured against the reserve alone, the test answered a question nobody
+	 * asked -- the reserve shrinks every time a wave forms -- and the army piled
+	 * up almost without limit waiting for a number that the reserve could not
+	 * reach on its own.  One assault at the end of a match is not a strategy, it
+	 * is a stall.  The aggregate is the honest quantity: if everything that is
+	 * not garrison cannot beat the line, nothing can, and the raiders keep
+	 * strangling instead. */
+	if (Doctrine_AttackStrength(houseID) * 100 < Doctrine_DefenceStrength(houseID, enemy) * p->assaultRatio) {
 		dh->wavesDeclined++;
-		dh->declineUntil = g_timerGame + 3000;
+		dh->declineUntil = g_timerGame + 600;
 		return;
 	}
 
@@ -1935,6 +1984,39 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
  *
  * Only raiders not on a wave: when a wave takes them they are its screen.
  */
+/**
+ * A spice field to lie in wait on: nearest to the enemy, clear of turrets.
+ *
+ * Sampled rather than swept -- a full landscape walk on every doctrine tick is
+ * not worth it for a question whose answer only has to be roughly right, and
+ * spice comes in fields rather than single tiles.
+ */
+static uint16 Doctrine_FindHuntingGround(uint8 houseID, uint16 anchor)
+{
+	uint16 best = 0;
+	uint16 bestDistance = 0xFFFF;
+	uint16 x, y;
+
+	for (y = 2; y < 61; y += 3) {
+		for (x = 2; x < 61; x += 3) {
+			const uint16 packed = Tile_PackXY(x, y);
+			uint16 type, d;
+
+			type = Map_GetLandscapeType(packed);
+			if (type != LST_SPICE && type != LST_THICK_SPICE) continue;
+			if (Doctrine_CoveringTurret(houseID, packed) != 0) continue;
+
+			d = Tile_GetDistancePacked(anchor, packed);
+			if (d >= bestDistance) continue;
+
+			bestDistance = d;
+			best = packed;
+		}
+	}
+
+	return best;
+}
+
 static void Doctrine_Patrol(uint8 houseID, DoctrineHouse *dh)
 {
 	PoolFindStruct find;
@@ -1969,7 +2051,46 @@ static void Doctrine_Patrol(uint8 houseID, DoctrineHouse *dh)
 		prey = Tools_Index_Encode(u->o.index, IT_UNIT);
 	}
 
-	if (prey == 0) return;
+	/* Nothing takeable: wait where they have to come.
+	 *
+	 * Every harvester the enemy owns is either on spice or on its way to it, so
+	 * a spice field outside anybody's reach is an ambush that does not have to
+	 * find anything.  Without this a raider whose prey was all parked under
+	 * turrets simply stopped -- measured at 18 raiders and none hunting for the
+	 * last forty thousand ticks of a match. */
+	if (prey == 0) {
+		uint16 field = Doctrine_FindHuntingGround(houseID, anchor);
+
+		if (field == 0) return;
+
+		find.houseID = houseID;
+		find.index   = 0xFFFF;
+		find.type    = 0xFFFF;
+
+		UnitSelection_SpreadReset();
+
+		while (true) {
+			Unit *u = Unit_Find(&find);
+
+			if (u == NULL) break;
+			if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+			if (s_unitRole[u->o.index] != DOCTRINE_ROLE_RAID) continue;
+			if (Tools_Index_IsValid(u->targetAttack)) continue;
+			if (Doctrine_JustTurnedBack(u)) continue;
+
+			/* Already on station: hold it and watch. */
+			if (Tile_GetDistancePacked(Tile_PackTile(u->o.position), field) <= 5) {
+				if (u->actionID != ACTION_GUARD) Doctrine_OrderHold(u);
+				continue;
+			}
+
+			if (u->targetMove != 0 && u->actionID == ACTION_MOVE) continue;
+
+			Doctrine_OrderMove(u, UnitSelection_SpreadTake(u, field));
+		}
+
+		return;
+	}
 
 	find.houseID = houseID;
 	find.index   = 0xFFFF;
@@ -2501,6 +2622,8 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 	uint16 idleGarrison = 0;
 	uint16 spread = 0;
 	uint16 near = 0xFFFF, far = 0;
+	uint16 raiders = 0;
+	uint16 hunting = 0;
 
 	if (houseID >= HOUSE_MAX || buf == NULL || length == 0) return false;
 
@@ -2545,16 +2668,28 @@ bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 			continue;
 		}
 
+		/* Raiders do not join a wave, so "are they doing anything" needs its own
+		 * number: how many exist, and how many are on a harvester right now.
+		 * Without it "they hunt" is a claim about code, not about the game. */
+		if (role == DOCTRINE_ROLE_RAID) {
+			const Unit *prey = Tools_Index_GetUnit(u->targetAttack);
+
+			raiders++;
+			if (prey != NULL && prey->o.type == UNIT_HARVESTER) hunting++;
+			continue;
+		}
+
 		if (!Tools_Index_IsValid(u->targetAttack) && u->targetMove == 0) idleGarrison++;
 	}
 
 	if (near != 0xFFFF && far > near) spread = (uint16)(far - near);
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         dh->phase, dh->waveCount, dh->atLD, dh->columnLength,
 	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted,
 	         (unsigned)dh->wavesDeclined,
-	         inAssault, inMuster, idleGarrison, spread);
+	         inAssault, inMuster, idleGarrison, spread,
+	         (unsigned)dh->firstAssault, raiders, hunting);
 
 	return true;
 }
