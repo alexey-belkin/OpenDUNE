@@ -1516,8 +1516,14 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 
 		/* The coarse grid above is cheap enough to run over four thousand tiles
 		 * and too blunt to trust with the answer; this is the exact distance, and
-		 * there are at most two dozen candidates left to ask it about. */
-		if (Doctrine_ThreatDistance(Unit_GetHouseID(unit), candidates[i]) < HARVESTER_SAFE_TILES) continue;
+		 * there are at most two dozen candidates left to ask it about.
+		 *
+		 * Doctrine B only.  Doctrine A is the baseline every change is measured
+		 * against, and a baseline that quietly acquires the improvements is not
+		 * one -- Doctrine_ThreatDistance() answers for any House, so without this
+		 * test A's harvesters were avoiding danger too. */
+		if (Doctrine_GetForHouse(Unit_GetHouseID(unit)) != DOCTRINE_LEGACY
+			&& Doctrine_ThreatDistance(Unit_GetHouseID(unit), candidates[i]) < HARVESTER_SAFE_TILES) continue;
 
 		if (!Script_Unit_HasRoute(unit, Tile_PackTile(unit->o.position), candidates[i], &ticks)) continue;
 		type = Map_GetLandscapeType(candidates[i]);
@@ -2242,8 +2248,14 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	 * whatever happened to be standing in reach, which is how a raider that had
 	 * chased a harvester to the enemy base finished its trip by driving into a
 	 * gun on its own: it reaches three tiles, the turret eight, and it dies
-	 * having accomplished nothing.  Organised or not at all. */
-	if (target != 0 && !onWave && Doctrine_IsTurretTarget(target)) target = 0;
+	 * having accomplished nothing.  Organised or not at all.
+	 *
+	 * Doctrine B only, and this one leaked visibly: with turrets struck off its
+	 * target list, an A unit's sweep settled on the next thing it could see, and
+	 * A was observed raiding harvesters -- behaviour it has no rule for and never
+	 * had.  A baseline that drifts is not a baseline. */
+	if (target != 0 && !onWave && Doctrine_GetForHouse(Unit_GetHouseID(unit)) != DOCTRINE_LEGACY
+		&& Doctrine_IsTurretTarget(target)) target = 0;
 
 	if (target != 0) {
 		Unit_SetTarget(unit, target);
