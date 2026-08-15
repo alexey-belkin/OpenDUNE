@@ -79,7 +79,74 @@ One row per house per sampled tick, in the order the houses appear in
 | `credits` | level | credits on hand |
 | `powerSurplus` | level | `powerProduction - powerUsage`; **signed**, and negative is the interesting case |
 
-Two of them are cumulative on purpose. A rate is the difference between two
+Then the shot ledger — who the army is actually shooting at, which is the
+question "is it fighting the defence or walking past it" reduces to:
+
+| Column | Kind | What it counts |
+|---|---|---|
+| `shotsTurret` | **cumulative** | shots taken at a Turret or Rocket Turret |
+| `shotsStructure` | **cumulative** | shots at any other building |
+| `shotsUnit` | **cumulative** | shots at a unit |
+| `shotsBypass` | **cumulative** | shots at a building *while an enemy turret stood within reach*. A low turret share can mean "there were none" or "it walked past them"; only this tells the two apart |
+
+Four states that should be zero and are not, sampled live:
+
+| Column | Kind | What it counts |
+|---|---|---|
+| `idleAttackers` | level | combat units with no target and nowhere to go |
+| `idleOnWave` | level | the same, restricted to units committed to a wave — an attack that has stopped attacking |
+| `stalledHarvesters` | level | harvesters carrying a load and standing still |
+| `freeRefineries` | level | refineries idle with nothing docked. Against the row above: both non-zero at once is the harvester layer stuck |
+
+The doctrine's own state — these are B's; under A they are structurally zero
+because A has no waves:
+
+| Column | Kind | What it counts |
+|---|---|---|
+| `wavePhase` | level | 0 muster, 1 approach, 2 suppress, 3 assault |
+| `waveUnits` | level | units committed to the current wave |
+| `waveAtLD` | level | how many of them have reached the line of departure |
+| `waveColumn` | level | length of the marching column, in tiles — cohesion on the road |
+| `wavesLaunched` | **cumulative** | waves that left |
+| `wavesAborted` | **cumulative** | waves that turned back after losing too much |
+| `wavesDeclined` | **cumulative** | times the force test refused to go in at all. A high count with no launches is a wave shuttling rather than attacking |
+| `inAssault` | level | attackers on the wave |
+| `inMuster` | level | attackers held back at home |
+| `idleGarrison` | level | garrison units with nothing to do |
+| `assaultSpread` | level | tiles between the nearest and furthest wave member from the objective. "They do not all go in together" is this number |
+| `firstAssault` | level | tick the first assault began, measured from the start of *this* match, or 0 |
+| `raiders` | level | units in the raid role |
+| `raidersHunting` | level | how many of them are on an enemy harvester right now |
+| `atkStrength` | level | last reading of the attack side of the assault trigger |
+| `defStrength` | level | last reading of the defence side. The assault goes when the first beats the second by `assaultRatio` |
+| `picket` | level | attackers posted on a flank spice field rather than held at home |
+
+Production, by role rather than by type, so the two doctrines' factories can be
+compared directly:
+
+| Column | Kind | What it counts |
+|---|---|---|
+| `builtArt` `builtAss` `builtRaid` `builtGar` | **cumulative** | units ever built, per role: artillery, assault, raid, garrison |
+| `pickArt` … `pickGar` | **cumulative** | times the role was *chosen* when a factory asked what to build |
+| `vetoArt` … `vetoGar` | **cumulative** | times it was refused for being over its share |
+
+And the discipline counters, all cumulative, all added while chasing one rule --
+you are inside a turret's reach only when that turret is your wave's target:
+
+| Column | Kind | What it counts |
+|---|---|---|
+| `turretZone` | **cumulative** | samples taken with a unit inside an envelope, i.e. *time* spent there |
+| `turretEntries` | **cumulative** | crossings into one. Against the row above: same entries and far more dwell is a fence units walk through and sit behind |
+| `harvLost` | **cumulative** | own harvesters destroyed |
+| `harvKilled` | **cumulative** | enemy harvesters destroyed |
+| `harvLostEarly` | **cumulative** | own harvesters lost before tick 100000 of this match, where each is worth several later ones |
+| `harvNear8` | level | harvesters within eight tiles of something that shoots |
+| `harvWorst` | level | tiles from the most exposed harvester to the nearest enemy shooter; 99 means none in range |
+| `turretKillsLoose` | **cumulative** | own units a turret killed *outside* a wave in the assault. The rule says zero |
+| `turretKillsAssault` | **cumulative** | own units a turret killed during one. The trade the doctrine is willing to make |
+| `turretsKilled` | **cumulative** | enemy turrets destroyed — the other half of that trade |
+
+Several of them are cumulative on purpose. A rate is the difference between two
 samples, and differencing a running total is exact, while sampling a rate
 directly would miss whatever happened between two samples.
 
@@ -143,7 +210,10 @@ Four places, in this order:
 2. **The header line** in `WarSearch_RunTelemetry()` in
    [src/warsearch.c](src/warsearch.c) — the column names, in the same order.
 3. **`COLUMNS`** in `tools/telemetry_report.py` if it is a level. A derived
-   series goes next to `damageDealt` in the series builder instead.
+   series goes next to `damageDealt` in the series builder instead. **That list
+   is currently well behind the file** — it stops at `harvKilled` and plots none
+   of the wave, production or discipline columns, so the recording carries more
+   than the page shows.
 4. **`METRICS`** in `tools/telemetry_report.html` — the label, and a formatter if
    the number wants thousands separators.
 
