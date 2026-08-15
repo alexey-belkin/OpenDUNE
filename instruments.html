@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="OpenDUNE skirmish AI: every metric and telemetry surface, with what each one counts">
+  <title>OpenDUNE AI — приборы</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      color-scheme: light dark;
+      --ground:   #E9EAE3;
+      --card:     #F7F8F3;
+      --ink:      #1A1D18;
+      --muted:    #666B62;
+      --faint:    #8B9088;
+      --rule:     #CBCDC2;
+      --hair:     #DEE0D6;
+      --accent:   #2E3A8C;
+      --good:     #2B6640;
+      --warn:     #8A6410;
+      --bad:      #A32E2E;
+      --tagbg:    #E0E2D6;
+
+      --step--1: clamp(.76rem, .74rem + .1vw, .82rem);
+      --step-0:  clamp(.94rem, .9rem + .18vw, 1.02rem);
+      --step-1:  clamp(1.12rem, 1.05rem + .3vw, 1.3rem);
+      --step-2:  clamp(1.4rem, 1.25rem + .7vw, 1.85rem);
+      --step-3:  clamp(1.9rem, 1.5rem + 1.9vw, 3.1rem);
+
+      --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --serif: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --ground: #14161A;
+        --card:   #1B1E22;
+        --ink:    #E4E7E0;
+        --muted:  #9AA098;
+        --faint:  #767C74;
+        --rule:   #343A40;
+        --hair:   #262B31;
+        --accent: #93A4E8;
+        --good:   #7CC397;
+        --warn:   #D6AC55;
+        --bad:    #E58585;
+        --tagbg:  #262B31;
+      }
+    }
+    :root[data-theme="dark"] {
+      --ground: #14161A;
+      --card:   #1B1E22;
+      --ink:    #E4E7E0;
+      --muted:  #9AA098;
+      --faint:  #767C74;
+      --rule:   #343A40;
+      --hair:   #262B31;
+      --accent: #93A4E8;
+      --good:   #7CC397;
+      --warn:   #D6AC55;
+      --bad:    #E58585;
+      --tagbg:  #262B31;
+    }
+
+    body {
+      background: var(--ground);
+      color: var(--ink);
+      font-family: var(--serif);
+      font-size: var(--step-0);
+      line-height: 1.6;
+      margin: 0;
+      padding: clamp(1.2rem, 4vw, 3.5rem) clamp(1rem, 5vw, 2rem) 5rem;
+    }
+    .sheet { max-width: 62rem; margin: 0 auto; display: flex; flex-direction: column; gap: clamp(2rem, 5vw, 3.4rem); }
+
+    /* ---- masthead ---- */
+    header { display: flex; flex-direction: column; gap: .9rem; }
+    .kicker {
+      font-family: var(--mono); font-size: var(--step--1); letter-spacing: .14em;
+      text-transform: uppercase; color: var(--faint);
+    }
+    h1 {
+      font-family: var(--sans); font-size: var(--step-3); font-weight: 700;
+      letter-spacing: -.025em; line-height: 1.02; margin: 0; text-wrap: balance;
+    }
+    .standfirst { max-width: 44rem; color: var(--muted); margin: 0; }
+    .standfirst strong { color: var(--ink); font-weight: 600; }
+
+    .tally {
+      display: grid; gap: 1px; background: var(--rule);
+      grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+      border: 1px solid var(--rule); margin-top: .6rem;
+    }
+    .tally div { background: var(--card); padding: .75rem .85rem; }
+    .tally b {
+      display: block; font-family: var(--mono); font-size: var(--step-2);
+      font-weight: 600; letter-spacing: -.03em; font-variant-numeric: tabular-nums;
+    }
+    .tally span { font-family: var(--mono); font-size: var(--step--1); color: var(--muted); letter-spacing: .04em; }
+
+    /* ---- sections ---- */
+    section { display: flex; flex-direction: column; gap: .85rem; }
+    h2 {
+      font-family: var(--sans); font-size: var(--step-2); font-weight: 700;
+      letter-spacing: -.02em; margin: 0; padding-bottom: .4rem;
+      border-bottom: 2px solid var(--ink); text-wrap: balance;
+    }
+    h2 small {
+      display: block; font-family: var(--mono); font-size: var(--step--1);
+      font-weight: 400; letter-spacing: .04em; color: var(--faint); margin-top: .35rem;
+    }
+    h3 {
+      font-family: var(--mono); font-size: var(--step--1); font-weight: 600;
+      letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+      margin: 1.1rem 0 -.2rem;
+    }
+    section > p { margin: 0; max-width: 46rem; color: var(--muted); }
+    section > p strong { color: var(--ink); font-weight: 600; }
+
+    /* ---- tables ---- */
+    .scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--card); }
+    table { border-collapse: collapse; width: 100%; min-width: 38rem; font-size: var(--step--1); }
+    th {
+      text-align: left; font-family: var(--mono); font-weight: 600;
+      letter-spacing: .09em; text-transform: uppercase; font-size: .72rem;
+      color: var(--faint); padding: .6rem .8rem; border-bottom: 1px solid var(--rule);
+      white-space: nowrap;
+    }
+    td { padding: .55rem .8rem; border-bottom: 1px solid var(--hair); vertical-align: top; }
+    tr:last-child td { border-bottom: 0; }
+    td.n { font-family: var(--mono); white-space: nowrap; font-weight: 600; letter-spacing: -.01em; }
+    td.v { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    td.d { font-family: var(--serif); line-height: 1.5; min-width: 18rem; }
+    td.d em { color: var(--muted); font-style: italic; }
+
+    .tag {
+      font-family: var(--mono); font-size: .68rem; letter-spacing: .07em;
+      text-transform: uppercase; padding: .12rem .38rem; background: var(--tagbg);
+      color: var(--muted); white-space: nowrap; border-radius: 2px;
+    }
+    .tag.cum { color: var(--accent); }
+
+    .v.good { color: var(--good); }
+    .v.warn { color: var(--warn); }
+    .v.bad  { color: var(--bad); }
+
+    code {
+      font-family: var(--mono); font-size: .92em;
+      background: var(--tagbg); padding: .08rem .28rem; border-radius: 2px;
+    }
+    pre {
+      font-family: var(--mono); font-size: var(--step--1); background: var(--card);
+      border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+      padding: .8rem 1rem; overflow-x: auto; margin: 0; line-height: 1.5;
+    }
+    .note {
+      border-left: 3px solid var(--rule); padding: .1rem 0 .1rem 1rem;
+      color: var(--muted); max-width: 46rem; margin: 0;
+    }
+    .note b { color: var(--ink); }
+    footer {
+      font-family: var(--mono); font-size: var(--step--1); color: var(--faint);
+      border-top: 1px solid var(--rule); padding-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+<div class="sheet">
+
+<header>
+  <div class="kicker">OpenDUNE · skirmish AI · инвентарь приборов</div>
+  <h1>Всё, что мы научились мерить</h1>
+  <p class="standfirst">Шесть поверхностей измерения, введённых за эту сессию — от одной строки поверх экрана до батареи из шестнадцати чисел с воротами и целью. Ниже каждая с пояснением: <strong>что это считает и зачем оно появилось</strong>. Почти всё появилось после того, как что-то сломалось незамеченным.</p>
+  <div class="tally">
+    <div><b>58</b><span>колонок CSV</span></div>
+    <div><b>16</b><span>метрик стенда</span></div>
+    <div><b>17</b><span>полей доктрины</span></div>
+    <div><b>4</b><span>критерия волны</span></div>
+    <div><b>5</b><span>разовых отчётов</span></div>
+  </div>
+</header>
+
+<section>
+  <h2>1 · Стенд метрик<small>--war-metrics=200000,6 · шесть карт дважды со сменой сторон · ~40 с · детерминирован</small></h2>
+  <p>Единственная поверхность, которая <strong>выносит вердикт</strong>. Два порога у каждой: <strong>ворота</strong> — сломал, значит регрессия; <strong>цель</strong> — куда идём. FAIL даёт только сломанное ворото. Колонка «сейчас» — доктрина B против A на коммите <code>d2c8551e</code>.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>метрика</th><th>сейчас</th><th>ворота</th><th>цель</th><th>что ловит</th></tr></thead>
+    <tbody>
+      <tr><td class="n">turret.entries/match</td><td class="v">16</td><td class="v">≤24</td><td class="v">≤8</td><td class="d">Заходы в радиус башни тем, кто не в штурмовой волне. Решения.</td></tr>
+      <tr><td class="n">turret.dwell/match</td><td class="v">8684</td><td class="v">≤13000</td><td class="v">≤400</td><td class="d"><em>Время</em> внутри. Забор, сквозь который проходят и садятся, даёт те же заходы и втрое больше dwell — именно это и вскрылось.</td></tr>
+      <tr><td class="n">turret.deaths.loose</td><td class="v good">0</td><td class="v">0</td><td class="v">0</td><td class="d">Погиб от башни <em>вне</em> волны в фазе assault. Правило дословно.</td></tr>
+      <tr><td class="n">turret.trade %</td><td class="v good">999</td><td class="v">≥100</td><td class="v">≥100</td><td class="d">Убитых башен против своих, убитых башнями в штурме. Печатает 999, когда штурмовых потерь не было вовсе — делить не на что.</td></tr>
+      <tr><td class="n">harv.lost.early</td><td class="v warn">3</td><td class="v">≤6</td><td class="v">0</td><td class="d">Харвестеры, потерянные до тика 100000 <em>этого</em> матча. Ранний стоит нескольких поздних.</td></tr>
+      <tr><td class="n">harv.lost/match</td><td class="v good">0</td><td class="v">≤2</td><td class="v">0</td><td class="d">Потери за весь матч.</td></tr>
+      <tr><td class="n">harv.exposure %</td><td class="v warn">8</td><td class="v">≤12</td><td class="v">≤5</td><td class="d">Доля замеров, где хоть один харвестер ближе 8 тайлов к стреляющему. Причина — движется раньше следствия.</td></tr>
+      <tr><td class="n">harv.killed/match</td><td class="v good">12</td><td class="v">≥6</td><td class="v">≥10</td><td class="d">Чужие харвестеры. Проверка, что рейдеры действительно охотятся.</td></tr>
+      <tr><td class="n">wave.launched/match</td><td class="v good">3</td><td class="v">≥2</td><td class="v">≥3</td><td class="d">Что штурмы вообще случаются.</td></tr>
+      <tr><td class="n">wave.declined/match</td><td class="v warn">39</td><td class="v">≤60</td><td class="v">≤20</td><td class="d">Отказы силового теста. Много при нуле пусков — волна челночит, а не атакует.</td></tr>
+      <tr><td class="n">wave.cohesion %</td><td class="v warn">79</td><td class="v">≥70</td><td class="v">≥85</td><td class="d">Атакующих в волне против существующих, замер во время штурма. «Идут не все вместе» — это оно.</td></tr>
+      <tr><td class="n">wave.first.tick</td><td class="v warn">110016</td><td class="v">≤130000</td><td class="v">≤90000</td><td class="d">Когда начался первый штурм.</td></tr>
+      <tr><td class="n">wave.matches %</td><td class="v good">91</td><td class="v">≥60</td><td class="v">≥90</td><td class="d">Доля матчей, где штурм был хоть один.</td></tr>
+      <tr><td class="n">econ.spice/match</td><td class="v good">66826</td><td class="v">≥50000</td><td class="v">≥65000</td><td class="d">Экономика снизу — чтобы боевая правка, которая её морит, была видна.</td></tr>
+      <tr><td class="n">result.points %</td><td class="v good">83</td><td class="v">≥55</td><td class="v">≥75</td><td class="d">2 за победу, 1 за ничью, против базовой доктрины.</td></tr>
+      <tr><td class="n">result.wipeouts %</td><td class="v good">8</td><td class="v">≤25</td><td class="v">≤10</td><td class="d">Матчи, где эта сторона потеряла последнее здание.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note"><b>Колонка baseline рядом.</b> Для волновых и башенных строк у A она структурно нулевая — у A нет волн и забора. Зато харвестерные и результатные у неё настоящие: именно там ловится утечка правила B в A, которая один раз уже была и которую никто не заметил, потому что колонку A не читали.</p>
+</section>
+
+<section>
+  <h2>2 · Телеметрия матча<small>--war-telemetry=ticks,step[,seed] → bin/telemetry/*.csv · строка на дом на замер</small></h2>
+  <p>Самая широкая поверхность: <strong>58 колонок</strong>, шесть смысловых групп. Помечены как <span class="tag cum">нарастающий</span> — итог с начала матча (скорость = разность двух замеров, точная) или <span class="tag">уровень</span> — состояние на этот тик.</p>
+
+  <h3>Базис — было с самого начала</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>колонка</th><th>род</th><th>что считает</th></tr></thead>
+    <tbody>
+      <tr><td class="n">tick</td><td><span class="tag">—</span></td><td class="d">игровой тик замера</td></tr>
+      <tr><td class="n">house</td><td><span class="tag">—</span></td><td class="d">имя дома из <code>#&nbsp;houses</code></td></tr>
+      <tr><td class="n">refineries</td><td><span class="tag">уровень</span></td><td class="d">стоящие рафинерии</td></tr>
+      <tr><td class="n">combatStructures</td><td><span class="tag">уровень</span></td><td class="d">казармы, WOR, башни, ремонт, IX, дворец</td></tr>
+      <tr><td class="n">harvesters</td><td><span class="tag">уровень</span></td><td class="d">харвестеры, <em>включая стоящих внутри рафинерии</em> — их прячет <code>Unit_Find</code>, и на этом здесь ошибались дважды</td></tr>
+      <tr><td class="n">combatUnits</td><td><span class="tag">уровень</span></td><td class="d">всё, что не харвестер, не карриол и не MCV, с флагом priority — снаряды здесь тоже юниты, флаг их отсекает</td></tr>
+      <tr><td class="n">combatHitpoints</td><td><span class="tag">уровень</span></td><td class="d">их суммарные хиты</td></tr>
+      <tr><td class="n">damageTaken</td><td><span class="tag cum">нарастающий</span></td><td class="d">снятые хиты со <em>своих</em>. Никто не знает, кто стрелял, поэтому «нанёс A» читается как «получил B»</td></tr>
+      <tr><td class="n">spiceRefined</td><td><span class="tag cum">нарастающий</span></td><td class="d">валовый спайс, сгруженный в рафинерию</td></tr>
+      <tr><td class="n">credits</td><td><span class="tag">уровень</span></td><td class="d">деньги на руках</td></tr>
+      <tr><td class="n">powerSurplus</td><td><span class="tag">уровень</span></td><td class="d">производство минус потребление, <em>со знаком</em> — уход в минус самый ранний признак обвала</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Ведомость выстрелов — «дерётся или проходит мимо»</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>колонка</th><th>род</th><th>что считает</th></tr></thead>
+    <tbody>
+      <tr><td class="n">shotsTurret</td><td><span class="tag cum">нарастающий</span></td><td class="d">выстрелы по башням</td></tr>
+      <tr><td class="n">shotsStructure</td><td><span class="tag cum">нарастающий</span></td><td class="d">по прочим зданиям</td></tr>
+      <tr><td class="n">shotsUnit</td><td><span class="tag cum">нарастающий</span></td><td class="d">по юнитам</td></tr>
+      <tr><td class="n">shotsBypass</td><td><span class="tag cum">нарастающий</span></td><td class="d">по зданию, <em>пока вражеская башня была в радиусе</em>. Низкая доля башен значит либо «их не было», либо «прошёл мимо» — различает только эта колонка</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Четыре состояния, которые должны быть нулём</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>колонка</th><th>род</th><th>что считает</th></tr></thead>
+    <tbody>
+      <tr><td class="n">idleAttackers</td><td><span class="tag">уровень</span></td><td class="d">боевые без цели и без назначения</td></tr>
+      <tr><td class="n">idleOnWave</td><td><span class="tag">уровень</span></td><td class="d">то же, но среди committed в волну — атака, которая перестала атаковать</td></tr>
+      <tr><td class="n">stalledHarvesters</td><td><span class="tag">уровень</span></td><td class="d">харвестер с грузом стоит на месте</td></tr>
+      <tr><td class="n">freeRefineries</td><td><span class="tag">уровень</span></td><td class="d">рафинерия простаивает пустой. Обе строки ненулевые разом = харвестерный слой заклинило</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Состояние доктрины B <small style="text-transform:none;letter-spacing:0">— у A структурно нули, волн у неё нет</small></h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>колонка</th><th>род</th><th>что считает</th></tr></thead>
+    <tbody>
+      <tr><td class="n">wavePhase</td><td><span class="tag">уровень</span></td><td class="d">0 сбор, 1 марш, 2 подавление, 3 штурм</td></tr>
+      <tr><td class="n">waveUnits</td><td><span class="tag">уровень</span></td><td class="d">юнитов в текущей волне</td></tr>
+      <tr><td class="n">waveAtLD</td><td><span class="tag">уровень</span></td><td class="d">сколько дошло до рубежа развёртывания</td></tr>
+      <tr><td class="n">waveColumn</td><td><span class="tag">уровень</span></td><td class="d">длина колонны в тайлах — связность на марше</td></tr>
+      <tr><td class="n">wavesLaunched</td><td><span class="tag cum">нарастающий</span></td><td class="d">волн ушло</td></tr>
+      <tr><td class="n">wavesAborted</td><td><span class="tag cum">нарастающий</span></td><td class="d">волн повернуло назад, потеряв слишком много</td></tr>
+      <tr><td class="n">wavesDeclined</td><td><span class="tag cum">нарастающий</span></td><td class="d">отказов идти вовсе. Много при нуле пусков = челнок</td></tr>
+      <tr><td class="n">inAssault</td><td><span class="tag">уровень</span></td><td class="d">атакующих в волне</td></tr>
+      <tr><td class="n">inMuster</td><td><span class="tag">уровень</span></td><td class="d">атакующих придержано дома</td></tr>
+      <tr><td class="n">idleGarrison</td><td><span class="tag">уровень</span></td><td class="d">гарнизон без дела</td></tr>
+      <tr><td class="n">assaultSpread</td><td><span class="tag">уровень</span></td><td class="d">тайлы между ближайшим и дальним членом волны до цели. «Идут не все вместе» — это число</td></tr>
+      <tr><td class="n">firstAssault</td><td><span class="tag">уровень</span></td><td class="d">тик первого штурма, от начала <em>этого</em> матча, или 0</td></tr>
+      <tr><td class="n">raiders</td><td><span class="tag">уровень</span></td><td class="d">юнитов в роли рейдера</td></tr>
+      <tr><td class="n">raidersHunting</td><td><span class="tag">уровень</span></td><td class="d">из них прямо сейчас на чужом харвестере</td></tr>
+      <tr><td class="n">atkStrength</td><td><span class="tag">уровень</span></td><td class="d">последнее чтение атакующей стороны триггера штурма</td></tr>
+      <tr><td class="n">defStrength</td><td><span class="tag">уровень</span></td><td class="d">оборонительной. Штурм идёт, когда первое бьёт второе на <code>assaultRatio</code></td></tr>
+      <tr><td class="n">picket</td><td><span class="tag">уровень</span></td><td class="d">атакующих выставлено на фланговое поле спайса вместо дома</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Производство — по ролям, а не по типам</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>колонка</th><th>род</th><th>что считает</th></tr></thead>
+    <tbody>
+      <tr><td class="n">builtArt · builtAss · builtRaid · builtGar</td><td><span class="tag cum">нарастающий</span></td><td class="d">построено за всё время: артиллерия, штурм, рейд, гарнизон. По ролям, поэтому фабрики двух доктрин сравнимы напрямую</td></tr>
+      <tr><td class="n">pickArt … pickGar</td><td><span class="tag cum">нарастающий</span></td><td class="d">сколько раз роль <em>выбрали</em>, когда фабрика спросила</td></tr>
+      <tr><td class="n">vetoArt … vetoGar</td><td><span class="tag cum">нарастающий</span></td><td class="d">сколько раз отказали за превышение доли</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Дисциплина — всё нарастающее, всё ради одного правила</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>колонка</th><th>род</th><th>что считает</th></tr></thead>
+    <tbody>
+      <tr><td class="n">turretZone</td><td><span class="tag cum">нарастающий</span></td><td class="d">замеров с юнитом внутри радиуса, то есть <em>время</em> там</td></tr>
+      <tr><td class="n">turretEntries</td><td><span class="tag cum">нарастающий</span></td><td class="d">заходов. Пара с предыдущей: те же заходы и втрое больше времени = забор, сквозь который проходят</td></tr>
+      <tr><td class="n">harvLost</td><td><span class="tag cum">нарастающий</span></td><td class="d">свои харвестеры уничтожены</td></tr>
+      <tr><td class="n">harvKilled</td><td><span class="tag cum">нарастающий</span></td><td class="d">чужие уничтожены</td></tr>
+      <tr><td class="n">harvLostEarly</td><td><span class="tag cum">нарастающий</span></td><td class="d">свои, до тика 100000 этого матча</td></tr>
+      <tr><td class="n">harvNear8</td><td><span class="tag">уровень</span></td><td class="d">харвестеров ближе 8 тайлов к стреляющему</td></tr>
+      <tr><td class="n">harvWorst</td><td><span class="tag">уровень</span></td><td class="d">тайлов от самого открытого харвестера до ближайшего врага; 99 = никого</td></tr>
+      <tr><td class="n">turretKillsLoose</td><td><span class="tag cum">нарастающий</span></td><td class="d">своих убила башня <em>вне</em> волны в штурме. Правило говорит: ноль</td></tr>
+      <tr><td class="n">turretKillsAssault</td><td><span class="tag cum">нарастающий</span></td><td class="d">своих убила башня в штурме. Размен, на который доктрина согласна</td></tr>
+      <tr><td class="n">turretsKilled</td><td><span class="tag cum">нарастающий</span></td><td class="d">вражеских башен уничтожено — вторая половина того размена</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note"><b>Заголовок файла</b> несёт метаданные комментариями: <code>#&nbsp;houses</code>, <code>#&nbsp;shares</code>, <code>#&nbsp;shareLate</code>, <code>#&nbsp;switchTick</code>, <code>#&nbsp;seed</code>, <code>#&nbsp;ticks</code>, <code>#&nbsp;step</code>, <code>#&nbsp;doctrine</code>, а в хвосте — <code>#&nbsp;winner</code>, <code>#&nbsp;value</code>, <code>#&nbsp;wipeout</code>. Вердикт в конце, потому что до конца матча он неизвестен.</p>
+  <p class="note"><b>Список <code>COLUMNS</code> в <code>tools/telemetry_report.py</code> отстал от файла.</b> Он обрывается на <code>harvKilled</code> и не строит ни одной волновой, производственной или дисциплинарной серии — запись несёт больше, чем показывает страница.</p>
+</section>
+
+<section>
+  <h2>3 · Оверлей на экране<small>одна строка на дом, поверх игры, в GUI-скирмише</small></h2>
+  <p>Единственная поверхность реального времени. Появилась, чтобы «стало хуже» перестало быть впечатлением. Сама строка коротка нарочно: <strong>рисуется через <code>"%s"</code></strong> — <code>GUI_DrawText_Wrapper</code> имеет форму printf, и живой символ <code>%</code> в «mil90%» однажды съел весь остаток строки.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>поле</th><th>что это</th></tr></thead>
+    <tbody>
+      <tr><td class="n">Ord / Har</td><td class="d">дом, три буквы</td></tr>
+      <tr><td class="n">B mus w4/LD2 T0</td><td class="d">доктрина, фаза (mus/app/sup/ASSAULT), волна и сколько её на рубеже, и <strong>T</strong> — тайлы от точки сбора до ближайшей <em>своей</em> башни. T3 значило, что резерв стоит не с пушками; довели до T0</td></tr>
+      <tr><td class="n">a2s25r8g14</td><td class="d">живой состав по ролям: артиллерия, штурм, рейд, гарнизон</td></tr>
+      <tr><td class="n">120:96</td><td class="d">atkStrength : defStrength — обе стороны триггера штурма прямо на экране</td></tr>
+      <tr><td class="n">L3A1D26</td><td class="d">волн ушло / отменено / отклонено</td></tr>
+      <tr><td class="n">h6 u31 s9/12 v40213</td><td class="d">харвестеры, юниты, выполнено пунктов плана базы, стоимость всего оставшегося</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>4 · Разовые отчёты<small>печатаются самотестами; не CSV, а строки для чтения глазами</small></h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>отчёт</th><th>вид</th><th>зачем</th></tr></thead>
+    <tbody>
+      <tr><td class="n">Skirmish_GetSummary</td><td class="d"><code>2212c h3 u4 s9 8/8</code></td><td class="d">одна строка состояния дома для трассы поиска</td></tr>
+      <tr><td class="n">Skirmish_GetBuildOrder</td><td class="d"><code>Windtrap Refinery Outpost…</code></td><td class="d">порядок, в котором база реально строилась. Читается в skirmish-self-test</td></tr>
+      <tr><td class="n">Skirmish_GetTeams</td><td class="d"><code>teams: track 5/4-8*</code></td><td class="d">команды движка у доктрины A: тип движения, состав, мин-макс, звёздочка = есть цель. У B подменяется сводкой доктрины</td></tr>
+      <tr><td class="n">Skirmish_GetCasualties</td><td class="d"><code>Ordos lost 12 shot / 3 crushed</code></td><td class="d">потери по причине — расстрелян или раздавлен гусеницами</td></tr>
+      <tr><td class="n">Skirmish_GetBystanders</td><td class="d"><code>Fremen 4</code></td><td class="d">юниты домов, у которых нет базы в матче: фремены, сардаукар, наёмники. Чтобы призванное дворцом не путали с армией</td></tr>
+      <tr><td class="n">Skirmish_GetRefineryLoad</td><td class="d"><code>refinery#3 2</code></td><td class="d">сколько харвестеров привязано к каждой рафинерии — очередь на разгрузку</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>5 · Внешние инструменты<small>python поверх записанных CSV</small></h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>инструмент</th><th>что даёт</th></tr></thead>
+    <tbody>
+      <tr><td class="n">tools/telemetry_report.py</td><td class="d">запекает все записи в один самодостаточный <code>telemetry.html</code> — выбор матча и график. Именно <em>запекает</em>: страница, открытая с диска, не может ни прочитать папку, ни сделать <code>fetch()</code> к соседнему файлу. Цена — страница устаревает, пока не перегенерируешь</td></tr>
+      <tr><td class="n">tools/wave_check.py</td><td class="d"><strong>Предшественник стенда.</strong> Четыре критерия по записи: доля выстрелов по башням ≥99% от всех по зданиям, доля по юнитам ≥50%, простаивающих атакующих 0, застрявших харвестеров 0. Формулировка в его шапке та самая: «„армия стала драться лучше“ было заявлено трижды, пока юниты проходили мимо башен». Перекрыт <code>--war-metrics</code>, но жив</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>6 · Выходы поисков<small>не мониторинг, а результат прогона</small></h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>режим</th><th>чем меряет</th></tr></thead>
+    <tbody>
+      <tr><td class="n">--economy-baseline</td><td class="d">спайс за N тиков плюс порядок построек, харвестеры, карриолы, покупки со звёздного порта, рафинерия в очереди. Дешевейший сторож харвестерного слоя: базис 0 должен очищать около 8000, а падение к нулю значит, что харвестеры встали</td></tr>
+      <tr><td class="n">--economy-search / grid / queue / carryall</td><td class="d">фитнес = очищенный спайс, поиском по геному экономического плана</td></tr>
+      <tr><td class="n">--war-matrix / timing / ladder</td><td class="d">фитнес не число, а <em>исход</em>: очки 2/1/0 в матрице доля-против-доли, плюс «решительных» матчей (кончились базой, а не тиками) и реально потраченная доля против дохода — чтобы «доля не влияет» отличалось от «доли не достигли»</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>Три бага измерения, найденных по дороге</h2>
+  <p>Без них половина таблиц выше врала бы, и врала тихо.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>что было</th><th>чем это оборачивалось</th></tr></thead>
+    <tbody>
+      <tr><td class="d"><b>Таймер выключался после старта матча</b>, а не до</td><td class="d">Постройка карты занимает реальное время; сколько тиков туда попадёт — свойство нагрузки машины. Матч начинался с разного абсолютного тика, и всё, что движок гейтит по чётности тика, ложилось иначе. Два прогона одного бинарника расходились на треть по спайсу</td></tr>
+      <tr><td class="d"><b><code>g_timerGame</code> не сбрасывается</b> между матчами, а поиск играет их сотнями</td><td class="d">Всё, сформулированное как «до тика 100000», было верно для первого матча и ни для какого больше. Сброс глобальной переменной ломает экономику насмерть — слишком многое в движке штампует абсолютные тики — поэтому доктрина держит свою базу отсчёта</td></tr>
+      <tr><td class="d"><b><code>Unit_Damage</code> засчитывал убийство на каждое попадание</b> по тому, у кого уже 0 хитов</td><td class="d">Труп под башней записал больше тысячи потерянных харвестеров за матч — вчетверо больше всего пула юнитов. Счётчики считали пули</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<footer>OpenDUNE fork · doctrine.c · skirmish.c · warsearch.c · tools/ — сверено с кодом на d2c8551e</footer>
+
+</div>
+</body>
+</html>

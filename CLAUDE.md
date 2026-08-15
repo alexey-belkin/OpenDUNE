@@ -201,6 +201,9 @@ leaving it running.
   gates and goals, and what had to be fixed before any of them could be trusted
 * [telemetry.md](telemetry.md) — recording one match: the CSV format, the report
   generator, and how to add a metric
+* [instruments.html](instruments.html) — every measuring surface in one page: the
+  suite, all 58 CSV columns, the overlay, the one-off reporters and the search
+  outputs, each with what it counts
 * [units.md](units.md) / [units.html](units.html) — complete unit-type table, and
   the pool partition that caps how many units can exist at once
 * `INTERNALS.txt` — palette and file-format notes from upstream
