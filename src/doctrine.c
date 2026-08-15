@@ -84,6 +84,7 @@ typedef struct DoctrineParams {
 	uint16 escortDistance;                                  /*!< How far behind the artillery the assault stands. */
 	uint16 etaSlack;                                        /*!< Arrival-time difference treated as "together". */
 	uint16 assaultRatio;                                    /*!< Percent of the enemy's defence a wave must be worth before it goes in. */
+	uint32 assaultTicks;                                    /*!< Longest one assault may run before the wave is spent. */
 	uint16 garrisonCap;                                     /*!< Garrison-role units alive before the Barracks is told to stop. */
 	uint8  roleShare[DOCTRINE_ROLE_MAX];                    /*!< Army composition the factories build towards. */
 } DoctrineParams;
@@ -92,7 +93,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 	{
 		"A", "legacy: engine teams, one wave gate, fixed army mix",
 		12,
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		{ 0, 0, 0, 0 }
 	},
 	{
@@ -109,6 +110,7 @@ static const DoctrineParams s_doctrine[DOCTRINE_MAX] = {
 		/* escortDistance */ 3,
 		/* etaSlack */       600,
 		/* assaultRatio */   100,
+		/* assaultTicks */   12000,
 		/* garrisonCap */    10,
 		/* artillery, assault, raid, garrison */
 		{ 20, 45, 20, 15 }
@@ -1408,6 +1410,53 @@ static uint32 Doctrine_DefenceStrength(uint8 houseID, uint8 enemy)
 	return total;
 }
 
+/**
+ * Everything built after a wave left still belongs to it, until it goes in.
+ *
+ * The muster commits what exists at that moment and never looked again, so a
+ * wave that spent thirty thousand ticks marching and suppressing was the army as
+ * it stood when it formed, while the factories kept filling the yard behind it.
+ * Measured mid-assault: seven units attacking, twenty-two standing in the
+ * muster, seventeen garrison idle -- a quarter of the army fighting.
+ *
+ * Reinforcement stops at the assault, deliberately.  Before it there is a
+ * gathering point to catch up to and the time to do it in; after it, a unit sent
+ * alone across open ground into a base arrives alone, which is the trickle this
+ * doctrine exists to end.  What is built during an assault is the next wave.
+ */
+static void Doctrine_Reinforce(uint8 houseID, DoctrineHouse *dh)
+{
+	const DoctrineParams *p = Doctrine_ParamsOf(houseID);
+	PoolFindStruct find;
+	uint16 reserve;
+	uint16 taken = 0;
+
+	if (dh->phase != PHASE_APPROACH && dh->phase != PHASE_SUPPRESS) return;
+
+	reserve = Doctrine_CountReserve(houseID, NULL);
+	if (reserve <= p->garrisonKeep) return;
+
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		Unit *u = Unit_Find(&find);
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+		if (s_unitOnWave[u->o.index] != 0) continue;
+		if (!Doctrine_IsAttacker(s_unitRole[u->o.index])) continue;
+		if (u->o.type == UNIT_SABOTEUR) continue;
+		if (taken + p->garrisonKeep >= reserve) break;
+
+		s_unitOnWave[u->o.index] = 1;
+		taken++;
+	}
+
+	if (taken != 0) dh->waveCount = Doctrine_CountWave(houseID, NULL);
+}
+
 static void Doctrine_EnterPhase(DoctrineHouse *dh, uint8 phase)
 {
 	dh->phase = phase;
@@ -1793,6 +1842,20 @@ static void Doctrine_PhaseAssault(uint8 houseID, DoctrineHouse *dh, uint8 enemy)
 		dh->objective = next;
 	}
 
+	/* A wave is a wave, not a siege.
+	 *
+	 * Reinforcement deliberately stops at the assault, so an assault that grinds
+	 * on for tens of thousands of ticks is one where the factories fill the yard
+	 * behind it and none of it joins: measured at its worst, seven units in the
+	 * assault against twenty-two standing in the muster.  Past the limit the wave
+	 * is spent whether or not it took its objective, and what is standing at home
+	 * becomes the next one -- which is the shape this doctrine is named for. */
+	if (g_timerGame > dh->phaseStart + p->assaultTicks) {
+		Doctrine_DismissWave(houseID);
+		Doctrine_EnterPhase(dh, PHASE_MUSTER);
+		return;
+	}
+
 	objectivePacked = Tools_Index_GetPackedTile(dh->objective);
 
 	for (role = 0; role < DOCTRINE_ROLE_MAX; role++) {
@@ -2056,6 +2119,7 @@ void Doctrine_Tick(House *h)
 	dh->enemy = enemy;
 
 	Doctrine_AssignRoles(houseID);
+	Doctrine_Reinforce(houseID, dh);
 
 	switch (dh->phase) {
 		case PHASE_MUSTER:   Doctrine_PhaseMuster(houseID, dh, enemy);   break;
@@ -2431,15 +2495,66 @@ void Doctrine_HarvesterExposure(uint8 houseID, uint16 *near8, uint16 *worst)
 bool Doctrine_GetTelemetry(uint8 houseID, char *buf, uint16 length)
 {
 	const DoctrineHouse *dh;
+	PoolFindStruct find;
+	uint16 inAssault = 0;
+	uint16 inMuster = 0;
+	uint16 idleGarrison = 0;
+	uint16 spread = 0;
+	uint16 near = 0xFFFF, far = 0;
 
 	if (houseID >= HOUSE_MAX || buf == NULL || length == 0) return false;
 
 	dh = &s_house[houseID];
 
-	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u",
+	/* Where the army actually is, in three numbers.
+	 *
+	 * "The assault does not go in together" is not visible from the wave count:
+	 * a wave of twenty that arrives as four and sixteen has the same count as one
+	 * that arrives as twenty.  These say how the army is divided at this instant
+	 * -- committed, held back, or standing about -- and the spread says how far
+	 * apart the committed ones are from each other. */
+	find.houseID = houseID;
+	find.index   = 0xFFFF;
+	find.type    = 0xFFFF;
+
+	while (true) {
+		const Unit *u = Unit_Find(&find);
+		uint8 role;
+
+		if (u == NULL) break;
+		if (u->o.index >= UNIT_INDEX_MAX || u->o.flags.s.isNotOnMap) continue;
+
+		role = s_unitRole[u->o.index];
+		if (role == DOCTRINE_ROLE_NONE) continue;
+
+		if (s_unitOnWave[u->o.index] != 0) {
+			uint16 d;
+
+			inAssault++;
+
+			if (dh->objective != 0) {
+				d = Tile_GetDistancePacked(Tile_PackTile(u->o.position), Tools_Index_GetPackedTile(dh->objective));
+				if (d < near) near = d;
+				if (d > far)  far = d;
+			}
+			continue;
+		}
+
+		if (Doctrine_IsAttacker(role)) {
+			inMuster++;
+			continue;
+		}
+
+		if (!Tools_Index_IsValid(u->targetAttack) && u->targetMove == 0) idleGarrison++;
+	}
+
+	if (near != 0xFFFF && far > near) spread = (uint16)(far - near);
+
+	snprintf(buf, length, "%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
 	         dh->phase, dh->waveCount, dh->atLD, dh->columnLength,
 	         (unsigned)dh->wavesLaunched, (unsigned)dh->wavesAborted,
-	         (unsigned)dh->wavesDeclined);
+	         (unsigned)dh->wavesDeclined,
+	         inAssault, inMuster, idleGarrison, spread);
 
 	return true;
 }
