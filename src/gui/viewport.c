@@ -484,7 +484,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		} else if (g_table_unitInfo[u->o.type].movementType == MOVEMENT_FOOT) {
 			Sound_StartSound(g_table_actionInfo[action].soundID);
 		} else {
-			Sound_StartSound(((Tools_Random_256() & 0x1) == 0) ? 20 : 17);
+			Sound_StartSound((Tools_RandomUI_Range(0, 1) == 0) ? 20 : 17);
 		}
 
 		g_unitActive   = NULL;

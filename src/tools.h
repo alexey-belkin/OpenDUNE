@@ -34,6 +34,8 @@ extern void Tools_RandomLCG_Seed(uint16 seed);
 extern uint32 Tools_Random_GetSeed(void);
 extern uint32 Tools_RandomLCG_GetSeed(void);
 extern uint16 Tools_RandomLCG_Range(uint16 min, uint16 max);
+extern void Tools_RandomUI_Seed(uint32 seed);
+extern uint16 Tools_RandomUI_Range(uint16 min, uint16 max);
 
 #define BITARRAY_MACROS
 

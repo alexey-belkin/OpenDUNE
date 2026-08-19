@@ -1,10 +1,10 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stage 0 is in the tree, the rest is design.** Only the determinism
-harness described at the bottom exists as code. This is the plan
-and, more importantly, the list of things in the engine that have to change
-before any of it can work. The order of the sections is roughly the order of the
-work.
+**Status: stages 0 and 1 are in the tree, the rest is design.** The determinism
+harness and the RNG split exist as code, and the two sections at the bottom
+record what they cost and what they found. The rest of this file is the plan and,
+more importantly, the list of things in the engine that have to change before any
+of it can work. The order of the sections is roughly the order of the work.
 
 The target is player against player over the internet, with AI houses added
 afterwards as a special case of the same machinery.
@@ -224,8 +224,8 @@ Fog is its own stage, not a prerequisite.
 
 ### 3. The RNG streams are shared between simulation and presentation
 
-This is the subtlest desync source in the codebase, and it will bite in the first
-seconds if it is not fixed first. `Tools_RandomLCG_Range()` is consumed by:
+**Done — see "Stage 1" below for what it turned into.** This was the subtlest
+desync source in the codebase, and it would have bitten in the first seconds. `Tools_RandomLCG_Range()` is consumed by:
 
 * the simulation — the EMC `Random` opcode
   ([script/general.c:132](src/script/general.c:132)), map generation
@@ -428,7 +428,7 @@ Each stage is verifiable on its own, which matters because there is no test suit
 | # | Work | Verified by |
 |---|---|---|
 | 0 | **done** — `--mp-checksum`: CRC of the serialised state every K ticks, per savegame chunk | three runs of the same binary produce the same log; a second platform and compiler still to do |
-| 1 | split the RNG into simulation and UI streams | stage 0, plus `--war-metrics` unchanged |
+| 1 | **done** — split the RNG into simulation and UI streams; seed the simulation per match | five runs identical, `--war-metrics` unchanged, three self-tests pass |
 | 2 | match descriptor replacing `g_playerHouseID` in the logic; alliance matrix; skirmish becomes a case of it | the sixteen `--war-metrics` numbers must not move |
 | 3 | command layer plus local replay: record commands, replay, compare checksums | a diverging replay means some player action never became a command |
 | 4 | network-gated stepper, render decoupled, `Mp_Pump()` in every nested loop (§5 v1) | two processes on localhost; modal-surface test from §5 |
@@ -527,6 +527,92 @@ of the number beside it.
 One machine, one compiler, one libc. Cross-platform determinism — the same log
 from a different build — is the next thing to run, and it is what decides whether
 `-fwrapv` and a UBSan pass are needed before stage 1.
+
+## Stage 1 — the RNG split (done)
+
+Two generators now, and the rule is one sentence: **nothing that can reach saved
+state may draw on the presentation stream, and nothing that only reaches the
+screen or the speakers may draw on the simulation stream.**
+
+`Tools_RandomUI_Range()` ([tools.c:298](src/tools.c:298)) is the new one. It is
+the same LCG with its own state, seeded once from `time(NULL)` and never again —
+nothing it feeds is ever compared between machines. Twenty-seven call sites moved
+onto it: the four `Music_Play()` draws in the game loop, the one in `GUI_Mentat_Show()`,
+the mentat's mouth and eyes, the four screen dissolves, the security question,
+and the coin-flip between two sound effects in the viewport.
+
+The simulation stream keeps everything else, including three that look like
+presentation and are not:
+
+| Kept on the simulation stream | Why |
+|---|---|
+| `explosion.c` | writes the crater into `g_map[].overlayTileID` ([explosion.c:105](src/explosion.c:105)) |
+| `animation.c` | `Animation_Func_SetOverlayTile` / `SetGroundTile` write `g_map` ([animation.c:105](src/animation.c:105), [animation.c:133](src/animation.c:133)) |
+| `GUI_FactoryWindow_CalculateStarportPrice()` | decides what the player pays ([gui.c:2737](src/gui/gui.c:2737)) — and both clients must agree on the price |
+
+The Starport price is worth a second look later: the formula is duplicated in
+`skirmish.c:1692` for the AI, and computing a price in the GUI is the wrong side
+of the command layer.
+
+### Per-match seeding
+
+`Skirmish_StartInternal()` now seeds the LCG from the match seed
+([skirmish.c:2124](src/skirmish.c:2124)). Nothing did before: `Map_CreateLandscape()`
+took the seed, but the base jitter, the corner choice and the spice fields drew on
+whatever `OpenDune_Init()` had left in the LCG from `time(NULL)`, so two runs of
+the same map seed got different bases. The searches worked around it at the call
+site, which is why they repeated and a plain `--skirmish` did not; those
+workarounds are now redundant but harmless.
+
+**A correction to stage 0.** That section claimed `Tools_Random_Seed()` had no
+callers and the 256 stream always began from all zeros. It is wrong:
+`Map_CreateLandscape()` calls it with the map seed
+([map.c:1471](src/map.c:1471)). The 256 stream was already seeded per match, which
+is why adding a second seeding call to `Skirmish_StartInternal()` changed nothing
+measurable and why the sixteen metrics did not move. The call was removed again.
+The original claim came from grepping four files instead of the tree.
+
+### What the split found: the render path is part of the simulation
+
+`Explosion_Tick()` and `Animation_Tick()` are not in the game loop at all. They
+are called from `GUI_DrawScreen()` ([gui.c:4593](src/gui/gui.c:4593)), at frame
+rate, scheduled against `g_timerGUI` — and they write craters and ground tiles
+into `g_map`, which is saved state.
+
+So a piece of the simulation currently runs on the render clock. Two clients do
+not draw at the same rate, which makes this a desync by construction, and it has
+nothing to do with the RNG split — the split merely forced the question of which
+side of the fence those files were on.
+
+It was also a hole in the harness, which never draws. `--mp-checksum` now owns
+the GUI clock as well (`Timer_StepGUI()`, `Timer_ResetGUI()`) and steps both tick
+functions from the stepper, on the game clock. The checksums moved when it was
+added, which is the proof that those ticks do mutate saved state, and they repeat
+across runs, which is the proof that they are deterministic once their schedule
+is. **In a match the two clocks have to become one:** explosions and animations
+belong in the stepper of §4, not in `GUI_DrawScreen()`.
+
+### Cross-compiler, as far as this machine allows
+
+There is no second compiler here — `/usr/bin/gcc` is Apple clang. The next best
+thing is to vary what a second compiler would vary:
+
+| Build | Result |
+|---|---|
+| `-O2 -fomit-frame-pointer` (release) | baseline |
+| `-O0 -fwrapv` | byte-identical checksums |
+| `-O1 -fsanitize=undefined,integer` | byte-identical checksums, one report in 150000 ticks |
+
+The one report was real: `o = &Unit_Create(...)->o` in `Structure_BuildObject()`
+takes a member address off a NULL pointer when the unit pool band is full, and
+the check three lines down is written expecting the NULL back
+([structure.c:1844](src/structure.c:1844)). Every compiler folds it to NULL
+because `Object` sits at offset 0, which is exactly the kind of thing that holds
+until it does not. Both creates are guarded now, and the checksum is unchanged.
+
+Zero UBSan reports over 150000 ticks after that, across integer overflow, shifts,
+alignment and division. A real second platform is still worth doing, but the
+cheap proxies all agree.
 
 ## Known hazards
 

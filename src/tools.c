@@ -17,6 +17,15 @@
 static uint8 s_randomSeed[4];
 static uint32 s_randomLCG;
 
+/* The presentation stream.  Music, the mentat's face, screen dissolves and the
+ * choice between two sound effects used to draw on the same generators as the
+ * simulation, which is fine for one machine and fatal for two: a client whose
+ * music happened to be between tracks pulled a different number out of the
+ * shared sequence and the two games diverged within seconds.  Nothing that can
+ * reach saved state may use this one, and nothing that only reaches the screen
+ * or the speakers may use the other.  See mp.md. */
+static uint32 s_randomUILCG;
+
 uint16 Tools_AdjustToGameSpeed(uint16 normal, uint16 minimum, uint16 maximum, bool inverseSpeed)
 {
 	uint16 gameSpeed = g_gameConfig.gameSpeed;
@@ -270,6 +279,41 @@ void Tools_Random_Seed(uint32 seed)
 void Tools_RandomLCG_Seed(uint16 seed)
 {
 	s_randomLCG = seed;
+}
+
+/**
+ * Set the seed for the presentation randomizer.
+ */
+void Tools_RandomUI_Seed(uint32 seed)
+{
+	s_randomUILCG = seed;
+}
+
+/**
+ * Get a presentation random value between the given values.
+ *
+ * Deliberately not shared with Tools_RandomLCG_Range(): the point of the split
+ * is that drawing from this one cannot move the simulation.
+ */
+uint16 Tools_RandomUI_Range(uint16 min, uint16 max)
+{
+	uint16 ret;
+
+	if (min > max) {
+		uint16 temp = min;
+		min = max;
+		max = temp;
+	}
+
+	do {
+		uint16 value;
+
+		s_randomUILCG = 0x015A4E35 * s_randomUILCG + 1;
+		value = (int32)((s_randomUILCG >> 16) & 0x7FFF) * (max - min + 1) / 0x8000 + min;
+		ret = value;
+	} while (ret > max);
+
+	return ret;
 }
 
 /**

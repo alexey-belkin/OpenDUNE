@@ -1836,16 +1836,26 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 	if (s->o.linkedID != 0xFF || objectType == 0xFFFF) return false;
 
 	if (s->o.type != STRUCTURE_CONSTRUCTION_YARD) {
+		Unit *nu;
 		tile32 tile;
 		tile.x = 0xFFFF;
 		tile.y = 0xFFFF;
 
 		oi = &g_table_unitInfo[objectType].o;
-		o = &Unit_Create(UNIT_INDEX_INVALID, (uint8)objectType, s->o.houseID, tile, 0)->o;
+		/* Both creates fail when the pool band is full, and the check below is
+		 * written expecting a NULL back.  Taking &x->o straight off the call is
+		 * undefined when x is NULL, even though every compiler folds it to NULL
+		 * because Object sits at offset 0 -- and undefined is a desync waiting
+		 * for a different compiler (mp.md). */
+		nu = Unit_Create(UNIT_INDEX_INVALID, (uint8)objectType, s->o.houseID, tile, 0);
+		o = (nu != NULL) ? &nu->o : NULL;
 		str = String_Get_ByIndex(g_table_unitInfo[objectType].o.stringID_full);
 	} else {
+		Structure *ns;
+
 		oi = &g_table_structureInfo[objectType].o;
-		o = &Structure_Create(STRUCTURE_INDEX_INVALID, (uint8)objectType, s->o.houseID, 0xFFFF)->o;
+		ns = Structure_Create(STRUCTURE_INDEX_INVALID, (uint8)objectType, s->o.houseID, 0xFFFF);
+		o = (ns != NULL) ? &ns->o : NULL;
 		str = String_Get_ByIndex(g_table_structureInfo[objectType].o.stringID_full);
 	}
 

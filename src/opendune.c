@@ -1189,15 +1189,6 @@ static void GameLoop_Main(void)
 		WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
 		WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
 
-		/* Seed both generators from the match seed.  Skirmish_Start*() seeds
-		 * neither: Map_CreateLandscape() takes the seed, but the base jitter,
-		 * the corner choice and the spice fields all draw from the LCG, which
-		 * OpenDune_Init() seeded from time(NULL).  warsearch.c works around it
-		 * exactly like this; the seeding belongs inside Skirmish_Start*() and
-		 * moves there in stage 1 of mp.md. */
-		Tools_RandomLCG_Seed((uint16)s_mpChecksumSeed);
-		Tools_Random_Seed(s_mpChecksumSeed);
-
 		/* Own the clock, and own it *before* the match is set up.
 		 * Skirmish_Start*() ends by taking g_tickScenarioStart from g_timerGame,
 		 * and the INFO chunk stores elapsed scenario time -- the difference
@@ -1208,7 +1199,9 @@ static void GameLoop_Main(void)
 		 * is a function of steps taken, not of how long the machine took to
 		 * take them. */
 		Timer_SetTimer(TIMER_GAME, false);
+		Timer_SetTimer(TIMER_GUI, false);
 		Timer_ResetGame();
+		Timer_ResetGUI();
 
 		if (!Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_mpChecksumSeed, &planA, &planB)) {
 			PrintToConsole("mp-checksum: FAIL (could not start a skirmish)");
@@ -1229,11 +1222,23 @@ static void GameLoop_Main(void)
 			if (tick == s_mpChecksumTicks) break;
 
 			Timer_StepGame();
+			Timer_StepGUI();
 
 			GameLoop_Team();
 			GameLoop_Unit();
 			GameLoop_Structure();
 			GameLoop_House();
+
+			/* Explosions and animations are not part of the game loop at all:
+			 * GUI_DrawScreen() ticks them, at frame rate, off g_timerGUI.  They
+			 * write craters and ground tiles into g_map, which is saved state,
+			 * so leaving them out of the harness would have left the checksum
+			 * blind to a whole class of divergence -- and leaving them on the
+			 * render clock is a desync by construction, since two clients do
+			 * not draw at the same rate.  Stepped here on the game clock, which
+			 * is where mp.md has to put them for real. */
+			Explosion_Tick();
+			Animation_Tick();
 		}
 
 		PrintToConsole("mp-checksum: DONE");
@@ -1425,7 +1430,7 @@ static void GameLoop_Main(void)
 
 				GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
 
-				Music_Play(Tools_RandomLCG_Range(0, 8) + 8);
+				Music_Play(Tools_RandomUI_Range(0, 8) + 8);
 				l_timerNext = g_timerGUI + 300;
 			}
 		}
@@ -1450,7 +1455,7 @@ static void GameLoop_Main(void)
 
 			GUI_ChangeSelectionType(g_debugScenario ? SELECTIONTYPE_DEBUG : SELECTIONTYPE_STRUCTURE);
 
-			Music_Play(Tools_RandomLCG_Range(0, 8) + 8);
+			Music_Play(Tools_RandomUI_Range(0, 8) + 8);
 			l_timerNext = g_timerGUI + 300;
 		}
 
@@ -1466,14 +1471,14 @@ static void GameLoop_Main(void)
 
 				g_musicInBattle = 0;
 			} else if (g_musicInBattle > 0) {
-				Music_Play(Tools_RandomLCG_Range(0, 5) + 17);
+				Music_Play(Tools_RandomUI_Range(0, 5) + 17);
 				l_timerNext = g_timerGUI + 300;
 				g_musicInBattle = -1;
 			} else {
 				g_musicInBattle = 0;
 				if (g_enableSoundMusic != 0 && g_timerGUI > l_timerNext) {
 					if (!Driver_Music_IsPlaying()) {
-						Music_Play(Tools_RandomLCG_Range(0, 8) + 8);
+						Music_Play(Tools_RandomUI_Range(0, 8) + 8);
 						l_timerNext = g_timerGUI + 300;
 					}
 				}
@@ -1679,7 +1684,12 @@ static bool OpenDune_Init(int screen_magnification, VideoScaleFilter filter, int
 
 	GFX_SetPalette(g_palette_998A);
 
+	/* The simulation stream is reseeded per match by Skirmish_StartInternal();
+	 * this is only so it is never unseeded in the campaign, which has no match
+	 * seed of its own.  The presentation stream is never reseeded and never
+	 * needs to be -- nothing it feeds is compared between machines. */
 	Tools_RandomLCG_Seed((unsigned)time(NULL));
+	Tools_RandomUI_Seed((unsigned)time(NULL) + 1);
 
 	Widget_SetCurrentWidget(0);
 

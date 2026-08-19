@@ -395,6 +395,23 @@ void Timer_ResetGame(void)
 }
 
 /**
+ * The same pair for the GUI clock.
+ *
+ * Explosions and animations are scheduled against g_timerGUI and they write to
+ * the map, so a run that has to be reproducible has to own this clock too.  See
+ * mp.md -- in a match the two clocks have to become one.
+ */
+void Timer_StepGUI(void)
+{
+	g_timerGUI++;
+}
+
+void Timer_ResetGUI(void)
+{
+	g_timerGUI = 0;
+}
+
+/**
  * Set timers on and off.
  *
  * @param timer The timer to switch.

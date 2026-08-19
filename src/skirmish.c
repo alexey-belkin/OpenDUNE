@@ -2121,6 +2121,16 @@ static bool Skirmish_StartInternal(uint8 houseID1, uint8 houseID2, uint32 seed, 
 
 	if (seed == 0) seed = ((uint32)Tools_RandomLCG_Range(0, 0x7FFF) << 15) | Tools_RandomLCG_Range(0, 0x7FFF);
 
+	/* One match, one seed -- for the LCG, which nothing seeded here.  The base
+	 * jitter below, the corner choice and the spice fields all drew on whatever
+	 * OpenDune_Init() had left in it from time(NULL), so two runs of the same
+	 * map seed got different bases.  The searches worked around it by seeding at
+	 * the call site, which is why they repeated and a plain --skirmish did not.
+	 *
+	 * Tools_Random_256() needs nothing here: Map_CreateLandscape() below already
+	 * seeds it from the same value.  See mp.md. */
+	Tools_RandomLCG_Seed((uint16)seed);
+
 	memset(&g_scenario, 0, sizeof(Scenario));
 	/* No win or lose flags: a skirmish is watched, not won. */
 	g_scenario.mapSeed  = seed;
