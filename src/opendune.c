@@ -56,6 +56,7 @@
 #include "input/mouse.h"
 #include "load.h"
 #include "map.h"
+#include "mpsync.h"
 #include "pool/pool.h"
 #include "pool/house.h"
 #include "pool/unit.h"
@@ -145,6 +146,11 @@ static uint32 s_warPlaySeed = 1000;
 static bool s_skirmishSelfTest = false;
 static bool s_skirmishDirect = false;
 static uint32 s_skirmishSelfTestTicks = 30000;
+
+static bool s_mpChecksum = false;
+static uint32 s_mpChecksumTicks = 60000;
+static uint32 s_mpChecksumStep = 10000;
+static uint32 s_mpChecksumSeed = 1000;
 
 static void PrintToConsole(const char *str);
 
@@ -1165,9 +1171,73 @@ static void GameLoop_Main(void)
 
 	/* The menu allocates this on its way into a game; both skirmish entry
 	 * points skip the menu, and the voice player writes through it. */
-	if (s_skirmishSelfTest || s_skirmishDirect || s_warPlay) {
+	if (s_skirmishSelfTest || s_skirmishDirect || s_warPlay || s_mpChecksum) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
+	}
+
+	/* Stage 0 of mp.md: prove the simulation is deterministic before a single
+	 * line of network code exists.  Same binary and same seed must give the same
+	 * log, twice in a row and then on a second platform.  The checksum is split
+	 * per savegame chunk, so a mismatch names what diverged. */
+	if (s_mpChecksum) {
+		SkirmishEconomyPlan planA, planB;
+		MpSyncChecksum checksum;
+		char line[256];
+		uint32 tick;
+
+		WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
+		WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
+
+		/* Seed both generators from the match seed.  Skirmish_Start*() seeds
+		 * neither: Map_CreateLandscape() takes the seed, but the base jitter,
+		 * the corner choice and the spice fields all draw from the LCG, which
+		 * OpenDune_Init() seeded from time(NULL).  warsearch.c works around it
+		 * exactly like this; the seeding belongs inside Skirmish_Start*() and
+		 * moves there in stage 1 of mp.md. */
+		Tools_RandomLCG_Seed((uint16)s_mpChecksumSeed);
+		Tools_Random_Seed(s_mpChecksumSeed);
+
+		/* Own the clock, and own it *before* the match is set up.
+		 * Skirmish_Start*() ends by taking g_tickScenarioStart from g_timerGame,
+		 * and the INFO chunk stores elapsed scenario time -- the difference
+		 * between the two.  Leave the 60 Hz ticker running across setup and a
+		 * wall-clock tick lands between those two points about one run in four,
+		 * which is one stray tick of elapsed time and a different checksum.
+		 * This is the network stepper of mp.md in embryo: the simulation clock
+		 * is a function of steps taken, not of how long the machine took to
+		 * take them. */
+		Timer_SetTimer(TIMER_GAME, false);
+		Timer_ResetGame();
+
+		if (!Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_mpChecksumSeed, &planA, &planB)) {
+			PrintToConsole("mp-checksum: FAIL (could not start a skirmish)");
+			return;
+		}
+
+		for (tick = 0; ; tick++) {
+			if ((tick % s_mpChecksumStep) == 0 || tick == s_mpChecksumTicks) {
+				if (!MpSync_Take(&checksum)) {
+					PrintToConsole("mp-checksum: FAIL (could not serialise the state)");
+					return;
+				}
+
+				MpSync_Format(line, sizeof(line), tick, &checksum);
+				PrintToConsole(line);
+			}
+
+			if (tick == s_mpChecksumTicks) break;
+
+			Timer_StepGame();
+
+			GameLoop_Team();
+			GameLoop_Unit();
+			GameLoop_Structure();
+			GameLoop_House();
+		}
+
+		PrintToConsole("mp-checksum: DONE");
+		return;
 	}
 
 	if (s_skirmishSelfTest) {
@@ -1784,6 +1854,10 @@ int main(int argc, char **argv)
 			} else if (strncmp(argv[i], "--war", 5) == 0) {
 				s_warPlay = true;
 				if (argv[i][5] == '=') sscanf(argv[i] + 6, "%hu,%hu,%u", &s_warPlayShare[0], &s_warPlayShare[1], &s_warPlaySeed);
+			}
+			if (strncmp(argv[i], "--mp-checksum", 13) == 0) {
+				s_mpChecksum = true;
+				if (argv[i][13] == '=') sscanf(argv[i] + 14, "%u,%u,%u", &s_mpChecksumTicks, &s_mpChecksumStep, &s_mpChecksumSeed);
 			}
 			if (strncmp(argv[i], "--skirmish-self-test", 20) == 0) {
 				s_skirmishSelfTest = true;

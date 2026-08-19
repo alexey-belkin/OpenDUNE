@@ -375,6 +375,26 @@ void Timer_AdvanceGame(void)
 }
 
 /**
+ * Advance game simulation time by one tick, whether or not the automatic ticker
+ * is running.
+ *
+ * The automatic ticker is driven by the wall clock, which makes the absolute
+ * value of g_timerGame depend on how long a run took.  Anything that has to be
+ * reproducible -- a checksummed run today, the network stepper later (mp.md) --
+ * switches TIMER_GAME off and owns the clock through this instead.
+ */
+void Timer_StepGame(void)
+{
+	g_timerGame++;
+}
+
+/** Restart the game clock at zero, for a run that owns it. */
+void Timer_ResetGame(void)
+{
+	g_timerGame = 0;
+}
+
+/**
  * Set timers on and off.
  *
  * @param timer The timer to switch.

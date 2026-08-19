@@ -156,6 +156,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --selection-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish-self-test=200000
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --economy-baseline=80000,3
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --doctrine=B,A --war-metrics=200000,6
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --mp-checksum=20000,5000
 ```
 
 **The last one is the guard on every behavioural change**, and it is the one to
@@ -168,10 +169,20 @@ The selection test replays the saves in `~/Library/Application Support/OpenDUNE/
 The skirmish test simulates a match as fast as the CPU allows and prints each
 AI's build order — see [skirmish.md](skirmish.md) for how to read it. Its map is
 random, so run it twice before calling a change a regression.
-The economy baseline is deterministic and is the cheapest guard on the harvester
-layer: baseline 0 should refine around 8000. If it drops to near zero, harvesters
-have stalled — add `--economy-trace` and read the per-harvester and per-refinery
-state it prints, then [harvester.md](harvester.md).
+The economy baseline is the cheapest guard on the harvester layer: baseline 0
+should refine around 8000. If it drops to near zero, harvesters have stalled —
+add `--economy-trace` and read the per-harvester and per-refinery state it
+prints, then [harvester.md](harvester.md). It repeats its build orders between
+runs but not its spice totals: the 60 Hz ticker keeps advancing `g_timerGame`
+alongside the loop, so the absolute clock differs run to run
+([mp.md](mp.md), stage 0).
+
+`--mp-checksum=ticks[,step[,seed]]` is the determinism harness: it seeds both
+generators from the map seed, takes the clock off the wall and prints a CRC of
+the serialised state per savegame chunk. Two runs must print the same log. It is
+the guard on anything that could make the simulation depend on wall time, host
+state or pointer values — and the precondition for multiplayer.
+→ [mp.md](mp.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than
 leaving it running.
@@ -189,6 +200,11 @@ leaving it running.
 ## Deeper notes
 
 * [emc-scripts.md](emc-scripts.md) — script VM, disassembly, shared-state rules
+* [mp.md](mp.md) — internet multiplayer (deterministic lockstep): the plan, and
+  the engine changes it needs — `g_playerHouseID` as a simulation input, the
+  shared RNG streams, per-house fog, the modal windows that stop the world, and
+  the radar animation. Stage 0, the `--mp-checksum` determinism harness, is built;
+  everything else is still design
 * [harvester.md](harvester.md) — harvester state model and its bug history; the
   worked example of supplementing a script correctly
 * [skirmish.md](skirmish.md) — AI vs AI mode: spectator model, base plans, and

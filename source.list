@@ -100,6 +100,7 @@ input/atari_ikbd.s
 #endif
 load.c
 map.c
+mpsync.c
 object.c
 opendune.c
 os/endian.c
@@ -242,6 +243,7 @@ input/input.h
 input/mouse.h
 load.h
 map.h
+mpsync.h
 object.h
 opendune.h
 os/common.h

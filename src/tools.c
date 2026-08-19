@@ -273,6 +273,26 @@ void Tools_RandomLCG_Seed(uint16 seed)
 }
 
 /**
+ * Read back the state of the Tools_Random_256() generator.
+ *
+ * Neither generator is part of the savegame, so the only way to compare the
+ * random stream of two runs is to ask for it.  See mp.md.
+ */
+uint32 Tools_Random_GetSeed(void)
+{
+	return ((uint32)s_randomSeed[0] <<  0) | ((uint32)s_randomSeed[1] <<  8) |
+	       ((uint32)s_randomSeed[2] << 16) | ((uint32)s_randomSeed[3] << 24);
+}
+
+/**
+ * Read back the state of the LCG randomizer.
+ */
+uint32 Tools_RandomLCG_GetSeed(void)
+{
+	return s_randomLCG;
+}
+
+/**
  * Get a random value from the LCG.
  */
 static int16 Tools_RandomLCG(void)

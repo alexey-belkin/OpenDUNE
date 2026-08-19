@@ -24,6 +24,8 @@ extern void Timer_Uninit(void);
 
 extern void Timer_Tick(void);
 extern void Timer_AdvanceGame(void);
+extern void Timer_StepGame(void);
+extern void Timer_ResetGame(void);
 
 extern void Timer_Add(void (*callback)(void), uint32 usec_delay, bool callonce);
 extern void Timer_Change(void (*callback)(void), uint32 usec_delay);
