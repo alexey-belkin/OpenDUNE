@@ -15,6 +15,7 @@
 #include "../explosion.h"
 #include "../gui/gui.h"
 #include "../house.h"
+#include "../match.h"
 #include "../map.h"
 #include "../opendune.h"
 #include "../pool/unit.h"
@@ -266,7 +267,7 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 			/* A player harvester returns to a reachable explored spice field.  A
 			 * repaired vehicle returns to its pickup point only when it is not
 			 * walking back into an unsupported enemy force. */
-			if (u2->o.type == UNIT_HARVESTER && Unit_GetHouseID(u2) == g_playerHouseID) {
+			if (u2->o.type == UNIT_HARVESTER && Match_IsHumanControlled(Unit_GetHouseID(u2))) {
 				uint16 spice = Unit_Harvester_FindPreferredSpice(u2);
 				if (spice != 0) {
 					u2->harvestCenter = spice;
@@ -279,7 +280,7 @@ uint16 Script_Unit_Pickup(ScriptEngine *script)
 				if (fallback != 0) u->targetMove = Tools_Index_Encode(fallback, IT_TILE);
 			} else if (u2->targetLast.x != 0 || u2->targetLast.y != 0) {
 				u->targetMove = Tools_Index_Encode(Tile_PackTile(u2->targetLast), IT_TILE);
-			} else if (u2->o.type == UNIT_HARVESTER && Unit_GetHouseID(u2) != g_playerHouseID) {
+			} else if (u2->o.type == UNIT_HARVESTER && !Match_IsHumanControlled(Unit_GetHouseID(u2))) {
 				u->targetMove = Tools_Index_Encode(Map_SearchSpice(Tile_PackTile(u->o.position), 20), IT_TILE);
 			}
 
@@ -928,7 +929,7 @@ uint16 Script_Unit_SetAction(ScriptEngine *script)
 
 	action = STACK_PEEK(1);
 
-	if (u->o.houseID == g_playerHouseID && action == ACTION_HARVEST && u->nextActionID != ACTION_INVALID) return 0;
+	if (Match_IsHumanControlled(u->o.houseID) && action == ACTION_HARVEST && u->nextActionID != ACTION_INVALID) return 0;
 
 	Unit_SetAction(u, action);
 

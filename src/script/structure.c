@@ -10,6 +10,7 @@
 #include "../explosion.h"
 #include "../gui/gui.h"
 #include "../house.h"
+#include "../match.h"
 #include "../map.h"
 #include "../opendune.h"
 #include "../pool/house.h"
@@ -130,7 +131,7 @@ uint16 Script_Structure_RefineSpice(ScriptEngine *script)
 	if (harvesterStep == 0) return 0;
 
 	creditsStep = 7;
-	if (u->o.houseID != g_playerHouseID) {
+	if (!Match_IsHumanControlled(u->o.houseID)) {
 		creditsStep += (Tools_Random_256() % 4) - 1;
 	}
 
@@ -215,7 +216,7 @@ uint16 Script_Structure_FindUnitByType(ScriptEngine *script)
 
 	u = Unit_Get_ByIndex(s->o.linkedID);
 
-	if (g_playerHouseID == s->o.houseID && u->o.type == UNIT_HARVESTER && (u->targetLast.x == 0 && u->targetLast.y == 0) && position != 0) {
+	if (Match_IsHumanControlled(s->o.houseID) && u->o.type == UNIT_HARVESTER && (u->targetLast.x == 0 && u->targetLast.y == 0) && position != 0) {
 		return IT_NONE;
 	}
 
@@ -260,7 +261,7 @@ uint16 Script_Structure_Unknown0C5A(ScriptEngine *script)
 	 * Waiting for a busy carryall used to keep the unit inside, which leaves
 	 * o.linkedID set and therefore marks the whole refinery as unavailable - one
 	 * occupied carryall was enough to freeze every harvester in the house. */
-	if (s->o.script.variables[4] == 0 && s->o.houseID == g_playerHouseID
+	if (s->o.script.variables[4] == 0 && Match_IsHumanControlled(s->o.houseID)
 		&& ((s->o.type == STRUCTURE_REFINERY && u->o.type == UNIT_HARVESTER && Unit_Harvester_FindPreferredSpice(u) != 0)
 			|| (s->o.type == STRUCTURE_REPAIR && u->o.type != UNIT_HARVESTER && u->repairReturnPosition != 0))) {
 		uint16 encoded = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
@@ -311,7 +312,7 @@ uint16 Script_Structure_Unknown0C5A(ScriptEngine *script)
 	/* A rally point is where the factory sends what it builds.  Harvesters are
 	 * left alone: their own logic sends them to the spice they were built for,
 	 * and overriding it with a parking spot only makes the player re-order them. */
-	if (s->o.houseID == g_playerHouseID && u->o.type != UNIT_HARVESTER) {
+	if (Match_IsHumanControlled(s->o.houseID) && u->o.type != UNIT_HARVESTER) {
 		uint16 rally = Structure_GetRallyPoint(s);
 
 		if (rally != 0) UnitSelection_IssueOrder(u, ACTION_MOVE, rally);
@@ -648,7 +649,7 @@ uint16 Script_Structure_Destroy(ScriptEngine *script)
 
 		u->o.hitpoints = g_table_unitInfo[UNIT_SOLDIER].o.hitpoints * (Tools_Random_256() & 3) / 256;
 
-		if (s->o.houseID != g_playerHouseID) {
+		if (!Match_IsHumanControlled(s->o.houseID)) {
 			Unit_SetAction(u, ACTION_ATTACK);
 			continue;
 		}

@@ -56,6 +56,7 @@
 #include "input/mouse.h"
 #include "load.h"
 #include "map.h"
+#include "match.h"
 #include "mpsync.h"
 #include "pool/pool.h"
 #include "pool/house.h"
@@ -2130,6 +2131,10 @@ void Game_Init(void)
 void Game_LoadScenario(uint8 houseID, uint16 scenarioID)
 {
 	Sound_Output_Feedback(0xFFFE);
+
+	/* The campaign is not a match: with no descriptor every Match_* query falls
+	 * back to the original single-player rule, which is exactly the campaign. */
+	Match_Reset();
 
 	Game_Init();
 	UnitSelection_ClearControlGroups();

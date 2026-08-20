@@ -21,6 +21,7 @@
 #include "input/mouse.h"
 #include "inifile.h"
 #include "map.h"
+#include "match.h"
 #include "opendune.h"
 #include "pool/pool.h"
 #include "pool/house.h"
@@ -388,7 +389,7 @@ static bool Unit_AttackPosition_IsEligible(Unit *unit)
 
 	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
 	if (!s_attackPositionManual[unit->o.index] || unit->actionID != ACTION_ATTACK) return false;
-	if (Unit_GetHouseID(unit) != g_playerHouseID || !Tools_Index_IsValid(unit->targetAttack)) return false;
+	if (!Match_IsHumanControlled(Unit_GetHouseID(unit)) || !Tools_Index_IsValid(unit->targetAttack)) return false;
 
 	ui = &g_table_unitInfo[unit->o.type];
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || ui->fireDistance == 0) return false;
@@ -880,7 +881,7 @@ static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
 
 	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
 	houseID = unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID;
-	if (houseID != g_playerHouseID) return false;
+	if (!Match_IsHumanControlled(houseID)) return false;
 
 	ui = &g_table_unitInfo[unit->o.type];
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || ui->fireDistance == 0) return false;
@@ -2205,7 +2206,7 @@ static void Unit_Skirmish_ClearTheWay(Unit *unit)
 	bool onWave;
 
 	if (!Skirmish_IsActive()) return;
-	if (Unit_GetHouseID(unit) == g_playerHouseID) return;
+	if (Match_IsHumanControlled(Unit_GetHouseID(unit))) return;
 	if (unit->o.index >= UNIT_INDEX_MAX || unit->o.flags.s.isNotOnMap) return;
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || reach == 0) return;
 	if (unit->o.type == UNIT_HARVESTER || unit->o.type == UNIT_MCV) return;
@@ -2318,7 +2319,7 @@ static void Unit_Harvester_Update(Unit *unit)
 	 * exactly the same ways -- a route that never makes progress leaves the
 	 * script sitting in ACTION_HARVEST forever, and spice collection stops
 	 * for the rest of the match. */
-	if (Unit_GetHouseID(unit) != g_playerHouseID && !Skirmish_IsActive()) return;
+	if (!Match_IsHumanControlled(Unit_GetHouseID(unit)) && !Skirmish_IsActive()) return;
 	if (unit->o.flags.s.isNotOnMap || unit->o.index >= UNIT_INDEX_MAX) return;
 	tracker = &s_harvester[unit->o.index];
 
@@ -2396,7 +2397,7 @@ static bool UnitSelection_IsControllable(const Unit *unit)
 	const UnitInfo *ui;
 
 	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
-	if ((unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID) != g_playerHouseID || unit->o.type == UNIT_CARRYALL) return false;
+	if (!Match_IsHumanControlled(unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID) || unit->o.type == UNIT_CARRYALL) return false;
 
 	ui = &g_table_unitInfo[unit->o.type];
 	return ui->flags.isNormalUnit;
@@ -2964,7 +2965,14 @@ void GameLoop_Unit(void)
 						opcodesLeft = 3;
 					}
 
-					u->o.script.variables[3] = g_playerHouseID;
+					/* Nothing in UNIT.EMC ever reads variable 3 -- the scripts
+					 * touch 0, 1 and 4 only (tools/dis_emc.py) -- but it is a
+					 * saved field, so writing the viewer's house into it would
+					 * have two clients disagreeing on state that no behaviour
+					 * depends on: a desync visible only to the detector, which
+					 * is worse than a real one.  In a match it gets the other
+					 * side instead, which both clients compute alike. */
+					u->o.script.variables[3] = Match_IsActive() ? Match_GetOpponent(u->o.houseID) : g_playerHouseID;
 
 					for (; opcodesLeft > 0 && u->o.script.delay == 0; opcodesLeft--) {
 						if (!Script_Run(&u->o.script)) break;
@@ -3150,7 +3158,7 @@ Unit *Unit_Create(uint16 index, uint8 typeID, uint8 houseID, tile32 position, in
 	 * died under a passing tank: measured at 9 shot against 111 crushed. */
 	if (Skirmish_IsActive()) u->o.seenByHouses = 0xFF;
 
-	Unit_SetAction(u, (houseID == g_playerHouseID) ? Unit_GetDefaultAction(u) : ui->actionAI);
+	Unit_SetAction(u, Match_IsHumanControlled(houseID) ? Unit_GetDefaultAction(u) : ui->actionAI);
 
 	return u;
 }
@@ -3256,7 +3264,7 @@ ActionType Unit_GetDefaultAction(const Unit *u)
 
 	if (u == NULL) return ACTION_GUARD;
 	ui = &g_table_unitInfo[u->o.type];
-	if (u->o.houseID == g_playerHouseID && ui->flags.isNormalUnit && ui->flags.isGroundUnit && ui->fireDistance != 0 &&
+	if (Match_IsHumanControlled(u->o.houseID) && ui->flags.isNormalUnit && ui->flags.isGroundUnit && ui->fireDistance != 0 &&
 		(ui->movementType == MOVEMENT_FOOT || ui->movementType == MOVEMENT_TRACKED || ui->movementType == MOVEMENT_WHEELED)) {
 		/* An explicit order outranks the fork's wider default.  The original
 		 * attack script ends a finished fight with SetAction(ACTION_MOVE) when
@@ -3283,7 +3291,7 @@ void Unit_SetGuardPosition(Unit *u, uint16 packed)
 	u->guardPosition = packed;
 
 	ui = &g_table_unitInfo[u->o.type];
-	if (Unit_GetHouseID(u) == g_playerHouseID && ui->flags.isNormalUnit && ui->flags.isGroundUnit && ui->fireDistance != 0) {
+	if (Match_IsHumanControlled(Unit_GetHouseID(u)) && ui->flags.isNormalUnit && ui->flags.isGroundUnit && ui->fireDistance != 0) {
 		u->originEncoded = Tools_Index_Encode(packed, IT_TILE);
 	}
 }
@@ -3387,7 +3395,7 @@ ActionType Unit_GetDefaultActionAfterCompletion(Unit *u)
 		return action;
 	}
 
-	if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID && u->actionID == ACTION_MOVE) {
+	if (u != NULL && Match_IsHumanControlled(Unit_GetHouseID(u)) && u->actionID == ACTION_MOVE) {
 		uint16 packed = Tile_PackTile(u->o.position);
 
 		/* Not every completed Move is a player order.  The original attack
@@ -3407,7 +3415,7 @@ ActionType Unit_GetDefaultActionAfterCompletion(Unit *u)
 		if (!Map_IsValidPosition(u->guardPosition) || Tile_GetDistancePacked(packed, u->guardPosition) <= 2) {
 			Unit_SetGuardPosition(u, packed);
 		}
-	} else if (u != NULL && Unit_GetHouseID(u) == g_playerHouseID && u->actionID == ACTION_ATTACK &&
+	} else if (u != NULL && Match_IsHumanControlled(Unit_GetHouseID(u)) && u->actionID == ACTION_ATTACK &&
 		s_attackPositionManual[u->o.index] && s_autonomousPost[u->o.index].state != AUTONOMOUS_POST_ENGAGING) {
 		/* A player-issued Attack is a manual order: where it ends is the new
 		 * post, exactly as before. */
@@ -3780,7 +3788,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 	u->currentDestination.y = 0;
 	u->targetMove = 0;
 	u->targetAttack = 0;
-	if (u->o.houseID == g_playerHouseID && u->o.type != UNIT_HARVESTER) Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
+	if (Match_IsHumanControlled(u->o.houseID) && u->o.type != UNIT_HARVESTER) Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
 
 	if (g_map[Tile_PackTile(u->o.position)].isUnveiled) {
 		/* A new unit being delivered fresh from the factory; force a seenByHouses
@@ -3794,7 +3802,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 	 * in Unit_GetTargetUnitPriority(), so the AIs would ignore each other. */
 	if (Skirmish_IsActive()) u->o.seenByHouses = 0xFF;
 
-	if (u->o.houseID != g_playerHouseID || u->o.type == UNIT_HARVESTER || u->o.type == UNIT_SABOTEUR) {
+	if (!Match_IsHumanControlled(u->o.houseID) || u->o.type == UNIT_HARVESTER || u->o.type == UNIT_SABOTEUR) {
 		Unit_SetAction(u, ui->actionAI);
 	} else {
 		Unit_SetAction(u, Unit_GetDefaultAction(u));
@@ -4136,7 +4144,7 @@ bool Unit_Deviation_Decrease(Unit *unit, uint16 amount)
 	Unit_UpdateMap(2, unit);
 	unit->o.flags.s.bulletIsBig = false;
 
-	if (unit->o.houseID == g_playerHouseID) {
+	if (Match_IsHumanControlled(unit->o.houseID)) {
 		Unit_SetAction(unit, ui->o.actionsPlayer[3]);
 	} else {
 		Unit_SetAction(unit, ui->actionAI);
@@ -4192,7 +4200,7 @@ bool Unit_Deviate(Unit *unit, uint16 probability, uint8 houseID)
 
 	if (probability == 0) probability = g_table_houseInfo[unit->o.houseID].toughness;
 
-	if (unit->o.houseID != g_playerHouseID) {
+	if (!Match_IsHumanControlled(unit->o.houseID)) {
 		probability -= probability / 8;
 	}
 
@@ -4203,7 +4211,7 @@ bool Unit_Deviate(Unit *unit, uint16 probability, uint8 houseID)
 
 	Unit_UpdateMap(2, unit);
 
-	if (g_playerHouseID == unit->deviatedHouse) {
+	if (Match_IsHumanControlled(unit->deviatedHouse)) {
 		Unit_SetAction(unit, ui->o.actionsPlayer[3]);
 	} else {
 		Unit_SetAction(unit, ui->actionAI);
@@ -4535,7 +4543,7 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 		Map_MakeExplosion((damage < 25) ? EXPLOSION_IMPACT_SMALL : EXPLOSION_IMPACT_MEDIUM, unit->o.position, 0, 0);
 	}
 
-	if (houseID != g_playerHouseID && unit->actionID == ACTION_AMBUSH && unit->o.type != UNIT_HARVESTER) {
+	if (!Match_IsHumanControlled(houseID) && unit->actionID == ACTION_AMBUSH && unit->o.type != UNIT_HARVESTER) {
 		Unit_SetAction(unit, ACTION_ATTACK);
 	}
 
@@ -6427,7 +6435,7 @@ void Unit_LaunchHouseMissile(uint16 packed)
 
 	packed = Tile_PackTile(tile);
 
-	isAI = g_unitHouseMissile->o.houseID != g_playerHouseID;
+	isAI = !Match_IsHumanControlled(g_unitHouseMissile->o.houseID);
 
 	Unit_Free(g_unitHouseMissile);
 

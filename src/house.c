@@ -7,6 +7,7 @@
 #include "os/sleep.h"
 
 #include "house.h"
+#include "match.h"
 
 #include "audio/driver.h"
 #include "audio/sound.h"
@@ -368,12 +369,15 @@ bool House_AreAllied(uint8 houseID1, uint8 houseID2)
 		return (houseID1 == HOUSE_ATREIDES || houseID2 == HOUSE_ATREIDES);
 	}
 
-	/* Dune II only ever has one enemy, the player, so every other pair of houses
-	 * is allied by definition.  A skirmish is watched by a spectator who owns
-	 * nothing, which would make the two AIs allies of each other: no target
-	 * scores above zero, no team ever moves, and both armies stand around. */
-	if (Skirmish_IsActive()) return false;
+	/* In a match the slots are the whole world, and with two of them the matrix
+	 * is one line: anyone who is not you is against you.  Written the old way it
+	 * was the spectator who decided, and a skirmish is watched by one who owns
+	 * nothing -- which made the two AIs allies of each other: no target scored
+	 * above zero, no team ever moved, and both armies stood around. */
+	if (Match_IsActive()) return !Match_AreEnemies(houseID1, houseID2);
 
+	/* Outside a match Dune II only ever has one enemy, the player, so every
+	 * other pair of houses is allied by definition. */
 	return (houseID1 != g_playerHouseID && houseID2 != g_playerHouseID);
 }
 

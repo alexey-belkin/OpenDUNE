@@ -18,6 +18,7 @@
 #include "gui/widget.h"
 #include "house.h"
 #include "map.h"
+#include "match.h"
 #include "opendune.h"
 #include "pool/pool.h"
 #include "pool/house.h"
@@ -100,7 +101,7 @@ bool Structure_Queue_CanOrder(const Structure *s)
 {
 	const StructureInfo *si;
 
-	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT || s->o.houseID != g_playerHouseID) return false;
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT || !Match_IsHumanControlled(s->o.houseID)) return false;
 	if (s->o.type == STRUCTURE_CONSTRUCTION_YARD || s->o.type == STRUCTURE_REPAIR || s->o.type == STRUCTURE_STARPORT) return false;
 
 	si = &g_table_structureInfo[s->o.type];
@@ -291,7 +292,7 @@ void GameLoop_Structure(void)
 					h->credits -= repairCost;
 
 					/* AIs repair in early games slower than in later games */
-					if (s->o.houseID == g_playerHouseID || g_campaignID >= 3) {
+					if (Match_IsHumanControlled(s->o.houseID) || g_campaignID >= 3) {
 						s->o.hitpoints += 5;
 					} else {
 						s->o.hitpoints += 3;
@@ -325,7 +326,7 @@ void GameLoop_Structure(void)
 					}
 
 					/* For AIs, we slow down building speed in all but the last campaign */
-					if (g_playerHouseID != s->o.houseID) {
+					if (!Match_IsHumanControlled(s->o.houseID)) {
 						if (buildSpeed > g_campaignID * 20 + 95) buildSpeed = g_campaignID * 20 + 95;
 					}
 
@@ -411,7 +412,7 @@ void GameLoop_Structure(void)
 						}
 					} else {
 						/* Out of money means the building gets put on hold */
-						if (s->o.houseID == g_playerHouseID) {
+						if (Match_IsHumanControlled(s->o.houseID)) {
 							s->o.flags.s.onHold = true;
 							GUI_DisplayText(String_Get_ByIndex(STR_INSUFFICIENT_FUNDS_CONSTRUCTION_IS_HALTED), 0);
 						}
@@ -454,7 +455,7 @@ void GameLoop_Structure(void)
 				}
 
 				/* AI maintenance on structures */
-				if (h->flags.isAIActive && s->o.flags.s.allocated && s->o.houseID != g_playerHouseID && h->credits != 0) {
+				if (h->flags.isAIActive && s->o.flags.s.allocated && !Match_IsHumanControlled(s->o.houseID) && h->credits != 0) {
 					/* When structure is below 50% hitpoints, start repairing */
 					if (s->o.hitpoints < si->o.hitpoints / 2) {
 						Structure_SetRepairingState(s, 1, NULL);
@@ -565,7 +566,7 @@ Structure *Structure_Create(uint16 index, uint8 typeID, uint8 houseID, uint16 po
 	s->countDown = 0;
 
 	/* AIs get the full upgrade immediately */
-	if (houseID != g_playerHouseID) {
+	if (!Match_IsHumanControlled(houseID)) {
 		while (true) {
 			if (!Structure_IsUpgradable(s)) break;
 			s->upgradeLevel++;
@@ -611,7 +612,7 @@ bool Structure_Place(Structure *s, uint16 position)
 			 * AI wall was silently refunded and freed while its plan entry was
 			 * spent: an AI base never had a single one. */
 			if (Structure_IsValidBuildLocation(position, STRUCTURE_WALL, s->o.houseID) == 0 &&
-			    s->o.houseID == g_playerHouseID && !g_debugScenario && g_validateStrictIfZero == 0) return false;
+			    Match_IsHumanControlled(s->o.houseID) && !g_debugScenario && g_validateStrictIfZero == 0) return false;
 
 			t = &g_map[position];
 			t->groundTileID = g_wallTileID + 1;
@@ -686,7 +687,7 @@ bool Structure_Place(Structure *s, uint16 position)
 	}
 
 	validBuildLocation = Structure_IsValidBuildLocation(position, s->o.type, s->o.houseID);
-	if (validBuildLocation == 0 && s->o.houseID == g_playerHouseID && !g_debugScenario && g_validateStrictIfZero == 0) return false;
+	if (validBuildLocation == 0 && Match_IsHumanControlled(s->o.houseID) && !g_debugScenario && g_validateStrictIfZero == 0) return false;
 
 	/* ENHANCEMENT -- In Dune2, it only removes the fog around the top-left tile of a structure, leaving for big structures the right in the fog. */
 	if (!g_dune2_enhanced && s->o.houseID == g_playerHouseID) Tile_RemoveFogInRadius(Tile_UnpackTile(position), 2);
@@ -713,7 +714,7 @@ bool Structure_Place(Structure *s, uint16 position)
 	 * branch; making that test answer honestly would hand every AI rebuild a
 	 * hitpoint cut and the degrades flag, which is a balance change nobody asked
 	 * for.  The foundation rule stays the player's. */
-	if (validBuildLocation < 0 && s->o.houseID != g_playerHouseID) validBuildLocation = 0;
+	if (validBuildLocation < 0 && !Match_IsHumanControlled(s->o.houseID)) validBuildLocation = 0;
 
 	/* If the return value is negative, there are tiles without slab. This gives a penalty to the hitpoints. */
 	if (validBuildLocation < 0) {
@@ -1201,7 +1202,7 @@ static void Structure_Destroy(Structure *s)
 
 	h->credits -= (h->creditsStorage == 0) ? h->credits : min(h->credits, (h->credits * 256 / h->creditsStorage) * si->creditsStorage / 256);
 
-	if (s->o.houseID != g_playerHouseID) h->credits += si->o.buildCredits + (g_campaignID > 7 ? si->o.buildCredits / 2 : 0);
+	if (!Match_IsHumanControlled(s->o.houseID)) h->credits += si->o.buildCredits + (g_campaignID > 7 ? si->o.buildCredits / 2 : 0);
 
 	if (s->o.type != STRUCTURE_WINDTRAP) return;
 

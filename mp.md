@@ -1,8 +1,8 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stages 0 and 1 are in the tree, the rest is design.** The determinism
-harness and the RNG split exist as code, and the two sections at the bottom
-record what they cost and what they found. The rest of this file is the plan and,
+**Status: stages 0, 1 and 2 are in the tree, the rest is design.** The
+determinism harness, the RNG split and the match descriptor exist as code, and
+the sections at the bottom record what each cost and what each found. The rest of this file is the plan and,
 more importantly, the list of things in the engine that have to change before any
 of it can work. The order of the sections is roughly the order of the work.
 
@@ -181,7 +181,8 @@ is cheap; a desync twenty minutes in is not.
 
 ### 1. `g_playerHouseID` is a simulation input, not a viewpoint
 
-209 references, and in the game logic they change *behaviour*, not just drawing:
+**Done — see "Stage 2" below.** 209 references, and in the game logic they changed
+*behaviour*, not just drawing:
 
 | Site | What differs |
 |---|---|
@@ -202,12 +203,26 @@ A PvP match has two players, so a global scalar cannot decide these. Split into:
 The trail is already half cut: `Skirmish_IsActive()` sits as a patch in exactly
 these places ([house.c:375](src/house.c:375),
 [structure.c:699](src/structure.c:699), [unit.c:2321](src/unit.c:2321)). Rather
-than adding a third patch, introduce a match descriptor — `houses[]` with a
-controller per slot (local human / remote human / AI / none) plus the alliance
-matrix — and **make skirmish a configuration of it**. That also retires the
-player-centric warnings in [skirmish.md](skirmish.md).
+than adding a third patch, introduce a match descriptor — a slot per house with
+a controller (local human / remote human / AI / none) — and **make skirmish a
+configuration of it**. That also retires the player-centric warnings in
+[skirmish.md](skirmish.md).
 
-Guard: the sixteen numbers of `--war-metrics` must not move.
+**Scope for v1, decided rather than discovered:** two slots, no more. A match is
+networked only when *both* slots are human; every other combination — human
+against AI, AI against AI — runs entirely locally with no lockstep, no relay and
+no turn loop. Mixed matches over the network (a human, a remote human and an AI
+house) are a v2 question. The descriptor still carries the controller per slot,
+because that is what the simulation asks about; what v1 forecloses is only the
+number of slots and the combination that goes on the wire.
+
+Two slots also make alliances trivial: in a match the two houses are enemies and
+that is the whole rule. The alliance matrix as data waits for v2, when there can
+be more than two of anything.
+
+Guard: the sixteen numbers of `--war-metrics` must not move. This is the first
+stage where that gate stops being a formality — every conversion here is a chance
+to change AI behaviour by accident.
 
 ### 2. Fog of war is single-player
 
@@ -429,7 +444,7 @@ Each stage is verifiable on its own, which matters because there is no test suit
 |---|---|---|
 | 0 | **done** — `--mp-checksum`: CRC of the serialised state every K ticks, per savegame chunk | three runs of the same binary produce the same log; a second platform and compiler still to do |
 | 1 | **done** — split the RNG into simulation and UI streams; seed the simulation per match | five runs identical, `--war-metrics` unchanged, three self-tests pass |
-| 2 | match descriptor replacing `g_playerHouseID` in the logic; alliance matrix; skirmish becomes a case of it | the sixteen `--war-metrics` numbers must not move |
+| 2 | **done (v1)** — match descriptor replacing `g_playerHouseID` in the logic; skirmish becomes a case of it | state byte-identical, the sixteen `--war-metrics` numbers unmoved |
 | 3 | command layer plus local replay: record commands, replay, compare checksums | a diverging replay means some player action never became a command |
 | 4 | network-gated stepper, render decoupled, `Mp_Pump()` in every nested loop (§5 v1) | two processes on localhost; modal-surface test from §5 |
 | 5 | relay and lobby: rooms, join codes, timeout, config hash handshake | a match over the internet |
@@ -613,6 +628,88 @@ until it does not. Both creates are guarded now, and the checksum is unchanged.
 Zero UBSan reports over 150000 ticks after that, across integer overflow, shifts,
 alignment and division. A real second platform is still worth doing, but the
 cheap proxies all agree.
+
+## Stage 2 — the match descriptor (done, v1 scope)
+
+[src/match.c](src/match.c) holds it: two slots, a house and a controller each,
+and five questions the rest of the engine can ask.
+
+```c
+Match_IsActive()                  /* is a match set up at all */
+Match_IsNetworked()               /* both slots human -> lockstep */
+Match_IsHumanControlled(houseID)  /* what the simulation actually wanted */
+Match_AreEnemies(h1, h2)
+Match_GetOpponent(houseID)
+```
+
+The conversion rule is one line: wherever the simulation asked
+`houseID == g_playerHouseID` to mean *is this the human*, it now asks
+`Match_IsHumanControlled(houseID)`. `g_playerHouseID` keeps its other meaning —
+the house the local screen belongs to — and every presentation site was left on
+it deliberately.
+
+**The rule is behaviour-preserving by construction**, which is what made it
+checkable:
+
+| Situation | Old test | New test | Same? |
+|---|---|---|---|
+| campaign | `h == g_playerHouseID` | descriptor inactive, so `h == g_playerHouseID` | yes |
+| skirmish, AI house | false — the spectator owns nothing | slot controller is AI | yes |
+
+So the state had to come out byte-identical, and it did: three 150000-tick runs
+identical to each other and to the stage 1 baseline, every chunk. `--war-metrics`
+PASS with all sixteen numbers unmoved, three self-tests pass.
+
+`House_AreAllied()` lost its `Skirmish_IsActive()` patch and asks the descriptor
+instead ([house.c:377](src/house.c:377)). With two slots the answer is the whole
+matrix — in a match, anyone who is not you is against you.
+
+### What moved
+
+Roughly thirty sites, all of them places where the engine chose between
+human-style and AI-style behaviour:
+
+| Where | The fork |
+|---|---|
+| [unit.c:3153](src/unit.c:3153), [unit.c:3797](src/unit.c:3797), [unit.c:4139](src/unit.c:4139) | default action versus `ui->actionAI` |
+| [unit.c:4195](src/unit.c:4195) | AI units take a toughness penalty |
+| [unit.c:4538](src/unit.c:4538) | `ACTION_AMBUSH` becomes attack for AI only |
+| [unit.c:3783](src/unit.c:3783) and the autonomy hooks | guard posts and manual attack positions, this fork's own features |
+| [structure.c:328](src/structure.c:328), [structure.c:568](src/structure.c:568), [structure.c:457](src/structure.c:457) | AI build speed cap, instant upgrades, self-repair |
+| [structure.c:1204](src/structure.c:1204) | refund on cancel differs |
+| [structure.c:613](src/structure.c:613), [689](src/structure.c:689), [716](src/structure.c:716) | build-location strictness applies to humans only |
+| [script/structure.c:133](src/script/structure.c:133) | the AI's harvester credits are jittered |
+| [script/structure.c:651](src/script/structure.c:651), [script/team.c:497](src/script/team.c:497) | AI-only script paths |
+
+### What deliberately did not move
+
+Presentation keeps `g_playerHouseID`: sound feedback, on-screen text, the action
+panel, control groups, cursor hostility, `g_scenario` tallies. So do the fog sites
+(§2) and the radar (§6) — those are their own stages, and converting them here
+would have moved state for reasons that have nothing to do with who is playing.
+
+### One line that would have desynced without changing anything
+
+`u->o.script.variables[3] = g_playerHouseID` ([unit.c:2968](src/unit.c:2968))
+hands the EMC script a house id every tick. Disassembling `UNIT.EMC` with
+[tools/dis_emc.py](tools/dis_emc.py) says the scripts never read it: across every
+unit type they touch variables 0, 1 and 4 and nothing else.
+
+But `variables[5]` is a **saved** array
+([saveload/scriptengine.c:29](src/saveload/scriptengine.c:29)), so two clients
+would have written their own viewer's house into a field the checksum covers and
+no behaviour depends on — a desync visible only to the detector, which is worse
+than a real one, because there is nothing to find at the other end. In a match it
+now gets the opponent, which both clients compute alike.
+
+The prediction was that the `unit` chunk would move and nothing else would. It
+came out exactly so — `str`, `house`, `map`, `team`, `new`, `info` and `rng` all
+byte-identical, and the sixteen metrics unmoved.
+
+### Left for v2
+
+The alliance matrix as data, more than two slots, and networked matches with AI
+houses in them. None of it is needed for two people on one map.
 
 ## Known hazards
 

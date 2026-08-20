@@ -26,6 +26,7 @@
 #include "gui/gui.h"
 #include "house.h"
 #include "map.h"
+#include "match.h"
 #include "opendune.h"
 #include "pool/house.h"
 #include "pool/pool.h"
@@ -2146,6 +2147,14 @@ static bool Skirmish_StartInternal(uint8 houseID1, uint8 houseID2, uint32 seed, 
 	g_campaignID    = SKIRMISH_CAMPAIGN;
 	g_scenarioID    = 1;
 	g_playerHouseID = HOUSE_MERCENARY;
+
+	/* Describe the match before anything simulates.  Both sides are AI here and
+	 * the screen belongs to a spectator who owns nothing; a networked match is
+	 * the same descriptor with both controllers human.  See mp.md. */
+	Match_Reset();
+	Match_SetSlot(0, houseID1, MATCH_CONTROLLER_AI);
+	if (houseID2 != HOUSE_INVALID) Match_SetSlot(1, houseID2, MATCH_CONTROLLER_AI);
+	Match_Begin();
 
 	Sprites_LoadTiles();
 	Map_CreateLandscape(seed);

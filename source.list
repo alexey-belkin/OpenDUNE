@@ -100,6 +100,7 @@ input/atari_ikbd.s
 #endif
 load.c
 map.c
+match.c
 mpsync.c
 object.c
 opendune.c
@@ -243,6 +244,7 @@ input/input.h
 input/mouse.h
 load.h
 map.h
+match.h
 mpsync.h
 object.h
 opendune.h
