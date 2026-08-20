@@ -178,6 +178,23 @@ static void Structure_Queue_StartNext(Structure *s)
 /**
  * Loop over all structures, preforming various of tasks.
  */
+/**
+ * Put the module's schedulers back to the start of time.
+ *
+ * They hold absolute deadlines -- "next run at g_timerGame + delta" -- so a
+ * match that starts with the clock at zero inherits deadlines from the last one
+ * and simply does not run until the clock catches up.  Every match has to begin
+ * from a known state, which matters for a rematch, for a reconnect, and for any
+ * harness that plays twice in one process.  See mp.md.
+ */
+void Structure_ResetTicks(void)
+{
+	s_tickStructureDegrade   = 0;
+	s_tickStructureStructure = 0;
+	s_tickStructureScript    = 0;
+	s_tickStructurePalace    = 0;
+}
+
 void GameLoop_Structure(void)
 {
 	PoolFindStruct find;

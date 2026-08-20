@@ -1,10 +1,11 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stages 0, 1 and 2 are in the tree, the rest is design.** The
-determinism harness, the RNG split and the match descriptor exist as code, and
-the sections at the bottom record what each cost and what each found. The rest of this file is the plan and,
-more importantly, the list of things in the engine that have to change before any
-of it can work. The order of the sections is roughly the order of the work.
+**Status: stages 0 to 3 are in the tree, the rest is design.** The determinism
+harness, the RNG split, the match descriptor and the command layer exist as code,
+and the sections at the bottom record what each cost and what each found. The
+rest of this file is the plan and, more importantly, the list of things in the
+engine that have to change before any of it can work. The order of the sections
+is roughly the order of the work.
 
 The target is player against player over the internet, with AI houses added
 afterwards as a special case of the same machinery.
@@ -445,7 +446,7 @@ Each stage is verifiable on its own, which matters because there is no test suit
 | 0 | **done** — `--mp-checksum`: CRC of the serialised state every K ticks, per savegame chunk | three runs of the same binary produce the same log; a second platform and compiler still to do |
 | 1 | **done** — split the RNG into simulation and UI streams; seed the simulation per match | five runs identical, `--war-metrics` unchanged, three self-tests pass |
 | 2 | **done (v1)** — match descriptor replacing `g_playerHouseID` in the logic; skirmish becomes a case of it | state byte-identical, the sixteen `--war-metrics` numbers unmoved |
-| 3 | command layer plus local replay: record commands, replay, compare checksums | a diverging replay means some player action never became a command |
+| 3 | **done** — command layer plus local replay: record commands, replay, compare checksums | `--mp-replay` passes on three seeds; dropping one command fails it |
 | 4 | network-gated stepper, render decoupled, `Mp_Pump()` in every nested loop (§5 v1) | two processes on localhost; modal-surface test from §5 |
 | 5 | relay and lobby: rooms, join codes, timeout, config hash handshake | a match over the internet |
 | 6 | per-house fog, non-modal build panel (§5 v2), reconnect by state upload, more than two houses, AI slots, spectators | |
@@ -710,6 +711,120 @@ byte-identical, and the sixteen metrics unmoved.
 
 The alliance matrix as data, more than two slots, and networked matches with AI
 houses in them. None of it is needed for two people on one map.
+
+## Stage 3 — the command layer and the replay (done, with a caveat)
+
+[src/mpcommand.c](src/mpcommand.c) is the choke point. Everything a player does to
+the world becomes an `MpCommand` and goes through `MpCommand_Submit()`; nothing
+reaches the simulation any other way.
+
+```c
+typedef struct MpCommand {
+	uint8  type, houseID, action, count;
+	uint16 packed;                 /* target tile */
+	uint16 object;                 /* structure index */
+	uint16 value;                  /* what a factory should build */
+	uint16 unit[MP_COMMAND_UNITS_MAX];
+} MpCommand;
+```
+
+**A command names its recipients.** It cannot say "the selection", because the
+selection is local and the other client has one of its own. So the group logic
+this fork added — sorting recipients by distance, spreading a Move across tiles,
+deciding whether an Attack is really an advance — moved out of the selection
+functions into appliers that take a list:
+
+| Was | Is |
+|---|---|
+| `UnitSelection_ApplyPendingAction()` | collects the list, submits; `UnitSelection_ApplyOrderToList()` applies it |
+| `UnitSelection_IssueDefaultOrder()` | same split, `…ApplyDefaultOrderToList()` |
+| `UnitSelection_BeginAction()` immediate branch | `…ApplyActionToList()` |
+| `UnitSelection_OrderHunt()` | `…ApplyHuntToList()` |
+| air transit | `…ApplyAirTransitToList()` |
+
+Hostility moved with them: `UnitSelection_IsHostileTarget()` takes the *issuing*
+house now rather than reading the viewer, so both clients resolve a right-click
+the same way.
+
+Locally `Submit()` records and executes in the same breath. In a networked match
+that is where a command is stamped with turn T+D and handed to the relay instead,
+and `Execute()` runs when every player's packet for that turn has arrived.
+
+### The replay
+
+```bash
+./opendune --skirmish=ordos,harkonnen --mp-replay=40000,500
+```
+
+Two passes in one process. The first plays the match with a scripted player
+issuing orders through `MpCommand_Submit()`, recording each with its tick. The
+second replays that recording into the same match with the scripted player
+switched off, and compares the per-chunk checksum at every sample. Samples are
+taken **on the command's own tick, after it runs** — sampled a step later the AI
+has re-ordered the same units in the meantime, and a dropped command leaves no
+trace.
+
+Passes on three seeds. Dropping one command from the replay fails; dropping all
+of them fails.
+
+### What it found, both times by failing
+
+**1. Two matches in one process were not the same match.** The second pass
+diverged with no commands involved at all. Every subsystem keeps its next-run
+deadline as an absolute tick — `s_tickUnitScript`, `s_tickStructureScript`,
+`s_tickHouseHouse`, `s_tickTeamGameLoop` and a dozen more — and those are module
+statics that survive a match. Start the clock at zero again and the deadlines
+from the last match are all in the future, so nothing runs until the clock
+catches up. `Unit_ResetTicks()`, `Structure_ResetTicks()`, `Team_ResetTicks()` and
+`House_ResetTicks()` are called from `Game_Init()` now.
+
+**This moved the sixteen metrics**, and the move is worth being explicit about
+because it is not a regression and not noise:
+
+| | before | after |
+|---|---|---|
+| turret.entries/match | 16 | 20 |
+| turret.dwell/match | 8684 | 7659 |
+| harv.lost/match | 0 | 2 |
+| econ.spice/match | 66826 | 62418 |
+| result.points % | 83 | 70 |
+| result.wipeouts % | 8 | 25 |
+| verdict | PASS, 7 of 16 short of goal | PASS, 12 of 16 short of goal |
+
+Every gate still holds, and the numbers repeat exactly between runs. What changed
+is that a match now starts from the same state whether it is the first in the
+process or the fifth — before, the first match began with every scheduler at zero
+and every later one began with the previous match's deadlines a few ticks in the
+future. The searches were measuring a mixture of the two. `result.wipeouts` is now
+sitting exactly on its gate at 25, which is worth watching. Re-baselining
+[metrics.md](metrics.md) against the corrected behaviour is a decision for
+whoever owns those numbers, not a side effect of this stage.
+
+**2. The first version of the test was vacuous.** It passed with the *entire*
+recording deleted. Unit orders go through `UnitSelection_IsControllable()`, which
+refuses anything no human controls, so every order the scripted player issued to
+an AI house was silently a no-op. Only the negative control caught it — the
+positive result looked perfect throughout.
+
+The obvious repair does not work either: flagging one of the skirmish AI's houses
+as human-controlled stops it building, because an AI house that runs out of money
+gets its production put on hold and clearing the hold is a player action nobody
+performs. So the scripted player orders *production* instead, which does reach an
+AI house.
+
+That is the caveat on this stage. The replay proves recording and executing a
+command stream is faithful, and it proves the plumbing end to end. It does **not**
+yet exercise the unit-order commands, and it cannot until there is a human-versus-
+AI mode with a house the AI does not also drive.
+
+### Not yet routed
+
+`Structure_Place()` — the placement click also creates the free harvester,
+records the palace position and changes selection type, all in the viewport
+handler ([viewport.c:509](src/gui/viewport.c:509)); untangling it belongs with the
+non-modal build panel of §5. Repair, the Starport order, the Palace weapon, the
+rally point and the production queue are still direct calls. Each is a command
+waiting to be written, and the replay is how each will be checked.
 
 ## Known hazards
 

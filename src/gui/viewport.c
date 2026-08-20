@@ -9,6 +9,7 @@
 
 #include "gui.h"
 #include "widget.h"
+#include "../mpcommand.h"
 #include "../audio/driver.h"
 #include "../audio/sound.h"
 #include "../config.h"
@@ -529,7 +530,14 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 			s = Structure_Get_ByPackedTile(g_structureActivePosition);
 			if (s != NULL) {
-				if ((Structure_GetBuildable(s) & (1 << s->objectType)) == 0) Structure_BuildObject(s, 0xFFFE);
+				if ((Structure_GetBuildable(s) & (1 << s->objectType)) == 0) {
+					MpCommand cmd;
+
+					MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
+					cmd.object = s->o.index;
+					cmd.value  = 0xFFFE;
+					MpCommand_Submit(&cmd);
+				}
 			}
 
 			g_structureActiveType = 0xFFFF;

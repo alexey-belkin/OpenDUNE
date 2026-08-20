@@ -101,6 +101,7 @@ input/atari_ikbd.s
 load.c
 map.c
 match.c
+mpcommand.c
 mpsync.c
 object.c
 opendune.c
@@ -245,6 +246,7 @@ input/mouse.h
 load.h
 map.h
 match.h
+mpcommand.h
 mpsync.h
 object.h
 opendune.h

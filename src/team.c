@@ -19,6 +19,20 @@ static uint32 s_tickTeamGameLoop = 0; /*!< Indicates next time the GameLoop func
 /**
  * Loop over all teams, performing various of tasks.
  */
+/**
+ * Put the module's schedulers back to the start of time.
+ *
+ * They hold absolute deadlines -- "next run at g_timerGame + delta" -- so a
+ * match that starts with the clock at zero inherits deadlines from the last one
+ * and simply does not run until the clock catches up.  Every match has to begin
+ * from a known state, which matters for a rematch, for a reconnect, and for any
+ * harness that plays twice in one process.  See mp.md.
+ */
+void Team_ResetTicks(void)
+{
+	s_tickTeamGameLoop = 0;
+}
+
 void GameLoop_Team(void)
 {
 	PoolFindStruct find;

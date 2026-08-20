@@ -157,6 +157,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish-self-test=2000
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --economy-baseline=80000,3
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --doctrine=B,A --war-metrics=200000,6
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --mp-checksum=20000,5000
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --mp-replay=40000,500
 ```
 
 **The last one is the guard on every behavioural change**, and it is the one to
@@ -182,7 +183,10 @@ generators from the map seed, takes the clock off the wall and prints a CRC of
 the serialised state per savegame chunk. Two runs must print the same log. It is
 the guard on anything that could make the simulation depend on wall time, host
 state or pointer values — and the precondition for multiplayer.
-→ [mp.md](mp.md).
+`--mp-replay=ticks[,step[,seed]]` plays a match twice in one process: once with a
+scripted player issuing commands, once replaying the recording. It is the guard
+on the command layer and on anything that has to start a match from a known
+state. → [mp.md](mp.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than
 leaving it running.

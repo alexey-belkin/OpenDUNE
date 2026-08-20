@@ -12,6 +12,7 @@
 
 #include "gui.h"
 #include "widget.h"
+#include "../mpcommand.h"
 #include "../os/error.h"
 #include "../audio/driver.h"
 #include "../audio/sound.h"
@@ -127,9 +128,14 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 			s->o.flags.s.upgrading = false;
 			break;
 
-		case STR_BUILD_IT:
-			Structure_BuildObject(s, s->objectType);
-			break;
+		case STR_BUILD_IT: {
+			MpCommand cmd;
+
+			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
+			cmd.object = s->o.index;
+			cmd.value  = s->objectType;
+			MpCommand_Submit(&cmd);
+		} break;
 
 		case STR_LAUNCH:
 		case STR_FREMEN:

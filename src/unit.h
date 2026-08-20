@@ -248,6 +248,7 @@ extern uint16 g_dirtyAirUnitCount;
 
 
 extern void GameLoop_Unit(void);
+extern void Unit_ResetTicks(void);
 extern uint8 Unit_GetHouseID(Unit *u);
 extern uint8 Unit_StringToType(const char *name);
 extern uint8 Unit_ActionStringToType(const char *name);
@@ -325,6 +326,11 @@ extern void Unit_Harvester_BeginOrder(struct Unit *unit, ActionType action);
 extern bool Unit_Harvester_IsQueued(const struct Unit *unit);
 extern void Unit_Harvester_ReleaseClaim(const struct Unit *unit);
 extern void UnitSelection_OrderHunt(void);
+extern void UnitSelection_ApplyOrderToList(const uint16 *list, uint16 count, ActionType action, uint16 packed);
+extern void UnitSelection_ApplyDefaultOrderToList(const uint16 *list, uint16 count, uint8 houseID, uint16 packed);
+extern void UnitSelection_ApplyActionToList(const uint16 *list, uint16 count, ActionType action);
+extern void UnitSelection_ApplyHuntToList(const uint16 *list, uint16 count);
+extern void UnitSelection_ApplyAirTransitToList(const uint16 *list, uint16 count, uint16 packed);
 extern bool UnitSelection_BeginAirTransit(void);
 extern bool UnitSelection_BeginAction(ActionType action);
 extern bool UnitSelection_HasPendingAction(void);

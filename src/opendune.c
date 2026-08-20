@@ -57,6 +57,7 @@
 #include "load.h"
 #include "map.h"
 #include "match.h"
+#include "mpcommand.h"
 #include "mpsync.h"
 #include "pool/pool.h"
 #include "pool/house.h"
@@ -152,6 +153,13 @@ static bool s_mpChecksum = false;
 static uint32 s_mpChecksumTicks = 60000;
 static uint32 s_mpChecksumStep = 10000;
 static uint32 s_mpChecksumSeed = 1000;
+
+#define MP_REPLAY_SAMPLES_MAX 256
+
+static bool s_mpReplay = false;
+static uint32 s_mpReplayTicks = 40000;
+static uint32 s_mpReplayStep = 4000;
+static uint32 s_mpReplaySeed = 1000;
 
 static void PrintToConsole(const char *str);
 
@@ -1050,6 +1058,119 @@ static bool InGame_BeginSelectedAction(ActionType action)
 /**
  * Main game loop.
  */
+/**
+ * Start a match the harness owns: same seed, same clock, every run.
+ *
+ * The clock is taken before the match is set up, not after.  Skirmish_Start*()
+ * ends by taking g_tickScenarioStart from g_timerGame and the INFO chunk stores
+ * the difference, so a 60 Hz tick landing in between is one stray tick of
+ * elapsed time and a different checksum -- about one run in four.  This is the
+ * network stepper of mp.md in embryo: the simulation clock is a function of
+ * steps taken, not of how long the machine took to take them.
+ */
+static bool MpHarness_StartMatch(uint32 seed)
+{
+	SkirmishEconomyPlan planA, planB;
+
+	WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
+	WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
+
+	Timer_SetTimer(TIMER_GAME, false);
+	Timer_SetTimer(TIMER_GUI, false);
+	Timer_ResetGame();
+	Timer_ResetGUI();
+
+	return Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], seed, &planA, &planB);
+}
+
+/**
+ * One simulation step.
+ *
+ * Explosions and animations are not part of the game loop at all: GUI_DrawScreen()
+ * ticks them, at frame rate, off g_timerGUI.  They write craters and ground tiles
+ * into g_map, which is saved state, so leaving them out would leave the checksum
+ * blind to a whole class of divergence -- and leaving them on the render clock is
+ * a desync by construction, since two clients do not draw at the same rate.
+ * Stepped here on the game clock, which is where mp.md has to put them for real.
+ */
+static void MpHarness_Step(void)
+{
+	Timer_StepGame();
+	Timer_StepGUI();
+
+	GameLoop_Team();
+	GameLoop_Unit();
+	GameLoop_Structure();
+	GameLoop_House();
+
+	Explosion_Tick();
+	Animation_Tick();
+}
+
+/**
+ * A player with no hands.
+ *
+ * It stands in for the person the command layer exists for: it looks at the
+ * board, picks a recipient and submits through the same MpCommand_Submit() the
+ * mouse does.  Everything it decides is a function of the tick and of simulation
+ * state, so the first pass is reproducible -- and the second pass never runs it
+ * at all, replaying what it submitted instead.
+ *
+ * It orders production rather than units, and that limitation is worth stating
+ * plainly.  A unit order is refused unless a human controls the unit
+ * (UnitSelection_IsControllable), and flagging one of the skirmish AI's houses
+ * as human does not work either: an AI house that runs out of money gets its
+ * production put on hold, because clearing the hold is a player action, and it
+ * never builds again.  A scripted player that really drives a house of its own
+ * needs the human-versus-AI mode, which is a later stage.  Until then this
+ * exercises the layer with commands that do reach an AI house, which is enough
+ * to prove that recording and replaying one is faithful.
+ */
+static void MpHarness_ScriptedPlayer(uint32 tick)
+{
+	MpCommand cmd;
+	uint16 round;
+	uint16 i;
+
+	if (tick == 0 || (tick % 500) != 0) return;
+
+	round = (uint16)(tick / 500);
+
+	/* Sweep the pool by index rather than by find order: it is the one walk that
+	 * does not depend on when anything was allocated. */
+	for (i = 0; i < STRUCTURE_INDEX_MAX_SOFT; i++) {
+		Structure *s = Structure_Get_ByIndex(i);
+		uint32 buildable;
+		uint16 type;
+		uint16 bit;
+
+		if (s == NULL || !s->o.flags.s.used || !s->o.flags.s.allocated) continue;
+		if (s->o.houseID != s_skirmishHouse[0]) continue;
+		if (!g_table_structureInfo[s->o.type].o.flags.factory) continue;
+
+		buildable = Structure_GetBuildable(s);
+		if (buildable == 0) continue;
+
+		/* Pick one of the things this factory can make, by the round, so the
+		 * choice is a function of the tick and of what is on the map. */
+		type = 0xFFFF;
+		for (bit = 0; bit < 32; bit++) {
+			uint16 candidate = (uint16)((round + bit) % 32);
+
+			if ((buildable & (1u << candidate)) == 0) continue;
+			type = candidate;
+			break;
+		}
+		if (type == 0xFFFF) continue;
+
+		MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
+		cmd.object = s->o.index;
+		cmd.value  = type;
+		MpCommand_Submit(&cmd);
+		break;
+	}
+}
+
 static void GameLoop_Main(void)
 {
 	static uint32 l_timerNext = 0;
@@ -1172,7 +1293,7 @@ static void GameLoop_Main(void)
 
 	/* The menu allocates this on its way into a game; both skirmish entry
 	 * points skip the menu, and the voice player writes through it. */
-	if (s_skirmishSelfTest || s_skirmishDirect || s_warPlay || s_mpChecksum) {
+	if (s_skirmishSelfTest || s_skirmishDirect || s_warPlay || s_mpChecksum || s_mpReplay) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
 	}
@@ -1182,29 +1303,11 @@ static void GameLoop_Main(void)
 	 * log, twice in a row and then on a second platform.  The checksum is split
 	 * per savegame chunk, so a mismatch names what diverged. */
 	if (s_mpChecksum) {
-		SkirmishEconomyPlan planA, planB;
 		MpSyncChecksum checksum;
 		char line[256];
 		uint32 tick;
 
-		WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
-		WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
-
-		/* Own the clock, and own it *before* the match is set up.
-		 * Skirmish_Start*() ends by taking g_tickScenarioStart from g_timerGame,
-		 * and the INFO chunk stores elapsed scenario time -- the difference
-		 * between the two.  Leave the 60 Hz ticker running across setup and a
-		 * wall-clock tick lands between those two points about one run in four,
-		 * which is one stray tick of elapsed time and a different checksum.
-		 * This is the network stepper of mp.md in embryo: the simulation clock
-		 * is a function of steps taken, not of how long the machine took to
-		 * take them. */
-		Timer_SetTimer(TIMER_GAME, false);
-		Timer_SetTimer(TIMER_GUI, false);
-		Timer_ResetGame();
-		Timer_ResetGUI();
-
-		if (!Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_mpChecksumSeed, &planA, &planB)) {
+		if (!MpHarness_StartMatch(s_mpChecksumSeed)) {
 			PrintToConsole("mp-checksum: FAIL (could not start a skirmish)");
 			return;
 		}
@@ -1222,27 +1325,114 @@ static void GameLoop_Main(void)
 
 			if (tick == s_mpChecksumTicks) break;
 
-			Timer_StepGame();
-			Timer_StepGUI();
-
-			GameLoop_Team();
-			GameLoop_Unit();
-			GameLoop_Structure();
-			GameLoop_House();
-
-			/* Explosions and animations are not part of the game loop at all:
-			 * GUI_DrawScreen() ticks them, at frame rate, off g_timerGUI.  They
-			 * write craters and ground tiles into g_map, which is saved state,
-			 * so leaving them out of the harness would have left the checksum
-			 * blind to a whole class of divergence -- and leaving them on the
-			 * render clock is a desync by construction, since two clients do
-			 * not draw at the same rate.  Stepped here on the game clock, which
-			 * is where mp.md has to put them for real. */
-			Explosion_Tick();
-			Animation_Tick();
+			MpHarness_Step();
 		}
 
 		PrintToConsole("mp-checksum: DONE");
+		return;
+	}
+
+	/* Stage 3 of mp.md: the command layer, proved by replaying it.
+	 *
+	 * A scripted player issues orders to one house while both AIs play as usual;
+	 * every order goes through MpCommand_Submit() and is recorded with its tick.
+	 * The second pass replays that recording into the same match with the
+	 * scripted player switched off.  If the two agree at every sample, the
+	 * command stream is a complete account of what the player did -- which is
+	 * the property lockstep rests on, tested here without a socket in sight. */
+	if (s_mpReplay) {
+		MpSyncChecksum live[MP_REPLAY_SAMPLES_MAX];
+		MpSyncChecksum replayed;
+		char line[256];
+		uint16 samples = 0;
+		uint16 commands;
+		uint16 next;
+		uint32 tick;
+
+		if (!MpHarness_StartMatch(s_mpReplaySeed)) {
+			PrintToConsole("mp-replay: FAIL (could not start a skirmish)");
+			return;
+		}
+
+		MpCommand_RecordBegin();
+
+		for (tick = 0; ; tick++) {
+			/* Act first, sample second.  A sample taken on the same tick as a
+			 * command, before anything else simulates, is what gives this test
+			 * teeth: sampled a step later instead, the AI has re-ordered the
+			 * same units in the meantime and a dropped command leaves no trace.
+			 * That is not a hypothetical -- it is what the first version of this
+			 * test did, and deleting a command from the replay still passed. */
+			MpHarness_ScriptedPlayer(tick);
+
+			if (((tick % s_mpReplayStep) == 0 || tick == s_mpReplayTicks) && samples < MP_REPLAY_SAMPLES_MAX) {
+				if (!MpSync_Take(&live[samples])) {
+					PrintToConsole("mp-replay: FAIL (could not serialise the state)");
+					return;
+				}
+				samples++;
+			}
+
+			if (tick == s_mpReplayTicks) break;
+
+			MpHarness_Step();
+		}
+
+		MpCommand_RecordEnd();
+		commands = MpCommand_GetRecordCount();
+
+		snprintf(line, sizeof(line), "mp-replay: recorded %u commands over %u ticks", (unsigned)commands, (unsigned)s_mpReplayTicks);
+		PrintToConsole(line);
+
+		if (commands == 0) {
+			PrintToConsole("mp-replay: FAIL (the scripted player issued nothing, so nothing was tested)");
+			return;
+		}
+
+		/* Second pass: same match, no scripted player, the recording instead. */
+		if (!MpHarness_StartMatch(s_mpReplaySeed)) {
+			PrintToConsole("mp-replay: FAIL (could not restart the skirmish)");
+			return;
+		}
+
+		next = 0;
+		for (tick = 0, samples = 0; ; tick++) {
+			/* The recording is in tick order, so one cursor walks it -- and it
+			 * runs where the scripted player ran, before the sample. */
+			while (next < commands) {
+				uint32 when;
+				const MpCommand *cmd = MpCommand_GetRecorded(next, &when);
+
+				if (cmd == NULL || when != g_timerGame) break;
+				MpCommand_Execute(cmd);
+				next++;
+			}
+
+			if (((tick % s_mpReplayStep) == 0 || tick == s_mpReplayTicks) && samples < MP_REPLAY_SAMPLES_MAX) {
+				if (!MpSync_Take(&replayed)) {
+					PrintToConsole("mp-replay: FAIL (could not serialise the state)");
+					return;
+				}
+
+				if (memcmp(&replayed, &live[samples], sizeof(replayed)) != 0) {
+					MpSync_Format(line, sizeof(line), tick, &live[samples]);
+					PrintToConsole(line);
+					MpSync_Format(line, sizeof(line), tick, &replayed);
+					PrintToConsole(line);
+					PrintToConsole("mp-replay: FAIL (the replay diverged -- something the player did never became a command)");
+					return;
+				}
+				samples++;
+			}
+
+			if (tick == s_mpReplayTicks) break;
+
+			MpHarness_Step();
+		}
+
+		snprintf(line, sizeof(line), "mp-replay: %u samples matched, %u of %u commands replayed", (unsigned)samples, (unsigned)next, (unsigned)commands);
+		PrintToConsole(line);
+		PrintToConsole((next == commands) ? "mp-replay: PASS" : "mp-replay: FAIL (commands left unreplayed)");
 		return;
 	}
 
@@ -1869,6 +2059,9 @@ int main(int argc, char **argv)
 			if (strncmp(argv[i], "--mp-checksum", 13) == 0) {
 				s_mpChecksum = true;
 				if (argv[i][13] == '=') sscanf(argv[i] + 14, "%u,%u,%u", &s_mpChecksumTicks, &s_mpChecksumStep, &s_mpChecksumSeed);
+			} else if (strncmp(argv[i], "--mp-replay", 11) == 0) {
+				s_mpReplay = true;
+				if (argv[i][11] == '=') sscanf(argv[i] + 12, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
 			}
 			if (strncmp(argv[i], "--skirmish-self-test", 20) == 0) {
 				s_skirmishSelfTest = true;
@@ -2090,6 +2283,14 @@ void Game_Init(void)
 	Structure_Init();
 	Team_Init();
 	House_Init();
+
+	/* The pools above hold the objects; these hold when each subsystem next
+	 * runs, and they are absolute.  A second match in one process inherits the
+	 * first one's deadlines and stands still until the clock passes them. */
+	Unit_ResetTicks();
+	Structure_ResetTicks();
+	Team_ResetTicks();
+	House_ResetTicks();
 
 	Animation_Init();
 	Explosion_Init();

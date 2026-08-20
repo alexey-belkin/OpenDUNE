@@ -22,6 +22,7 @@
 #include "inifile.h"
 #include "map.h"
 #include "match.h"
+#include "mpcommand.h"
 #include "opendune.h"
 #include "pool/pool.h"
 #include "pool/house.h"
@@ -2762,6 +2763,31 @@ static void Unit_MovementTick(Unit *unit)
 /**
  * Loop over all units, performing various of tasks.
  */
+/**
+ * Put the module's schedulers back to the start of time.
+ *
+ * They hold absolute deadlines -- "next run at g_timerGame + delta" -- so a
+ * match that starts with the clock at zero inherits deadlines from the last one
+ * and simply does not run until the clock catches up.  Every match has to begin
+ * from a known state, which matters for a rematch, for a reconnect, and for any
+ * harness that plays twice in one process.  See mp.md.
+ */
+void Unit_ResetTicks(void)
+{
+	s_tickUnitMovement  = 0;
+	s_tickUnitRotation  = 0;
+	s_tickUnitBlinking  = 0;
+	s_tickUnitUnknown4  = 0;
+	s_tickUnitScript    = 0;
+	s_tickUnitUnknown5  = 0;
+	s_tickUnitDeviation = 0;
+
+	memset(s_attackPositionETA,       0, sizeof(s_attackPositionETA));
+	memset(s_attackPositionNextCheck, 0, sizeof(s_attackPositionNextCheck));
+	memset(s_autonomyNextCheck,       0, sizeof(s_autonomyNextCheck));
+	memset(s_houseThreatUntil,        0, sizeof(s_houseThreatUntil));
+}
+
 void GameLoop_Unit(void)
 {
 	PoolFindStruct find;
@@ -5143,7 +5169,9 @@ static ActionType UnitSelection_GetUnitDefaultAction(const Unit *unit)
 /* A right click on something hostile is an attack, on anything else a move.
  * The tile is taken exactly, like the Attack order: missing an enemy by one
  * tile should order a march, never a shot at whatever stands there. */
-static bool UnitSelection_IsHostileTarget(uint16 packed)
+/* Hostility is relative to whoever gave the order, not to whoever is watching:
+ * a command carries its house so that both clients resolve it alike. */
+static bool UnitSelection_IsHostileTarget(uint8 houseID, uint16 packed)
 {
 	Unit *unit;
 	const Structure *s;
@@ -5152,27 +5180,33 @@ static bool UnitSelection_IsHostileTarget(uint16 packed)
 	if (g_map[packed].overlayTileID == g_veiledTileID && !g_debugScenario) return false;
 
 	unit = Unit_Get_ByPackedTile(packed);
-	if (unit != NULL) return !House_AreAllied(Unit_GetHouseID(unit), g_playerHouseID);
+	if (unit != NULL) return !House_AreAllied(Unit_GetHouseID(unit), houseID);
 
 	s = Structure_Get_ByPackedTile(packed);
-	if (s != NULL) return !House_AreAllied(s->o.houseID, g_playerHouseID);
+	if (s != NULL) return !House_AreAllied(s->o.houseID, houseID);
 
 	return false;
 }
 
-/** Issue the most useful targeted order available to each selected unit. */
-void UnitSelection_IssueDefaultOrder(uint16 packed)
+/**
+ * Apply a right-click order to a named set of units.
+ *
+ * The recipients arrive in the command rather than being read off the local
+ * selection, which the other client does not share.  Everything below is a
+ * function of the list, the tile and the issuing house, so both clients get the
+ * same result.
+ */
+void UnitSelection_ApplyDefaultOrderToList(const uint16 *list, uint16 count, uint8 houseID, uint16 packed)
 {
 	uint16 order[UNIT_SELECTION_MAX];
-	uint16 count = 0;
-	bool hostile = UnitSelection_IsHostileTarget(packed);
+	bool hostile = UnitSelection_IsHostileTarget(houseID, packed);
 	uint16 i;
 
-	UnitSelection_CancelPendingAction();
+	if (count > UNIT_SELECTION_MAX) count = UNIT_SELECTION_MAX;
 
 	/* Sorted on a copy: the order tiles are handed out in is a property of this
 	 * one command, not of the group. */
-	for (i = 0; i < g_unitSelectionCount; i++) order[count++] = s_unitSelection[i];
+	for (i = 0; i < count; i++) order[i] = list[i];
 	UnitSelection_SortOrderByDistance(order, count, packed);
 	UnitSelection_SpreadReset();
 
@@ -5191,6 +5225,22 @@ void UnitSelection_IssueDefaultOrder(uint16 packed)
 		if (action == ACTION_INVALID) continue;
 		UnitSelection_ResetOrder(unit, action, action == ACTION_MOVE ? UnitSelection_SpreadTake(unit, packed) : packed);
 	}
+}
+
+/** Issue the most useful targeted order available to each selected unit. */
+void UnitSelection_IssueDefaultOrder(uint16 packed)
+{
+	MpCommand cmd;
+	uint16 i;
+
+	UnitSelection_CancelPendingAction();
+
+	MpCommand_Init(&cmd, MP_CMD_UNIT_DEFAULT_ORDER, (uint8)g_playerHouseID);
+	cmd.packed = packed;
+	cmd.count  = (uint8)min(g_unitSelectionCount, MP_COMMAND_UNITS_MAX);
+	for (i = 0; i < cmd.count; i++) cmd.unit[i] = s_unitSelection[i];
+
+	MpCommand_Submit(&cmd);
 }
 
 /* Control groups.  Session state on purpose: they are a property of how the
@@ -5293,13 +5343,13 @@ bool UnitSelection_RecallControlGroup(uint16 group)
 
 /* Hunt is intentionally a keyboard-only advanced order: it applies only to
  * normal combat units, leaving harvesters and special units untouched. */
-void UnitSelection_OrderHunt(void)
+void UnitSelection_ApplyHuntToList(const uint16 *list, uint16 count)
 {
 	uint16 i;
 
-	UnitSelection_CancelPendingAction();
-	for (i = 0; i < g_unitSelectionCount; i++) {
-		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
+	if (count > UNIT_SELECTION_MAX) count = UNIT_SELECTION_MAX;
+	for (i = 0; i < count; i++) {
+		Unit *unit = Unit_Get_ByIndex(list[i]);
 
 		if (!UnitSelection_UnitHasAction(unit, ACTION_ATTACK)) continue;
 		Unit_SetManualHunt(unit, false);
@@ -5313,6 +5363,20 @@ void UnitSelection_OrderHunt(void)
 		Unit_SetAction(unit, ACTION_AREA_GUARD);
 		Unit_SetManualHunt(unit, true);
 	}
+}
+
+void UnitSelection_OrderHunt(void)
+{
+	MpCommand cmd;
+	uint16 i;
+
+	UnitSelection_CancelPendingAction();
+
+	MpCommand_Init(&cmd, MP_CMD_UNIT_HUNT, (uint8)g_playerHouseID);
+	cmd.count = (uint8)min(g_unitSelectionCount, MP_COMMAND_UNITS_MAX);
+	for (i = 0; i < cmd.count; i++) cmd.unit[i] = s_unitSelection[i];
+
+	MpCommand_Submit(&cmd);
 	GUI_Widget_ActionPanel_Draw(true);
 }
 
@@ -5342,6 +5406,38 @@ bool UnitSelection_BeginAirTransit(void)
 	return true;
 }
 
+/**
+ * Apply an untargeted order to a named set of units.
+ *
+ * ACTION_MAX means "whatever each unit's special action is", resolved here from
+ * unit state so the command does not have to carry one entry per unit.
+ */
+void UnitSelection_ApplyActionToList(const uint16 *list, uint16 count, ActionType action)
+{
+	uint16 i;
+
+	if (count > UNIT_SELECTION_MAX) count = UNIT_SELECTION_MAX;
+	for (i = 0; i < count; i++) {
+		Unit *unit = Unit_Get_ByIndex(list[i]);
+		ActionType unitAction = (action == ACTION_MAX) ? UnitSelection_GetUnitSpecialAction(unit) : action;
+
+		if (unitAction == ACTION_INVALID || !UnitSelection_UnitHasAction(unit, unitAction)) continue;
+
+		Object_Script_Variable4_Clear(&unit->o);
+		Unit_BeginManualOrder(unit);
+		Unit_SetManualHunt(unit, false);
+		Unit_Harvester_BeginOrder(unit, unitAction);
+		unit->targetAttack = 0;
+		unit->targetMove = 0;
+		unit->route[0] = 0xFF;
+		if (unitAction == ACTION_GUARD || unitAction == ACTION_AREA_GUARD) {
+			Unit_SetGuardPosition(unit, Tile_PackTile(unit->o.position));
+			Unit_SetGuardAction(unit, unitAction);
+		}
+		Unit_SetAction(unit, unitAction);
+	}
+}
+
 /** Begin a group command. Returns true when the next map click is its target. */
 bool UnitSelection_BeginAction(ActionType action)
 {
@@ -5361,23 +5457,15 @@ bool UnitSelection_BeginAction(ActionType action)
 		return s_unitOrderCount != 0;
 	}
 
-	for (i = 0; i < g_unitSelectionCount; i++) {
-		Unit *unit = Unit_Get_ByIndex(s_unitSelection[i]);
-		ActionType unitAction = (action == ACTION_MAX) ? UnitSelection_GetUnitSpecialAction(unit) : action;
-		if (unitAction == ACTION_INVALID || !UnitSelection_UnitHasAction(unit, unitAction)) continue;
+	{
+		MpCommand cmd;
 
-		Object_Script_Variable4_Clear(&unit->o);
-		Unit_BeginManualOrder(unit);
-		Unit_SetManualHunt(unit, false);
-		Unit_Harvester_BeginOrder(unit, unitAction);
-		unit->targetAttack = 0;
-		unit->targetMove = 0;
-		unit->route[0] = 0xFF;
-		if (unitAction == ACTION_GUARD || unitAction == ACTION_AREA_GUARD) {
-			Unit_SetGuardPosition(unit, Tile_PackTile(unit->o.position));
-			Unit_SetGuardAction(unit, unitAction);
-		}
-		Unit_SetAction(unit, unitAction);
+		MpCommand_Init(&cmd, MP_CMD_UNIT_ACTION, (uint8)g_playerHouseID);
+		cmd.action = (uint8)action;
+		cmd.count  = (uint8)min(g_unitSelectionCount, MP_COMMAND_UNITS_MAX);
+		for (i = 0; i < cmd.count; i++) cmd.unit[i] = s_unitSelection[i];
+
+		MpCommand_Submit(&cmd);
 	}
 
 	GUI_Widget_ActionPanel_Draw(true);
@@ -5389,17 +5477,15 @@ bool UnitSelection_HasPendingAction(void)
 	return (s_unitOrderAction != ACTION_INVALID || s_unitOrderAirTransit) && s_unitOrderCount != 0;
 }
 
-/** Apply the pending target action to the recipients captured at command time. */
-void UnitSelection_ApplyPendingAction(uint16 packed)
+/** Ask for a lift to a tile, for a named set of units. */
+void UnitSelection_ApplyAirTransitToList(const uint16 *list, uint16 count, uint16 packed)
 {
 	uint16 i;
-	bool advance;
-	bool spread;
 
-	if (!UnitSelection_HasPendingAction()) return;
-	if (s_unitOrderAirTransit) {
-		for (i = 0; i < s_unitOrderCount; i++) {
-			Unit *unit = Unit_Get_ByIndex(s_unitOrder[i]);
+	if (count > UNIT_SELECTION_MAX) count = UNIT_SELECTION_MAX;
+	{
+		for (i = 0; i < count; i++) {
+			Unit *unit = Unit_Get_ByIndex(list[i]);
 
 			if (!UnitSelection_CanAirTransit(unit)) continue;
 			Unit_SetManualHunt(unit, false);
@@ -5416,36 +5502,69 @@ void UnitSelection_ApplyPendingAction(uint16 packed)
 			 * its tiny script stack.  The carryall request below is independent of
 			 * the unit's current action and will pick it up safely. */
 		}
-		UnitSelection_CancelPendingAction();
-		GUI_Widget_ActionPanel_Draw(true);
-		return;
 	}
+}
+
+/** Apply a targeted group order to a named set of units. */
+void UnitSelection_ApplyOrderToList(const uint16 *list, uint16 count, ActionType action, uint16 packed)
+{
+	uint16 order[UNIT_SELECTION_MAX];
+	uint16 i;
+	bool advance;
+	bool spread;
+
+	if (count > UNIT_SELECTION_MAX) count = UNIT_SELECTION_MAX;
+	for (i = 0; i < count; i++) order[i] = list[i];
 
 	/* A Move, and an Attack that turns out to be an advance, place the group on
 	 * the ground: every recipient needs a tile of its own.  An Attack on a real
 	 * target is the opposite - the whole group shoots at the same thing, and the
 	 * decision is taken once here, not per tile, because a handed-out tile can
 	 * land next to a unit and would read as an ordinary attack order. */
-	advance = s_unitOrderAction == ACTION_ATTACK && UnitSelection_IsAdvanceTarget(packed);
-	spread = advance || s_unitOrderAction == ACTION_MOVE;
+	advance = action == ACTION_ATTACK && UnitSelection_IsAdvanceTarget(packed);
+	spread = advance || action == ACTION_MOVE;
 
 	if (spread) {
-		UnitSelection_SortOrderByDistance(s_unitOrder, s_unitOrderCount, packed);
+		UnitSelection_SortOrderByDistance(order, count, packed);
 		UnitSelection_SpreadReset();
 	}
 
-	for (i = 0; i < s_unitOrderCount; i++) {
-		Unit *unit = Unit_Get_ByIndex(s_unitOrder[i]);
+	for (i = 0; i < count; i++) {
+		Unit *unit = Unit_Get_ByIndex(order[i]);
 
-		if (!UnitSelection_UnitHasAction(unit, s_unitOrderAction)) continue;
+		if (!UnitSelection_UnitHasAction(unit, action)) continue;
 		if (advance) {
 			UnitSelection_BeginAdvance(unit, UnitSelection_SpreadTake(unit, packed));
 		} else {
-			UnitSelection_ResetOrder(unit, s_unitOrderAction, spread ? UnitSelection_SpreadTake(unit, packed) : packed);
+			UnitSelection_ResetOrder(unit, action, spread ? UnitSelection_SpreadTake(unit, packed) : packed);
 		}
 	}
+}
 
+/** Apply the pending target action to the recipients captured at command time. */
+void UnitSelection_ApplyPendingAction(uint16 packed)
+{
+	MpCommand cmd;
+	bool airTransit;
+	uint16 i;
+
+	if (!UnitSelection_HasPendingAction()) return;
+
+	airTransit = s_unitOrderAirTransit;
+
+	MpCommand_Init(&cmd, airTransit ? MP_CMD_UNIT_AIR_TRANSIT : MP_CMD_UNIT_ORDER, (uint8)g_playerHouseID);
+	if (!airTransit) cmd.action = (uint8)s_unitOrderAction;
+	cmd.packed = packed;
+	cmd.count  = (uint8)min(s_unitOrderCount, MP_COMMAND_UNITS_MAX);
+	for (i = 0; i < cmd.count; i++) cmd.unit[i] = s_unitOrder[i];
+
+	/* Drop the pending order before the command runs: it is local bookkeeping
+	 * about a click, and nothing in the applier may read it. */
 	UnitSelection_CancelPendingAction();
+
+	MpCommand_Submit(&cmd);
+
+	if (airTransit) GUI_Widget_ActionPanel_Draw(true);
 }
 
 void UnitSelection_CancelPendingAction(void)

@@ -359,6 +359,25 @@ static void House_EnsureHarvesterAvailable(uint8 houseID)
  * @param houseID2 The index of the second house.
  * @return True if and only if the two houses are allies of eachother.
  */
+/**
+ * Put the module's schedulers back to the start of time.
+ *
+ * They hold absolute deadlines -- "next run at g_timerGame + delta" -- so a
+ * match that starts with the clock at zero inherits deadlines from the last one
+ * and simply does not run until the clock catches up.  Every match has to begin
+ * from a known state, which matters for a rematch, for a reconnect, and for any
+ * harness that plays twice in one process.  See mp.md.
+ */
+void House_ResetTicks(void)
+{
+	s_tickHouseHouse                = 0;
+	s_tickHouseStarport             = 0;
+	s_tickHouseReinforcement        = 0;
+	s_tickHouseMissileCountdown     = 0;
+	s_tickHouseStarportAvailability = 0;
+	g_tickHousePowerMaintenance     = 0;
+}
+
 bool House_AreAllied(uint8 houseID1, uint8 houseID2)
 {
 	if (houseID1 == HOUSE_INVALID || houseID2 == HOUSE_INVALID) return false;
