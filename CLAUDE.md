@@ -205,6 +205,19 @@ different houses, and it names every chunk the simulation still decides from
 viewpoint harness on **several seeds**: both have passed on seed 1000 while
 failing on others.
 
+`--mp-turnloop=ticks[,step[,seed]]` plays the match through the lockstep turn
+loop, where a command is stamped for turn N+D instead of happening now. On its
+own it uses a loopback transport; `--mp-net=slot,dir` makes this process one
+player of two and the directory their wire, so two processes play one match and
+`diff` of their checksum logs decides. `--mp-turn=TL,D` sets turn length and
+delay, `--mp-realtime` paces at 60 Hz and `--mp-lag=ms` holds packets back at the
+sender — together they measure whether a given ping stalls anybody.
+
+```bash
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=1,/tmp/net &
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=2,/tmp/net &
+```
+
 → [mp.md](mp.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than

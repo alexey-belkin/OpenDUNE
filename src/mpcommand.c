@@ -7,6 +7,7 @@
 #include "os/math.h"
 
 #include "mpcommand.h"
+#include "mpturn.h"
 
 #include "opendune.h"
 #include "pool/house.h"
@@ -53,6 +54,15 @@ void MpCommand_Init(MpCommand *cmd, MpCommandType type, uint8 houseID)
 void MpCommand_Submit(const MpCommand *cmd)
 {
 	if (cmd == NULL || cmd->type == MP_CMD_NONE) return;
+
+	/* Playing in turns: nothing happens now.  The command is stamped for a turn
+	 * far enough ahead that every player's copy will have arrived by the time it
+	 * runs, and MpTurn_Advance() executes it there.  This one line is what makes
+	 * the whole interface lockstep-ready -- everything else already submits. */
+	if (MpTurn_IsActive()) {
+		MpTurn_Submit(cmd);
+		return;
+	}
 
 	if (s_recording && s_recordCount < lengthof(s_record)) {
 		s_record[s_recordCount].tick = g_timerGame;

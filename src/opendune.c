@@ -58,6 +58,7 @@
 #include "map.h"
 #include "match.h"
 #include "mpcommand.h"
+#include "mpturn.h"
 #include "mpsync.h"
 #include "pool/pool.h"
 #include "pool/house.h"
@@ -164,6 +165,14 @@ static char s_mpRecordFile[256] = "";
 static char s_mpPlayFile[256] = "";
 static uint16 s_mpReplayUnplayed = 0;
 static bool s_mpViewpoint = false;
+static bool s_mpTurnLoop = false;
+static uint8 s_mpTurnSlot = 0;
+static uint16 s_mpTurnLength = MP_TURN_LENGTH_DEFAULT;
+static uint8 s_mpTurnDelay = MP_TURN_DELAY_DEFAULT;
+static char s_mpNetDirectory[256] = "";
+static uint32 s_mpNetWaitMs = 30000;
+static uint32 s_mpNetLagMs = 0;
+static bool s_mpRealtime = false;
 
 static void PrintToConsole(const char *str);
 
@@ -1203,11 +1212,10 @@ static uint16 MpHarness_PickStructure(const House *h, uint32 buildable, uint16 r
  * puts on production when the money runs out -- both are player actions, and a
  * house nobody performs them for simply stops building.
  */
-static void MpHarness_ScriptedPlayer(uint32 tick)
+static void MpHarness_ScriptedPlayer(uint8 houseID, uint32 tick)
 {
 	MpCommand cmd;
 	uint16 selection[8];
-	uint8 houseID;
 	House *h;
 	uint16 round;
 	uint16 count;
@@ -1216,7 +1224,6 @@ static void MpHarness_ScriptedPlayer(uint32 tick)
 
 	if (tick == 0 || (tick % 100) != 0) return;
 
-	houseID = s_skirmishHouse[0];
 	h = House_Get_ByIndex(houseID);
 	if (h == NULL) return;
 
@@ -1331,7 +1338,7 @@ static void MpHarness_ScriptedPlayer(uint32 tick)
 		case 1:
 			MpCommand_Init(&cmd, MP_CMD_UNIT_ORDER, houseID);
 			cmd.action = ACTION_ATTACK;
-			cmd.packed = Skirmish_GetBaseOrigin(1);
+			cmd.packed = Skirmish_GetBaseOrigin((houseID == s_skirmishHouse[0]) ? 1 : 0);
 			break;
 
 		default:
@@ -1432,7 +1439,7 @@ static bool MpHarness_ReplayPass(bool scripted, MpSyncChecksum *out, uint16 *out
 		 * not a hypothetical -- it is what the first version of this test did,
 		 * and deleting a command from the replay still passed. */
 		if (scripted) {
-			MpHarness_ScriptedPlayer(tick);
+			MpHarness_ScriptedPlayer(s_skirmishHouse[0], tick);
 		} else {
 			/* The recording is in tick order, so one cursor walks it. */
 			while (next < commands) {
@@ -1625,6 +1632,149 @@ static void GameLoop_Main(void)
 		}
 
 		PrintToConsole("mp-checksum: DONE");
+		return;
+	}
+
+	/* Stage 4 of mp.md: the turn loop.
+	 *
+	 * The same match, played the way a networked one has to be: a command does
+	 * not happen when it is given, it is stamped for a turn far enough ahead
+	 * that every player's copy will have arrived, and it runs there.  The
+	 * simulation clock stops dead while somebody's packet is missing, which is
+	 * the only way latency is allowed to show.
+	 *
+	 * Without --mp-net this is one process playing both slots over a loopback
+	 * transport -- which is not a stand-in for the network, it is what a local
+	 * match uses.  With it, this process is one player and the other is somebody
+	 * else's, and the two see each other only through packets. */
+	if (s_mpTurnLoop) {
+		const MpTransport *transport;
+		MpSyncChecksum sample;
+		char line[256];
+		uint32 waited = 0;
+		uint32 samples = 0;
+		uint32 startedAt = 0;
+		uint32 lateBy = 0;
+		uint32 stalledMs = 0;
+		uint32 tick;
+		uint8 houseID;
+
+		if (s_mpNetDirectory[0] != '\0') {
+			transport = MpTransport_File(s_mpNetDirectory);
+			MpTransport_File_SetLag(s_mpNetLagMs);
+			Skirmish_SetViewpoint(s_mpTurnSlot);
+		} else {
+			MpTransport_Loopback_Reset();
+			transport = MpTransport_Loopback();
+		}
+
+		if (!MpHarness_StartMatch(s_mpReplaySeed)) {
+			PrintToConsole("mp-turnloop: FAIL (could not start a skirmish)");
+			return;
+		}
+
+		houseID = s_skirmishHouse[s_mpTurnSlot];
+
+		MpTurn_Begin(s_mpTurnSlot, transport, s_mpTurnLength, s_mpTurnDelay);
+
+		startedAt = Timer_GetTime();
+
+		for (tick = 0; ; tick++) {
+			/* Real time or as fast as the CPU allows.  The difference decides
+			 * whether a lag measurement means anything: a turn is 133 ms of wall
+			 * clock in a real game and microseconds in a headless one, so only
+			 * the paced run can answer whether a given ping stalls anybody. */
+			if (s_mpRealtime) {
+				uint32 due = startedAt + (tick * 1000 / 60);
+				uint32 now = Timer_GetTime();
+
+				if (now < due) {
+					msleep(due - now);
+				} else if (now - due > lateBy) {
+					lateBy = now - due;
+				}
+			}
+
+			/* Turn boundaries first: everybody's commands for the turn starting
+			 * here are applied before anything simulates in it. */
+			while (MpTurn_IsDue()) {
+				uint32 stallStart = Timer_GetTime();
+
+				/* A loopback match has nobody on the other side of the wire, so
+				 * this process speaks for the empty slot too -- one turn ahead
+				 * of the one being applied, which is what the absent player
+				 * would have sent. */
+				if (s_mpNetDirectory[0] == '\0') {
+					uint8 other = (uint8)((s_mpTurnSlot == 0) ? 1 : 0);
+					MpPacket empty;
+
+					memset(&empty, 0, sizeof(empty));
+					empty.turn      = MpTurn_GetTurn();
+					empty.checkTurn = MP_TURN_NO_CHECKSUM;
+					transport->send(other, &empty);
+				}
+
+				if (MpTurn_Advance()) {
+					waited = 0;
+					continue;
+				}
+
+				/* Stalled.  A real client would draw another frame here; the
+				 * harness has nothing to draw, so it sleeps and polls. */
+				msleep(2);
+				waited += 2;
+				stalledMs += Timer_GetTime() - stallStart;
+
+					/* Time spent here is time the simulation clock stood still, so it
+				 * has to come off the real-time schedule as well -- otherwise the
+				 * pacing below would sprint to catch up and hide the stall. */
+				if (s_mpRealtime) startedAt += Timer_GetTime() - stallStart;
+
+			if (waited > s_mpNetWaitMs) {
+					snprintf(line, sizeof(line), "mp-turnloop: FAIL (no packet for turn %u after %u ms)",
+					         (unsigned)MpTurn_GetTurn(), (unsigned)waited);
+					PrintToConsole(line);
+					return;
+				}
+			}
+
+			MpHarness_ScriptedPlayer(houseID, tick);
+
+			if ((tick % s_mpReplayStep) == 0 || tick == s_mpReplayTicks) {
+				if (!MpSync_Take(&sample)) {
+					PrintToConsole("mp-turnloop: FAIL (could not serialise the state)");
+					return;
+				}
+
+				MpSync_Format(line, sizeof(line), tick, &sample);
+				PrintToConsole(line);
+				samples++;
+			}
+
+			if (tick == s_mpReplayTicks) break;
+
+			MpHarness_Step();
+		}
+
+		{
+			uint32 desyncTurn = 0;
+			bool desynced = MpTurn_HasDesynced(&desyncTurn);
+
+			snprintf(line, sizeof(line), "mp-turnloop: slot %u tl%u d%u lag%u played %u turns over %u ticks, %u samples, %u ms stalled",
+			         (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpTurnLength, (unsigned)s_mpTurnDelay,
+			         (unsigned)s_mpNetLagMs, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpReplayTicks,
+			         (unsigned)samples, (unsigned)stalledMs);
+			PrintToConsole(line);
+
+			if (desynced) {
+				snprintf(line, sizeof(line), "mp-turnloop: FAIL (the two players disagreed about turn %u)", (unsigned)desyncTurn);
+				PrintToConsole(line);
+			} else {
+				PrintToConsole("mp-turnloop: DONE");
+			}
+		}
+
+		MpTurn_End();
 		return;
 	}
 
@@ -2355,6 +2505,32 @@ int main(int argc, char **argv)
 				snprintf(s_mpRecordFile, sizeof(s_mpRecordFile), "%s", argv[i] + 12);
 			} else if (strncmp(argv[i], "--mp-play=", 10) == 0) {
 				snprintf(s_mpPlayFile, sizeof(s_mpPlayFile), "%s", argv[i] + 10);
+			} else if (strncmp(argv[i], "--mp-turnloop", 13) == 0) {
+				s_mpTurnLoop = true;
+				if (argv[i][13] == '=') sscanf(argv[i] + 14, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
+			} else if (strncmp(argv[i], "--mp-turn=", 10) == 0) {
+				/* Turn length in ticks and turn delay in turns: the two numbers
+				 * the whole latency argument in mp.md is about. */
+				unsigned length = 0, delay = 0;
+
+				sscanf(argv[i] + 10, "%u,%u", &length, &delay);
+				if (length != 0) s_mpTurnLength = (uint16)length;
+				if (delay  != 0) s_mpTurnDelay  = (uint8)delay;
+			} else if (strncmp(argv[i], "--mp-realtime", 13) == 0) {
+				s_mpRealtime = true;
+			} else if (strncmp(argv[i], "--mp-lag=", 9) == 0) {
+				s_mpNetLagMs = (uint32)atoi(argv[i] + 9);
+			} else if (strncmp(argv[i], "--mp-net=", 9) == 0) {
+				/* slot[,directory[,waitms]] -- which player this process is, and
+				 * where the two of them leave each other packets. */
+				unsigned slot = 0, wait = 0;
+				char directory[256];
+
+				directory[0] = '\0';
+				sscanf(argv[i] + 9, "%u,%255[^,],%u", &slot, directory, &wait);
+				if (slot >= 1 && slot <= MATCH_SLOT_MAX) s_mpTurnSlot = (uint8)(slot - 1);
+				if (directory[0] != '\0') snprintf(s_mpNetDirectory, sizeof(s_mpNetDirectory), "%s", directory);
+				if (wait != 0) s_mpNetWaitMs = wait;
 			} else if (strncmp(argv[i], "--mp-viewpoint", 14) == 0) {
 				s_mpReplay = true;
 				s_mpViewpoint = true;

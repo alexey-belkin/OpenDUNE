@@ -1059,6 +1059,92 @@ The replay passed on seed 1000 for as long as seed 1000 was the only seed.
 | `--mp-viewpoint` | 5 | PASS |
 | the sixteen doctrine metrics | 6 | unchanged, to the number |
 
+## Stage 4 — the turn loop, and two processes playing one match (done)
+
+The command layer said *what* a player did. The turn loop says *when* it
+happens, and it is the last piece before a socket.
+
+`MpTurn_*` ([src/mpturn.c](src/mpturn.c)) holds a turn number, an outbox, and a
+transport it knows nothing else about. `MpCommand_Submit()` gained one branch:
+
+```c
+if (MpTurn_IsActive()) { MpTurn_Submit(cmd); return; }
+```
+
+That single line makes the whole interface lockstep-ready, because everything
+already submits — the build panel, the placement click, every unit order. A
+command no longer happens when it is given: it goes into the packet for turn
+`N + D`, and `MpTurn_Advance()` runs it there, on every client, in slot order
+rather than arrival order.
+
+`MpTurn_Advance()` returns false when somebody's packet has not arrived, and the
+caller must then hold the simulation clock still. That stall is the only way
+latency is ever allowed to show.
+
+### Two transports, one interface
+
+* **Loopback** — both slots in one process. Not a stand-in for the network: it is
+  what a local match uses, and it is what lets the loop be tested without one.
+  5001 turns over 40000 ticks, no stalls.
+* **File** — two processes, one directory, a packet per `(slot, turn)` written
+  beside its real name and renamed into place so a half-written packet is never
+  read as a whole one. Each process runs its own entire simulation and sees the
+  other only through packets, which is the shape a socket has.
+
+```bash
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=1,/tmp/net &
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=2,/tmp/net &
+```
+
+**2006 packets exchanged, 17 checksum samples, identical.** Two processes, two
+scripted players, one match — the thing this was all for.
+
+Every packet carries a CRC of a past turn, so the two are comparable without
+anybody being the authority, and both sides notice a disagreement independently.
+
+| Tampering | Result |
+|---|---|
+| The two players on different maps | both report a disagreement about turn 0 |
+| One player never joins | the other stalls and gives up: "no packet for turn 0" |
+
+### The ping table, measured
+
+`--mp-realtime` paces the harness at 60 Hz and `--mp-lag=ms` holds each packet
+back at the **sender**. That last word is the whole experiment: a first version
+withheld packets from whoever read them, timed from the moment they first
+looked, so a packet that had been sitting there for two turns still cost a full
+lag when somebody finally asked — and raising the turn delay changed nothing,
+which is exactly the shape of a wrong model.
+
+Twenty seconds of match, both players on one machine:
+
+| Ping | TL | D | Budget | Stalled | Share of the match |
+|---|---|---|---|---|---|
+| 24 ms | 8 | 2 | 266 ms | 13 ms | 0.07 % |
+| 100 ms | 8 | 2 | 266 ms | 50 ms | 0.25 % |
+| 200 ms | 8 | 2 | 266 ms | 520 ms | 2.6 % |
+| 400 ms | 8 | 2 | 266 ms | 3989 ms | **20 %** |
+| 400 ms | 8 | 4 | 533 ms | 287 ms | 1.4 % |
+| 400 ms | 16 | 2 | 533 ms | 458 ms | 2.3 % |
+
+The budget is `D * TL` ticks, and the table says what the design argued: while
+the ping fits inside it the match does not stutter at all, and when it does not,
+it stutters badly. Both ways out work — a longer delay or longer turns — and both
+are paid for in how long the player waits to see their own order take effect.
+`--mp-turn=TL,D` is where that trade is made; adapting it to the measured ping
+is v2.
+
+Every configuration in the table agreed on every checksum.
+
+### What is still missing before this is multiplayer
+
+* **A socket and a relay.** The file transport proves the loop, not the network:
+  no loss, no reordering, no NAT.
+* **The real game loop.** The turn loop runs in the harness, which owns its own
+  clock. In the game, `g_timerGame` is driven by a 60 Hz timer that does not stop
+  — §4 of this document, still design.
+* **A lobby**, and the modal windows and radar animation of §5 and §6.
+
 ## Known hazards
 
 * **The unit pool.** Two humans building freely will hit the per-type

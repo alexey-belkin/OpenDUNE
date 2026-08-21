@@ -103,6 +103,7 @@ map.c
 match.c
 mpcommand.c
 mpsync.c
+mpturn.c
 object.c
 opendune.c
 os/endian.c
@@ -248,6 +249,7 @@ map.h
 match.h
 mpcommand.h
 mpsync.h
+mpturn.h
 object.h
 opendune.h
 os/common.h
