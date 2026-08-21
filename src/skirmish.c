@@ -1990,6 +1990,19 @@ void Skirmish_Economy_Tick(House *h)
 	Doctrine_Tick(h);
 }
 
+/**
+ * The per-house version of losing the no-silo grace, which the campaign keeps in
+ * a single global because it only ever had one player.
+ */
+void Skirmish_House_LoseNoSilo(uint8 houseID)
+{
+	SkirmishBase *b = Skirmish_GetBase(houseID);
+
+	if (b == NULL) return;
+
+	b->creditsNoSilo = 0;
+}
+
 uint16 Skirmish_House_MaxCredits(const House *h)
 {
 	SkirmishBase *b;

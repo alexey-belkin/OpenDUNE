@@ -1116,7 +1116,11 @@ static uint32 Unit_Autonomy_ScoreTarget(Unit *unit, uint16 target)
 		focus = 410 - min(180, (coverage - 256) * 3 / 5);
 	}
 	score = score * focus / 256;
-	if (s_houseThreatUntil[g_playerHouseID] > g_timerGame && target == s_houseThreatTarget[g_playerHouseID]) score *= 2;
+	/* The threat this unit's own house is under, not the one the screen belongs
+	 * to.  They are the same house in a campaign and two different houses in a
+	 * match, where the second one's units would have been scoring off the
+	 * first's alarms. */
+	if (s_houseThreatUntil[unit->o.houseID] > g_timerGame && target == s_houseThreatTarget[unit->o.houseID]) score *= 2;
 
 	return score;
 }
@@ -1406,7 +1410,7 @@ static void Unit_Autonomy_Update(Unit *unit)
 
 void Unit_Autonomy_ReportThreat(uint8 houseID, uint16 attacker, uint16 packed)
 {
-	if (houseID != g_playerHouseID || !Tools_Index_IsValid(attacker) || !Map_IsValidPosition(packed)) return;
+	if (!Match_IsHumanControlled(houseID) || !Tools_Index_IsValid(attacker) || !Map_IsValidPosition(packed)) return;
 
 	s_houseThreatTarget[houseID] = attacker;
 	s_houseThreatUntil[houseID] = g_timerGame + 180;
@@ -2772,6 +2776,8 @@ static void Unit_MovementTick(Unit *unit)
  * from a known state, which matters for a rematch, for a reconnect, and for any
  * harness that plays twice in one process.  See mp.md.
  */
+
+
 void Unit_ResetTicks(void)
 {
 	s_tickUnitMovement  = 0;
@@ -2782,10 +2788,38 @@ void Unit_ResetTicks(void)
 	s_tickUnitUnknown5  = 0;
 	s_tickUnitDeviation = 0;
 
+	/* Every per-index cache below is this match's, and the pool reuses indices
+	 * between matches -- so what is left here is one match telling the next one
+	 * where its harvesters were going.  The deadlines were the obvious half and
+	 * were cleared first; the rest was found the same way, by a replay that
+	 * disagreed with itself on some maps and not others. */
+	memset(s_attackPositionManual,    0, sizeof(s_attackPositionManual));
+	memset(s_attackPositionTile,      0, sizeof(s_attackPositionTile));
+	memset(s_attackPositionTarget,    0, sizeof(s_attackPositionTarget));
 	memset(s_attackPositionETA,       0, sizeof(s_attackPositionETA));
 	memset(s_attackPositionNextCheck, 0, sizeof(s_attackPositionNextCheck));
+	memset(s_autonomousPost,          0, sizeof(s_autonomousPost));
+	memset(s_manualOrderStarting,     0, sizeof(s_manualOrderStarting));
+	memset(s_manualHunt,              0, sizeof(s_manualHunt));
 	memset(s_autonomyNextCheck,       0, sizeof(s_autonomyNextCheck));
+	memset(s_harvester,               0, sizeof(s_harvester));
+	memset(s_houseThreatTarget,       0, sizeof(s_houseThreatTarget));
 	memset(s_houseThreatUntil,        0, sizeof(s_houseThreatUntil));
+	memset(s_refineryClaim,           0, sizeof(s_refineryClaim));
+	memset(s_refineryClaimUntil,      0, sizeof(s_refineryClaimUntil));
+
+	/* Selection and control groups are the local player's, not the match's, but
+	 * they name pool indices and those come back as different units. */
+	memset(s_unitSelection,           0, sizeof(s_unitSelection));
+	memset(s_unitOrder,               0, sizeof(s_unitOrder));
+	memset(s_unitTargetSelection,     0, sizeof(s_unitTargetSelection));
+	memset(s_spreadTiles,             0, sizeof(s_spreadTiles));
+	g_unitSelectionCount = 0;
+	s_unitOrderCount = 0;
+	s_unitTargetSelectionCount = 0;
+	s_unitTargetSelectionActive = false;
+	s_spreadCount = 0;
+	UnitSelection_ClearControlGroups();
 }
 
 void GameLoop_Unit(void)
@@ -3688,7 +3722,7 @@ uint16 Unit_GetTargetUnitPriority(Unit *unit, Unit *target)
 
 	if (targetInfo->movementType == MOVEMENT_WINGER) {
 		if (!unitInfo->o.flags.targetAir) return 0;
-		if (target->o.houseID == g_playerHouseID && !Map_IsPositionUnveiled(Tile_PackTile(target->o.position))) return 0;
+		if (Match_IsHumanControlled(target->o.houseID) && !Map_IsPositionUnveiled(Tile_PackTile(target->o.position))) return 0;
 	}
 
 	if (!Map_IsValidPosition(Tile_PackTile(target->o.position))) return 0;
@@ -3820,7 +3854,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 		/* A new unit being delivered fresh from the factory; force a seenByHouses
 		 *  update and add it to the statistics etc. */
 		u->o.seenByHouses &= ~(1 << u->o.houseID);
-		Unit_HouseUnitCount_Add(u, g_playerHouseID);
+		Unit_HouseUnitCount_Seen(u);
 	}
 
 	/* Nobody scouts for a skirmish AI: seeing the enemy is normally a side
@@ -4195,7 +4229,11 @@ void Unit_RemoveFog(Unit *unit)
 	if (unit == NULL) return;
 	if (unit->o.flags.s.isNotOnMap) return;
 	if ((unit->o.position.x == 0xFFFF && unit->o.position.y == 0xFFFF) || (unit->o.position.x == 0 && unit->o.position.y == 0)) return;
-	if (!House_AreAllied(Unit_GetHouseID(unit), g_playerHouseID)) return;
+	/* One fog layer in v1, so every unit in a match lifts it -- see the same
+	 * note in Unit_UpdateMap().  Only the viewpoint's own units did, which meant
+	 * the two clients unveiled different halves of the map and then counted
+	 * different things standing on it. */
+	if (!Match_IsActive() && !House_AreAllied(Unit_GetHouseID(unit), (uint8)g_playerHouseID)) return;
 
 	fogUncoverRadius = g_table_unitInfo[unit->o.type].o.fogUncoverRadius;
 
@@ -4353,7 +4391,7 @@ bool Unit_Move(Unit *unit, uint16 distance)
 			if (s != NULL) {
 				/* ENHANCEMENT -- make sonic blast trigger counter attack, but
 				 * do not warn about base under attack (original behaviour). */
-				if (g_dune2_enhanced && s->o.houseID != g_playerHouseID && !House_AreAllied(unit->o.houseID, s->o.houseID)) {
+				if (g_dune2_enhanced && !Match_IsHumanControlled(s->o.houseID) && !House_AreAllied(unit->o.houseID, s->o.houseID)) {
 					Structure_HouseUnderAttack(s->o.houseID);
 				}
 
@@ -5689,7 +5727,10 @@ Unit *Unit_CreateWrapper(uint8 houseID, UnitType typeID, uint16 destination)
 		return NULL;
 	}
 
-	if (House_AreAllied(houseID, g_playerHouseID) || Unit_IsTypeOnMap(houseID, UNIT_CARRYALL)) {
+	/* byScenario is a unit flag and it is saved, so which house gets it cannot
+	 * depend on the chair: a house somebody plays is the campaign's "yours". */
+	if (Match_IsHumanControlled(houseID) || House_AreAllied(houseID, (uint8)g_playerHouseID) ||
+	    Unit_IsTypeOnMap(houseID, UNIT_CARRYALL)) {
 		carryall->o.flags.s.byScenario = true;
 	}
 
@@ -6374,7 +6415,11 @@ void Unit_RemovePlayer(Unit *unit)
 	bool wasPrimary;
 
 	if (unit == NULL) return;
-	if (Unit_GetHouseID(unit) != g_playerHouseID) return;
+	/* Deallocating the unit and taking it out of its team is the simulation, and
+	 * only the tail of this function -- the selection and the action panel -- is
+	 * the screen.  Asking whether the unit was the viewpoint's meant a dying
+	 * unit left its team on one client and stayed in it on the other. */
+	if (!Match_IsHumanControlled(Unit_GetHouseID(unit))) return;
 	if (!unit->o.flags.s.allocated) return;
 
 	wasPrimary = unit == g_unitSelected;
@@ -6429,14 +6474,24 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 	packed = Tile_PackTile(position);
 	t = &g_map[packed];
 
-	if (t->isUnveiled || unit->o.houseID == g_playerHouseID) {
-		Unit_HouseUnitCount_Add(unit, g_playerHouseID);
+	/* Match_IsActive() stands in for "somebody can see this": v1 has no fog and
+	 * the map is unveiled from the start, and asking whether the tile belongs to
+	 * the viewpoint's house would answer differently on the two clients. */
+	if (t->isUnveiled || Match_IsActive() || unit->o.houseID == g_playerHouseID) {
+		Unit_HouseUnitCount_Seen(unit);
 	} else {
 		Unit_HouseUnitCount_Remove(unit);
 	}
 
 	if (type == 1) {
-		if (House_AreAllied(Unit_GetHouseID(unit), g_playerHouseID) && !Map_IsPositionUnveiled(packed) && unit->o.type != UNIT_SANDWORM) {
+		/* Lifting the fog is not a private act: it unveils the tile and counts
+		 * whatever is standing on it, both of which are saved.  In a match every
+		 * unit does it, because v1 has one fog layer -- asking whether the unit
+		 * was allied to the viewpoint meant one client's units revealed the
+		 * ground and the other's did not.  Section 2 of mp.md is where this
+		 * becomes a layer per house instead. */
+		if ((Match_IsActive() || House_AreAllied(Unit_GetHouseID(unit), (uint8)g_playerHouseID)) &&
+		    !Map_IsPositionUnveiled(packed) && unit->o.type != UNIT_SANDWORM) {
 			Tile_RemoveFogInRadius(position, 1);
 		}
 
@@ -6615,16 +6670,40 @@ void Unit_HouseUnitCount_Remove(Unit *unit)
  * @param unit The unit to add.
  * @param houseID The house registering the add.
  */
+/**
+ * Count a unit as seen by whoever can see it.
+ *
+ * Outside a match there is one pair of eyes and they are the player's.  In a
+ * match every house has its own, and "the viewpoint saw it" is not something two
+ * clients can agree on -- so each house in the match is told, which with v1's
+ * unveiled map is also simply true.
+ */
+void Unit_HouseUnitCount_Seen(Unit *unit)
+{
+	uint8 i;
+
+	if (!Match_IsActive()) {
+		Unit_HouseUnitCount_Add(unit, (uint8)g_playerHouseID);
+		return;
+	}
+
+	for (i = 0; i < MATCH_SLOT_MAX; i++) {
+		uint8 houseID = Match_GetSlotHouse(i);
+
+		if (houseID == HOUSE_INVALID) continue;
+
+		Unit_HouseUnitCount_Add(unit, houseID);
+	}
+}
+
 void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID)
 {
 	const UnitInfo *ui;
 	uint16 houseIDBit;
-	House *hp;
 	House *h;
 
 	if (unit == NULL) return;
 
-	hp = House_Get_ByIndex(g_playerHouseID);
 	ui = &g_table_unitInfo[unit->o.type];
 	h = House_Get_ByIndex(houseID);
 	houseIDBit = (1 << houseID);
@@ -6657,51 +6736,63 @@ void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID)
 		}
 	}
 
-	if (houseID == g_playerHouseID && g_selectionType != SELECTIONTYPE_MENTAT) {
+	/* The warning goes to the house that saw the unit, not to the house whose
+	 * screen it is: the timers below are saved state and the team variable at the
+	 * end is the simulation, so "whoever is watching noticed" is not a fact two
+	 * clients can agree on.  Only the sound and the hint stay with the viewpoint,
+	 * and onScreen is what keeps a campaign identical -- there the house that
+	 * sees and the house that watches are the same one. */
+	if (houseID != HOUSE_INVALID && g_selectionType != SELECTIONTYPE_MENTAT) {
+		bool onScreen = (houseID == g_playerHouseID);
+
 		if (unit->o.type == UNIT_SANDWORM) {
-			if (hp->timerSandwormAttack == 0) {
-				if (g_musicInBattle == 0) g_musicInBattle = 1;
+			if (h->timerSandwormAttack == 0) {
+				if (onScreen) {
+					if (g_musicInBattle == 0) g_musicInBattle = 1;
 
-				Sound_Output_Feedback(37);
+					Sound_Output_Feedback(37);
 
-				if (g_config.language == LANGUAGE_ENGLISH) {
-					GUI_DisplayHint(STR_WARNING_SANDWORMS_SHAIHULUD_ROAM_DUNE_DEVOURING_ANYTHING_ON_THE_SAND, 105);
-				}
-
-				hp->timerSandwormAttack = 8;
-			}
-		} else if (!House_AreAllied(g_playerHouseID, Unit_GetHouseID(unit))) {
-			Team *t;
-
-			if (hp->timerUnitAttack == 0) {
-				if (g_musicInBattle == 0) g_musicInBattle = 1;
-
-				if (unit->o.type == UNIT_SABOTEUR) {
-					Sound_Output_Feedback(12);
-				} else {
-					if (g_scenarioID < 3) {
-						PoolFindStruct find;
-						Structure *s;
-						uint16 feedbackID;
-
-						find.houseID = g_playerHouseID;
-						find.index   = 0xFFFF;
-						find.type    = STRUCTURE_CONSTRUCTION_YARD;
-
-						s = Structure_Find(&find);
-						if (s != NULL) {
-							feedbackID = ((Orientation_Orientation256ToOrientation8(Tile_GetDirection(s->o.position, unit->o.position)) + 1) & 7) / 2 + 2;
-						} else {
-							feedbackID = 1;
-						}
-
-						Sound_Output_Feedback(feedbackID);
-					} else {
-						Sound_Output_Feedback(unit->o.houseID + 6);
+					if (g_config.language == LANGUAGE_ENGLISH) {
+						GUI_DisplayHint(STR_WARNING_SANDWORMS_SHAIHULUD_ROAM_DUNE_DEVOURING_ANYTHING_ON_THE_SAND, 105);
 					}
 				}
 
-				hp->timerUnitAttack = 8;
+				h->timerSandwormAttack = 8;
+			}
+		} else if (!House_AreAllied(houseID, Unit_GetHouseID(unit))) {
+			Team *t;
+
+			if (h->timerUnitAttack == 0) {
+				if (onScreen) {
+					if (g_musicInBattle == 0) g_musicInBattle = 1;
+
+					if (unit->o.type == UNIT_SABOTEUR) {
+						Sound_Output_Feedback(12);
+					} else {
+						if (g_scenarioID < 3) {
+							PoolFindStruct find;
+							Structure *s;
+							uint16 feedbackID;
+
+							find.houseID = houseID;
+							find.index   = 0xFFFF;
+							find.type    = STRUCTURE_CONSTRUCTION_YARD;
+
+							s = Structure_Find(&find);
+							if (s != NULL) {
+								feedbackID = ((Orientation_Orientation256ToOrientation8(Tile_GetDirection(s->o.position, unit->o.position)) + 1) & 7) / 2 + 2;
+							} else {
+								feedbackID = 1;
+							}
+
+							Sound_Output_Feedback(feedbackID);
+						} else {
+							Sound_Output_Feedback(unit->o.houseID + 6);
+						}
+					}
+				}
+
+				h->timerUnitAttack = 8;
 			}
 
 			t = Team_Get_ByIndex(unit->team);
@@ -6711,7 +6802,13 @@ void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID)
 
 	if (!House_AreAllied(houseID, unit->o.houseID) && unit->actionID == ACTION_AMBUSH) Unit_SetAction(unit, ACTION_HUNT);
 
-	if (unit->o.houseID == g_playerHouseID || (unit->o.houseID == HOUSE_FREMEN && g_playerHouseID == HOUSE_ATREIDES)) {
+	/* The player's own units are visible to everybody -- that is how the
+	 * campaign AI knows where to attack.  In a match that has to hold for both
+	 * players, or each client marks a different half of the map's units as
+	 * universally seen, and seenByHouses is saved unit state.  It also matches
+	 * what a skirmish already forces at unit creation. */
+	if (Match_IsActive() || unit->o.houseID == g_playerHouseID ||
+	    (unit->o.houseID == HOUSE_FREMEN && g_playerHouseID == HOUSE_ATREIDES)) {
 		unit->o.seenByHouses = 0xFF;
 	} else {
 		unit->o.seenByHouses |= houseIDBit;

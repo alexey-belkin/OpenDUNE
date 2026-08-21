@@ -103,6 +103,18 @@ bool Match_AreEnemies(uint8 houseID1, uint8 houseID2)
 }
 
 /**
+ * The house in a slot, or HOUSE_INVALID if nobody is in it.  Callers that have
+ * to do something for every house in the match walk the slots with this.
+ */
+uint8 Match_GetSlotHouse(uint8 slot)
+{
+	if (!s_match.active || slot >= MATCH_SLOT_MAX) return HOUSE_INVALID;
+	if (s_match.slot[slot].controller == MATCH_CONTROLLER_NONE) return HOUSE_INVALID;
+
+	return s_match.slot[slot].houseID;
+}
+
+/**
  * The other side, or HOUSE_INVALID in a solo match.
  */
 uint8 Match_GetOpponent(uint8 houseID)

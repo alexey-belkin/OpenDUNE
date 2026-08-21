@@ -56,6 +56,7 @@ extern bool Skirmish_War_IsDefeated(uint8 index);
 extern uint16 Skirmish_Plan_PickNext(struct House *h);
 extern uint16 Skirmish_Plan_TakePosition(struct House *h, uint8 structureType);
 extern uint16 Skirmish_House_MaxCredits(const struct House *h);
+extern void Skirmish_House_LoseNoSilo(uint8 houseID);
 extern void Skirmish_Economy_Tick(struct House *h);
 extern bool Skirmish_AI_WantsHarvester(const struct House *h);
 extern bool Skirmish_AI_FactoryWantsHarvester(const struct House *h, const struct Structure *s);

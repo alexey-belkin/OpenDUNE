@@ -206,6 +206,10 @@ static void Animation_Func_PlayVoice(Animation *animation, int16 parameter)
 void Animation_Init(void)
 {
 	memset(g_animations, 0, ANIMATION_MAX * sizeof(Animation));
+
+	/* An absolute deadline, and the clock restarts with the match -- see the
+	 * same note in Explosion_Init(). */
+	s_animationTimer = 0;
 }
 
 /**

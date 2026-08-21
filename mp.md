@@ -985,56 +985,79 @@ still keyed on the viewpoint rather than on the match descriptor would diverge
 there and cannot diverge here. Per-house fog (§2) is the known one; whether it is
 the only one is the next thing to measure.
 
-## Stage 3c — the viewpoint harness (built; it fails, and that is the point)
+## Stage 3c — the viewpoint (done)
 
 Everything measured so far ran with the same `g_playerHouseID` on both sides. Two
 real clients never do: each sees the match from its own house. So the last cheap
-thing to build before a turn loop is a harness that varies **only** that.
+thing to build before a turn loop was a harness that varies **only** that.
 
 ```bash
-./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-viewpoint=40000,500
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-viewpoint=60000,1000
 ```
 
 It is the replay harness with one change: pass 1 records from slot 1's chair,
-pass 2 replays from slot 2's. The commands are identical, the match is identical,
-the seed is identical. Anything that differs is the simulation reading who is
-watching. `--viewpoint=N` sets it by hand for a single run.
+pass 2 replays from slot 2's. Same commands, same match, same seed. Anything that
+differs is the simulation reading who is watching, and the report names the
+chunk and the tick. `--viewpoint=N` sets the chair by hand for a single run.
 
-### What it says today
+It opened at **80 of 81 samples differing** and is now at zero, on five maps.
 
-```
-mp-viewpoint: 80 of 81 samples differ between the two viewpoints
-mp-viewpoint:   house    80 samples, first at t500
-mp-viewpoint:   str      80 samples, first at t500
-mp-viewpoint:   map      73 samples, first at t2000
-mp-viewpoint:   rng      77 samples, first at t2000
-mp-viewpoint: FAIL (the simulation still reads the viewpoint)
-```
+### What was reading the chair
 
-This is §1 of this document, finally with a number against it. The known
-offenders, from a sweep of the simulation files:
-
-| Site | What it decides |
+| Site | What it decided |
 |---|---|
-| [structure.c:2132](src/structure.c:2132) `Structure_GetBuildable` | **what a house may build at all** — the prerequisite and upgrade rules are enforced for the viewpoint's house and waived for everyone else |
-| [house.c:189](src/house.c:189) the credit clamp | which house gets the no-silo grace, and `g_playerCreditsNoSilo` is one global for one player |
-| [house.c:415](src/house.c:415) `House_UpdateRadarState` | `flags.radarActivated`, which is saved state, updated only for the viewpoint |
-| [structure.c:650](src/structure.c:650) and four more in `Structure_Place` | fog, written into `g_map` |
-| [tile.c:143](src/tile.c:143) `Map_UnveilTile` | the same |
-| [script/unit.c:1028](src/script/unit.c:1028) opcode 0x13 | a **script** branch on whether the viewpoint has seen this unit |
-| [script/structure.c:140](src/script/structure.c:140), [321](src/script/structure.c:321), [532](src/script/structure.c:532), [665](src/script/structure.c:665) | script opcodes answering differently depending on the chair |
-| [map.c:983](src/map.c:983), [1338](src/map.c:1338), [1361](src/map.c:1361) | position validation and unit counting |
-| [structure.c:2169](src/structure.c:2169) `Structure_HouseUnderAttack` | whether the full-scale attack fires |
+| [structure.c](src/structure.c) `Structure_GetBuildable` | **what a house may build** — prerequisites and upgrade levels enforced for the viewpoint's house, waived for everyone else. Moving the chair took the scripted player from 296 commands to 1 |
+| [house.c](src/house.c) the credit clamp | which house got the no-silo grace; `g_playerCreditsNoSilo` is one global for one player. In a match it is now per house, kept with the base |
+| [house.c](src/house.c) `House_UpdateRadarState` | `flags.radarActivated`, saved, updated only for the viewpoint. Now decided for any house; only the two seconds of STATIC.WSA stay with the screen — a step into §6 |
+| [unit.c](src/unit.c) `Unit_HouseUnitCount_Add` | the sighting counters, the attack-warning timers and `t->script.variables[4]` all went to the watching house instead of the seeing one |
+| [unit.c](src/unit.c) same, last line | a unit belonging to *the viewpoint* was marked seen by everybody; each client marked a different half of the map |
+| [unit.c](src/unit.c) `Unit_RemoveFog`, `Unit_UpdateMap`, [map.c](src/map.c) `Map_UnveilTile`, five sites in `Structure_Place` | only the viewpoint's own units and buildings lifted fog, and lifting it counts whatever is standing there |
+| [unit.c](src/unit.c) `Unit_RemovePlayer` | a dying unit left its team on one client and stayed in it on the other |
+| [unit.c](src/unit.c) the autonomy scorer | scored off `s_houseThreatUntil[g_playerHouseID]` — the *other* player's alarms |
+| [unit.c](src/unit.c) `Unit_CreateWrapper` | `byScenario`, a saved unit flag |
+| [map.c:444](src/map.c:444) the splash-damage loop | **the one that took longest.** `if (u->o.houseID == g_playerHouseID)` reports a threat to the autonomy layer *and continues* — so on one client a hit unit answered with autonomous defence and on the other it acquired a target from the script. Two clients, two different fights |
 
-The buildable mask is the one to notice: with the viewpoint on a playing house
-the scripted player went from 296 commands to 1, because the same house was
-suddenly held to prerequisites nobody else is held to. That is not a subtle
-desync — it is two clients playing different games.
+Everything else that reads `g_playerHouseID` in those files is a message, a
+sound, a hint or the cursor, and stays.
 
-There is one honest caveat on the harness: the two passes differ in the viewpoint
-*and* in that only the first runs the scripted player. That is unavoidable — the
-scripted player itself reads the board — and it is why the recording is the
-control: the commands are identical by construction.
+Two things that legitimately differ per client were taken out of the checksum
+rather than made to agree: the six mission tallies and the score
+(`killedAllied`/`killedEnemy` and their pair, `g_scenario.score`). Allied versus
+enemy is a question only a viewpoint can answer, so two clients keep two correct
+and different tallies. They feed nothing, and they ride in the savegame's info
+chunk, so `MpSync_InfoSave()` stashes and restores them around the write.
+
+### What the wider net caught on the way
+
+Running the *replay* on five seeds instead of one turned up two failures that had
+nothing to do with the viewpoint, and both were the same bug as stage 3's: a
+second match in one process inheriting the first one's module state.
+
+* `Explosion_Init()` and `Animation_Init()` cleared their arrays but not their
+  rate limiters, which hold absolute deadlines. A second match skipped every
+  explosion until the clock caught up — and whether that mattered depended on how
+  long the first match had run, which is why it looked like a map-specific ghost.
+* `Unit_ResetTicks()` cleared the schedulers and four arrays; it missed nine more
+  — attack posts, autonomous posts, manual-hunt flags, the harvester trackers,
+  the refinery claims, the threat targets — plus the selection and control
+  groups, and `Structure_ResetTicks()` missed the build queues and rally points.
+  All of them are indexed by pool index, and the pool hands the same index to a
+  different object next match.
+
+The lesson from stage 0 held again, one level up: **one seed is not a sample.**
+The replay passed on seed 1000 for as long as seed 1000 was the only seed.
+
+### Where it stands
+
+| Harness | Maps | Result |
+|---|---|---|
+| `--mp-checksum` | 1 | two runs identical |
+| `--mp-replay`, AI vs AI | 5 | PASS |
+| `--mp-replay`, one human house | 5 | PASS |
+| `--mp-replay`, two human houses | 5 | PASS |
+| `--mp-replay` across two processes | 1 | 81 samples identical |
+| `--mp-viewpoint` | 5 | PASS |
+| the sixteen doctrine metrics | 6 | unchanged, to the number |
 
 ## Known hazards
 

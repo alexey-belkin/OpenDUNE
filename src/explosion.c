@@ -272,6 +272,13 @@ static void Explosion_StopAtPosition(uint16 packed)
 void Explosion_Init(void)
 {
 	memset(g_explosions, 0, EXPLOSION_MAX * sizeof(Explosion));
+
+	/* The rate limiter holds an absolute deadline, so a second match in the
+	 * same process inherits the first one's and skips every explosion until the
+	 * clock catches up again.  Same class of bug as the subsystem tick resets in
+	 * Game_Init(); this one hid until the replay harness ran two matches whose
+	 * length decided whether it mattered.  See mp.md. */
+	s_explosionTimer = 0;
 }
 
 /**

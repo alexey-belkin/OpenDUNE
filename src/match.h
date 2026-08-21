@@ -28,5 +28,6 @@ extern bool Match_IsNetworked(void);
 extern bool Match_IsHumanControlled(uint8 houseID);
 extern bool Match_AreEnemies(uint8 houseID1, uint8 houseID2);
 extern uint8 Match_GetOpponent(uint8 houseID);
+extern uint8 Match_GetSlotHouse(uint8 slot);
 
 #endif /* MATCH_H */

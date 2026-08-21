@@ -355,6 +355,7 @@ extern void Unit_AddToTile(Unit *unit, uint16 packed);
 extern void Unit_LaunchHouseMissile(uint16 packed);
 extern void Unit_HouseUnitCount_Remove(Unit *unit);
 extern void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID);
+extern void Unit_HouseUnitCount_Seen(Unit *unit);
 
 extern uint16 Unit_GetTargetUnitPriority(Unit *unit, Unit *target);
 extern uint16 Unit_GetTargetStructurePriority(Unit *unit, struct Structure *s);

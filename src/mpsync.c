@@ -7,6 +7,7 @@
 #include "mpsync.h"
 
 #include "saveload/saveload.h"
+#include "scenario.h"
 #include "structure.h"
 #include "team.h"
 #include "tools.h"
@@ -89,6 +90,47 @@ static uint32 MpSync_ChunkCrc(bool (*saveProc)(FILE *fp), bool *ok)
 	return crc;
 }
 
+/**
+ * The info chunk, without the six numbers that belong to whoever is watching.
+ *
+ * killed/destroyed/harvested are each split into "allied" and "enemy", and the
+ * score is signed by the same test -- which side is which is a question only a
+ * viewpoint can answer -- so in a match the two
+ * clients keep two different tallies of the same events, correctly.  They are
+ * a post-match readout and feed nothing, but they ride in the savegame's info
+ * chunk, so a desync check that included them would report a disagreement on
+ * every kill.  Stashed and restored around the write rather than removed from
+ * the chunk: the format stays the savegame's.
+ */
+static bool MpSync_InfoSave(FILE *fp)
+{
+	uint16 killedAllied     = g_scenario.killedAllied;
+	uint16 killedEnemy      = g_scenario.killedEnemy;
+	uint16 destroyedAllied  = g_scenario.destroyedAllied;
+	uint16 destroyedEnemy   = g_scenario.destroyedEnemy;
+	uint16 harvestedAllied  = g_scenario.harvestedAllied;
+	uint16 harvestedEnemy   = g_scenario.harvestedEnemy;
+	int16  score            = g_scenario.score;
+	bool ret;
+
+	g_scenario.killedAllied = g_scenario.killedEnemy = 0;
+	g_scenario.destroyedAllied = g_scenario.destroyedEnemy = 0;
+	g_scenario.harvestedAllied = g_scenario.harvestedEnemy = 0;
+	g_scenario.score = 0;
+
+	ret = Info_Save(fp);
+
+	g_scenario.killedAllied    = killedAllied;
+	g_scenario.killedEnemy     = killedEnemy;
+	g_scenario.destroyedAllied = destroyedAllied;
+	g_scenario.destroyedEnemy  = destroyedEnemy;
+	g_scenario.harvestedAllied = harvestedAllied;
+	g_scenario.harvestedEnemy  = harvestedEnemy;
+	g_scenario.score           = score;
+
+	return ret;
+}
+
 /** Pack a value little endian, so the checksum does not depend on the host. */
 static void MpSync_PutU32(uint8 *dst, uint32 value)
 {
@@ -112,7 +154,7 @@ bool MpSync_Take(MpSyncChecksum *checksum)
 
 	memset(checksum, 0, sizeof(*checksum));
 
-	checksum->info      = MpSync_ChunkCrc(&Info_Save,      &ok);
+	checksum->info      = MpSync_ChunkCrc(&MpSync_InfoSave, &ok);
 	checksum->house     = MpSync_ChunkCrc(&House_Save,     &ok);
 	checksum->unit      = MpSync_ChunkCrc(&Unit_Save,      &ok);
 	checksum->structure = MpSync_ChunkCrc(&Structure_Save, &ok);

@@ -18,6 +18,7 @@
 #include "gui/gui.h"
 #include "gui/widget.h"
 #include "house.h"
+#include "match.h"
 #include "opendune.h"
 #include "pool/pool.h"
 #include "pool/unit.h"
@@ -441,9 +442,15 @@ void Map_MakeExplosion(uint16 type, tile32 position, uint16 hitpoints, uint16 un
 				Unit_Damage(u, damage, 0);
 			}
 
-			if (u->o.houseID == g_playerHouseID) {
-				/* Player guards share a short-lived threat signal when a nearby
-				 * ally is actually hit. This is deliberately not a map-wide alert. */
+			/* Player guards share a short-lived threat signal when a nearby
+			 * ally is actually hit. This is deliberately not a map-wide alert.
+			 *
+			 * The branch matters far more than the signal: taking it skips the
+			 * original retaliation below, so asking g_playerHouseID meant one
+			 * client's units answered a hit with the autonomy layer and the
+			 * other's answered it by acquiring a target from the script.  Two
+			 * clients, two different fights, from t30253 on one map. */
+			if (Match_IsHumanControlled(u->o.houseID)) {
 				Unit_Autonomy_ReportThreat(Unit_GetHouseID(u), unitOriginEncoded, positionPacked);
 				continue;
 			}
@@ -1335,7 +1342,7 @@ static void Map_UnveilTile_Neighbour(uint16 packed)
 	if (tileID != 0) {
 		if (tileID != 15) {
 			Unit *u = Unit_Get_ByPackedTile(packed);
-			if (u != NULL) Unit_HouseUnitCount_Add(u, g_playerHouseID);
+			if (u != NULL) Unit_HouseUnitCount_Seen(u);
 		}
 
 		tileID = g_iconMap[g_iconMap[ICM_ICONGROUP_FOG_OF_WAR] + tileID];
@@ -1358,7 +1365,12 @@ bool Map_UnveilTile(uint16 packed, uint8 houseID)
 	Unit *u;
 	Tile *t;
 
-	if (houseID != g_playerHouseID) return false;
+	/* Only the player unveils, and in a match "the player" is both of them: v1
+	 * has one fog layer and it starts lifted, so this costs nothing -- an
+	 * already unveiled tile returns just below.  Left as the viewpoint's alone
+	 * it is the simulation reading who is watching, which is a desync waiting
+	 * for the first veiled tile.  Per-house fog is section 2 of mp.md. */
+	if (!Match_IsActive() && houseID != g_playerHouseID) return false;
 	if (Tile_IsOutOfMap(packed)) return false;
 
 	t = &g_map[packed];
@@ -1368,13 +1380,29 @@ bool Map_UnveilTile(uint16 packed, uint8 houseID)
 
 	Map_MarkTileDirty(packed);
 
+	/* Which tile got unveiled and who learns what is standing on it are two
+	 * questions: in a match every house learns, because there is one fog layer
+	 * to lift.  Counting it for the viewpoint instead left the two clients
+	 * disagreeing about unitCountAllied, which is saved. */
 	u = Unit_Get_ByPackedTile(packed);
-	if (u != NULL) Unit_HouseUnitCount_Add(u, houseID);
+	if (u != NULL) Unit_HouseUnitCount_Seen(u);
 
 	s = Structure_Get_ByPackedTile(packed);
 	if (s != NULL) {
-		s->o.seenByHouses |= 1 << houseID;
-		if (houseID == HOUSE_ATREIDES) s->o.seenByHouses |= 1 << HOUSE_FREMEN;
+		if (Match_IsActive()) {
+			uint8 slot;
+
+			for (slot = 0; slot < MATCH_SLOT_MAX; slot++) {
+				uint8 seer = Match_GetSlotHouse(slot);
+
+				if (seer == HOUSE_INVALID) continue;
+
+				s->o.seenByHouses |= 1 << seer;
+			}
+		} else {
+			s->o.seenByHouses |= 1 << houseID;
+			if (houseID == HOUSE_ATREIDES) s->o.seenByHouses |= 1 << HOUSE_FREMEN;
+		}
 	}
 
 	Map_UnveilTile_Neighbour(packed);

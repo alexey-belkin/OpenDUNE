@@ -193,6 +193,11 @@ void Structure_ResetTicks(void)
 	s_tickStructureStructure = 0;
 	s_tickStructureScript    = 0;
 	s_tickStructurePalace    = 0;
+
+	/* Both are indexed by structure index, and the pool hands the same index to
+	 * a different building next match. */
+	memset(s_unitBuildQueue,  0, sizeof(s_unitBuildQueue));
+	memset(s_structureRally,  0, sizeof(s_structureRally));
 }
 
 void GameLoop_Structure(void)
@@ -647,7 +652,7 @@ bool Structure_Place(Structure *s, uint16 position)
 
 			g_mapTileID[position] |= 0x8000;
 
-			if (s->o.houseID == g_playerHouseID) Tile_RemoveFogInRadius(Tile_UnpackTile(position), 1);
+			if ((Match_IsActive() || s->o.houseID == g_playerHouseID)) Tile_RemoveFogInRadius(Tile_UnpackTile(position), 1);
 
 			if (Map_IsPositionUnveiled(position)) t->overlayTileID = 0;
 
@@ -673,7 +678,7 @@ bool Structure_Place(Structure *s, uint16 position)
 
 				g_mapTileID[curPos] |= 0x8000;
 
-				if (s->o.houseID == g_playerHouseID) Tile_RemoveFogInRadius(Tile_UnpackTile(curPos), 1);
+				if ((Match_IsActive() || s->o.houseID == g_playerHouseID)) Tile_RemoveFogInRadius(Tile_UnpackTile(curPos), 1);
 
 				if (Map_IsPositionUnveiled(curPos)) t->overlayTileID = 0;
 
@@ -695,7 +700,7 @@ bool Structure_Place(Structure *s, uint16 position)
 
 					g_mapTileID[curPos] |= 0x8000;
 
-					if (s->o.houseID == g_playerHouseID) {
+					if (Match_IsActive() || s->o.houseID == g_playerHouseID) {
 						Tile_RemoveFogInRadius(Tile_UnpackTile(curPos), 1);
 						t->overlayTileID = 0;
 					}
@@ -716,7 +721,7 @@ bool Structure_Place(Structure *s, uint16 position)
 	if (validBuildLocation == 0 && Match_IsHumanControlled(s->o.houseID) && !g_debugScenario && g_validateStrictIfZero == 0) return false;
 
 	/* ENHANCEMENT -- In Dune2, it only removes the fog around the top-left tile of a structure, leaving for big structures the right in the fog. */
-	if (!g_dune2_enhanced && s->o.houseID == g_playerHouseID) Tile_RemoveFogInRadius(Tile_UnpackTile(position), 2);
+	if (!g_dune2_enhanced && (Match_IsActive() || s->o.houseID == g_playerHouseID)) Tile_RemoveFogInRadius(Tile_UnpackTile(position), 2);
 
 	s->o.seenByHouses |= 1 << s->o.houseID;
 	/* The player's base is visible to every House from the moment it is
@@ -781,7 +786,7 @@ bool Structure_Place(Structure *s, uint16 position)
 			Unit_Remove(u);
 
 			/* ENHANCEMENT -- In Dune2, it only removes the fog around the top-left tile of a structure, leaving for big structures the right in the fog. */
-			if (g_dune2_enhanced && s->o.houseID == g_playerHouseID) Tile_RemoveFogInRadius(Tile_UnpackTile(curPos), 2);
+			if (g_dune2_enhanced && (Match_IsActive() || s->o.houseID == g_playerHouseID)) Tile_RemoveFogInRadius(Tile_UnpackTile(curPos), 2);
 
 		}
 	}
@@ -823,7 +828,7 @@ void Structure_CalculateHitpointsMax(House *h)
 
 	if (h == NULL) return;
 
-	if (h->index == g_playerHouseID) House_UpdateRadarState(h);
+	House_UpdateRadarState(h);
 
 	if (h->powerUsage == 0) {
 		power = 256;
@@ -2129,13 +2134,18 @@ uint32 Structure_GetBuildable(Structure *s)
 					availableCampaign = 2;
 				}
 
-				if ((structuresBuilt & structuresRequired) == structuresRequired || s->o.houseID != g_playerHouseID) {
+				/* The prerequisite and upgrade rules are the player's; the AI is
+				 * waived from both.  Asking g_playerHouseID which is which makes
+				 * the answer depend on who is watching -- so a house that is
+				 * played is held to the rules on every client, rather than on
+				 * the one client whose chair it happens to be. */
+				if ((structuresBuilt & structuresRequired) == structuresRequired || !Match_IsHumanControlled(s->o.houseID)) {
 					if (s->o.houseID != HOUSE_HARKONNEN && i == STRUCTURE_LIGHT_VEHICLE) {
 						availableCampaign = 2;
 					}
 
 					if (g_campaignID >= availableCampaign - 1 && (localsi->o.availableHouse & (1 << s->o.houseID)) != 0) {
-						if (s->upgradeLevel >= localsi->o.upgradeLevelRequired || s->o.houseID != g_playerHouseID) {
+						if (s->upgradeLevel >= localsi->o.upgradeLevelRequired || !Match_IsHumanControlled(s->o.houseID)) {
 							localsi->o.available = 1;
 
 							ret |= (1 << i);
@@ -2166,7 +2176,7 @@ void Structure_HouseUnderAttack(uint8 houseID)
 
 	h = House_Get_ByIndex(houseID);
 
-	if (houseID != g_playerHouseID && h->flags.doneFullScaleAttack) return;
+	if (!Match_IsHumanControlled(houseID) && h->flags.doneFullScaleAttack) return;
 	h->flags.doneFullScaleAttack = true;
 
 	if (h->flags.human) {

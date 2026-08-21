@@ -186,7 +186,21 @@ void GameLoop_House(void)
 		if (tickHouse) {
 			/* ENHANCEMENT -- Originally this code was outside the house loop, which seems very odd.
 			 *  This problem is considered to be so bad, that the original code has been removed. */
-			if (h->index != g_playerHouseID) {
+			/* In a match the grace is per house, kept with the base, because
+			 * g_playerCreditsNoSilo is one global for one player and two people
+			 * would be sharing it -- and which of them got it would depend on
+			 * who was watching. */
+			if (Match_IsActive()) {
+				uint16 maxCredits = Skirmish_House_MaxCredits(h);
+
+				if (h->credits > maxCredits) {
+					h->credits = maxCredits;
+
+					if (h->index == g_playerHouseID) {
+						GUI_DisplayText(String_Get_ByIndex(STR_INSUFFICIENT_SPICE_STORAGE_AVAILABLE_SPICE_IS_LOST), 1);
+					}
+				}
+			} else if (h->index != g_playerHouseID) {
 				/* A skirmish AI starts with credits but no spice storage at all,
 				 * so the plain storage clamp would wipe them before the first
 				 * Refinery is paid for.  Give it the same grace as the human. */
@@ -204,7 +218,7 @@ void GameLoop_House(void)
 				}
 			}
 
-			if (h->index == g_playerHouseID) {
+			if (h->index == g_playerHouseID && !Match_IsActive()) {
 				if (h->creditsStorage > g_playerCreditsNoSilo) {
 					g_playerCreditsNoSilo = 0;
 				}
@@ -411,12 +425,21 @@ bool House_UpdateRadarState(House *h)
 	uint16 frame;
 	uint16 frameCount;
 	bool activate;
+	bool onScreen;
 
-	if (h == NULL || h->index != g_playerHouseID) return false;
+	if (h == NULL) return false;
+
+	onScreen = (h->index == g_playerHouseID);
+
+	/* Radar state is the house's own and it is saved with the house, so in a
+	 * match both clients have to agree on every house's -- the decision below is
+	 * made for anybody who asks, and only the animation belongs to whoever is
+	 * watching.  Outside a match nobody but the player has a radar to update. */
+	if (!Match_IsActive() && !onScreen) return false;
 
 	/* The skirmish spectator owns no Outpost and produces no power, yet the
 	 * whole point of watching is seeing the minimap. */
-	if (Skirmish_IsActive()) {
+	if (Skirmish_IsActive() && onScreen && !Match_IsHumanControlled(h->index)) {
 		h->flags.radarActivated = true;
 		return true;
 	}
@@ -434,6 +457,14 @@ bool House_UpdateRadarState(House *h)
 	}
 
 	if (h->flags.radarActivated == activate) return false;
+
+	/* Somebody else's radar: record it and go.  The two seconds of STATIC.WSA
+	 * are for the person watching, and in a match they are for one of the two
+	 * -- so it cannot be what decides the state.  See mp.md, section 6. */
+	if (!onScreen) {
+		h->flags.radarActivated = activate;
+		return activate;
+	}
 
 	wsa = WSA_LoadFile("STATIC.WSA", GFX_Screen_Get_ByIndex(SCREEN_1), GFX_Screen_GetSize_ByIndex(SCREEN_1), true);
 	frameCount = WSA_GetFrameCount(wsa);
@@ -565,8 +596,12 @@ void House_CalculatePowerAndCredit(House *h)
 	}
 
 	/* If there are no buildings left, you lose your right on 'credits without storage' */
-	if (h->index == g_playerHouseID && h->structuresBuilt == 0 && g_validateStrictIfZero == 0) {
-		g_playerCreditsNoSilo = 0;
+	if (h->structuresBuilt == 0 && g_validateStrictIfZero == 0) {
+		if (Match_IsActive()) {
+			Skirmish_House_LoseNoSilo((uint8)h->index);
+		} else if (h->index == g_playerHouseID) {
+			g_playerCreditsNoSilo = 0;
+		}
 	}
 }
 
