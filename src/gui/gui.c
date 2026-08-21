@@ -2006,6 +2006,12 @@ uint16 GUI_DisplayHint(uint16 stringID, uint16 spriteID)
 	uint32 mask;
 	uint16 hint;
 
+	/* No hints in a match.  They are single player tutoring, nobody wants them
+	 * against another person, and they are not free either: the bitfield that
+	 * remembers which ones this player has seen lives in the savegame, so a hint
+	 * is one client writing into the world because of what it showed one man. */
+	if (MpTurn_IsActive()) return 0;
+
 	if (g_debugGame || stringID == STR_NULL || !g_gameConfig.hints || g_selectionType == SELECTIONTYPE_MENTAT) return 0;
 
 	hint = stringID - STR_YOU_MUST_BUILD_A_WINDTRAP_TO_PROVIDE_POWER_TO_YOUR_BASE_WITHOUT_POWER_YOUR_STRUCTURES_WILL_DECAY;
@@ -3785,7 +3791,10 @@ void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint1
 		}
 
 		/* XXX -- This delays the system so you can in fact see the animation */
-		if ((y % 4) == 0) Timer_Sleep(1);
+		/* The dissolve is a random column order plus a wait; in a match the wait
+		 * is the whole cost -- a second of not looking at the wire, paid for by
+		 * the other player -- and the picture ends up the same either way. */
+		if ((y % 4) == 0 && !MpTurn_IsActive()) Timer_Sleep(1);
 	}
 
 	if (screenDst == SCREEN_0) {
@@ -3904,7 +3913,7 @@ void GUI_Screen_FadeIn2(int16 x, int16 y, int16 width, int16 height, Screen scre
 		}
 		GFX_Screen_SetDirty(screenDst, x, y, x + width, y + height);
 
-		Timer_Sleep(delay);
+		if (!MpTurn_IsActive()) Timer_Sleep(delay);
 	}
 
 	if (screenDst == 0) {

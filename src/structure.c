@@ -9,6 +9,8 @@
 #include "os/strings.h"
 
 #include "structure.h"
+#include "mpcommand.h"
+#include "mpturn.h"
 
 #include "animation.h"
 #include "audio/sound.h"
@@ -1795,6 +1797,31 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 
 			if (res == FACTORY_UPGRADE) {
 				Structure_SetUpgradingState(s, 1, NULL);
+				return false;
+			}
+
+			/* The build list is a screen, and choosing from it is an order.  The
+			 * branch below sets s->objectType on the way out, which is this
+			 * client alone deciding what the factory is making -- and it is why
+			 * one player's refinery never appeared for the other: the command
+			 * that follows carried a type the other client's structure had never
+			 * been told about, and the two structures diverged whether or not
+			 * the building went up.  In a match the choice travels instead. */
+			if (MpTurn_IsActive() && res == FACTORY_BUY && s->o.type != STRUCTURE_STARPORT) {
+				uint8 i;
+
+				for (i = 0; i < 25; i++) {
+					MpCommand cmd;
+
+					if (g_factoryWindowItems[i].amount == 0) continue;
+
+					MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
+					cmd.object = s->o.index;
+					cmd.value  = g_factoryWindowItems[i].objectType;
+					MpCommand_Submit(&cmd);
+					break;
+				}
+
 				return false;
 			}
 
