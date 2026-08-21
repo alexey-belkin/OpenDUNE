@@ -10,6 +10,7 @@
 #include "os/strings.h"
 
 #include "unit.h"
+#include "mpturn.h"
 
 #include "animation.h"
 #include "audio/sound.h"
@@ -6501,13 +6502,23 @@ void Unit_UpdateMap(uint16 type, Unit *unit)
 	packed = Tile_PackTile(position);
 	t = &g_map[packed];
 
-	/* Match_IsActive() stands in for "somebody can see this": v1 has no fog and
-	 * the map is unveiled from the start, and asking whether the tile belongs to
-	 * the viewpoint's house would answer differently on the two clients. */
-	if (t->isUnveiled || Match_IsActive() || unit->o.houseID == g_playerHouseID) {
-		Unit_HouseUnitCount_Seen(unit);
-	} else {
-		Unit_HouseUnitCount_Remove(unit);
+	/* Type 2 means "this unit needs repainting", and the four callers of it are
+	 * all selection: select, deselect, add to a group, clear the group.  Who has
+	 * seen a unit is not a question a repaint should be answering, and in a match
+	 * it is a saved field being written because of what one player clicked --
+	 * two players click different things.  So the bookkeeping below belongs to
+	 * the real map updates only.
+	 *
+	 * Match_IsActive() in the test stands in for "somebody can see this": v1 has
+	 * no fog and the map is unveiled from the start, and asking whether the tile
+	 * belongs to the viewpoint's house would answer differently on the two
+	 * clients. */
+	if (type != 2 || !MpTurn_IsActive()) {
+		if (t->isUnveiled || Match_IsActive() || unit->o.houseID == g_playerHouseID) {
+			Unit_HouseUnitCount_Seen(unit);
+		} else {
+			Unit_HouseUnitCount_Remove(unit);
+		}
 	}
 
 	if (type == 1) {

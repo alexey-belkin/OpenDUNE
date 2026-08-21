@@ -13,8 +13,13 @@
 #include "unit.h"
 #include "gui/gui.h"
 #include "structure.h"
+#include "pool/unit.h"
+#include "pool/structure.h"
 #include "team.h"
 #include "tools.h"
+
+static bool MpSync_UnitSave(FILE *fp);
+static bool MpSync_StructureSave(FILE *fp);
 
 static uint32 s_crcTable[256];
 static bool s_crcTableBuilt = false;
@@ -128,6 +133,8 @@ static bool MpSync_InfoSave(FILE *fp)
 	uint16 harvestedEnemy   = g_scenario.harvestedEnemy;
 	int16  score            = g_scenario.score;
 
+	uint32 hintsShown1      = g_hintsShown1;
+	uint32 hintsShown2      = g_hintsShown2;
 	uint16 creditsNoSilo    = g_playerCreditsNoSilo;
 	uint16 minimapPosition  = g_minimapPosition;
 	uint16 selectionRect    = g_selectionRectanglePosition;
@@ -145,6 +152,10 @@ static bool MpSync_InfoSave(FILE *fp)
 	g_scenario.harvestedAllied = g_scenario.harvestedEnemy = 0;
 	g_scenario.score = 0;
 
+	/* Which hints this player has already been shown, remembered in the
+	 * savegame.  It is a note about the person, not about the world. */
+	g_hintsShown1 = 0;
+	g_hintsShown2 = 0;
 	g_playerCreditsNoSilo = 0;
 	g_minimapPosition = 0;
 	g_selectionRectanglePosition = 0;
@@ -162,6 +173,8 @@ static bool MpSync_InfoSave(FILE *fp)
 
 	ret = Info_Save(fp);
 
+	g_hintsShown1 = hintsShown1;
+	g_hintsShown2 = hintsShown2;
 	g_playerCreditsNoSilo = creditsNoSilo;
 	g_minimapPosition = minimapPosition;
 	g_selectionRectanglePosition = selectionRect;
@@ -197,7 +210,7 @@ bool MpSync_Dump(const char *path)
 {
 	static const char *names[] = { "info", "house", "unit", "structure", "map", "team", "unitnew" };
 	static bool (* const savers[])(FILE *fp) = {
-		&Info_Save, &House_Save, &Unit_Save, &Structure_Save, &Map_Save, &Team_Save, &UnitNew_Save
+		&MpSync_InfoSave, &House_Save, &MpSync_UnitSave, &MpSync_StructureSave, &Map_Save, &Team_Save, &UnitNew_Save
 	};
 	uint8 buffer[4096];
 	FILE *out;
@@ -255,11 +268,27 @@ bool MpSync_Dump(const char *path)
  * It is the write barrier a garbage collector uses, or the borrow checker's
  * question, done cheaply in C for exactly one invariant.
  */
+/*
+ * Two independent regions, because two different questions are worth asking.
+ * The coarse one spans everything between two simulation steps -- if the world
+ * moved there, something outside the simulation moved it, whatever that
+ * something was.  The fine ones name a suspect: this draw call, this click.
+ * The coarse one is the safety net, and it is the one that caught what the
+ * fine ones were not wrapped around.
+ */
+enum {
+	MP_PURITY_COARSE = 0,
+	MP_PURITY_FINE   = 1,
+	MP_PURITY_SLOTS  = 2
+};
+
 static struct {
 	bool enabled;
-	bool armed;
-	MpSyncChecksum before;
-	uint32 reported;                                        /*!< One report per chunk, or a bad frame prints for ever. */
+	struct {
+		bool armed;
+		MpSyncChecksum before;
+		uint32 reported;                                /*!< One report per chunk, or a bad frame prints for ever. */
+	} slot[MP_PURITY_SLOTS];
 } s_purity;
 
 void MpPurity_SetEnabled(bool enabled)
@@ -272,30 +301,50 @@ bool MpPurity_IsEnabled(void)
 	return s_purity.enabled;
 }
 
-void MpPurity_Begin(void)
-{
-	if (!s_purity.enabled) return;
+/* When the chunk name is not enough, keep the bytes too: the first report then
+ * leaves a before/after pair on disk and the offset names the field. */
+static bool s_purityDump = false;
+static bool s_purityDumped = false;
 
-	s_purity.armed = MpSync_Take(&s_purity.before);
+void MpPurity_SetDump(bool dump)
+{
+	s_purityDump = dump;
+}
+
+void MpPurity_Begin(uint16 slot)
+{
+	if (!s_purity.enabled || slot >= MP_PURITY_SLOTS) return;
+
+	s_purity.slot[slot].armed = MpSync_Take(&s_purity.slot[slot].before);
+
+	if (s_purityDump && !s_purityDumped && slot == MP_PURITY_COARSE) {
+		MpSync_Dump("purity-before.bin");
+	}
 }
 
 /**
- * Give up on the region in progress.
+ * Take the "before" again, mid region.
  *
- * The match pump steps the simulation from inside sleepIdle(), and modal
- * screens sit inside the very regions this clamp watches -- so when the world
- * moves for that reason, it moved legitimately and the measurement is void.
- * Cancelling is honest; subtracting the pump's effect would not be.
+ * The match pump steps the simulation from inside sleepIdle(), and the modal
+ * screens this clamp most wants to watch are full of it -- so the world moves
+ * inside the region for a legitimate reason.  Abandoning the measurement there
+ * was the first idea and it was wrong: it blinds the clamp for exactly the
+ * regions that need it, and a hint popup that writes a saved field went
+ * unreported because a pump had fired first.  Rebasing keeps the region under
+ * watch and only forgives what the pump did.
  */
-void MpPurity_Cancel(void)
+void MpPurity_Rebase(uint16 slot)
 {
-	s_purity.armed = false;
+	if (!s_purity.enabled || slot >= MP_PURITY_SLOTS) return;
+	if (!s_purity.slot[slot].armed) return;
+
+	s_purity.slot[slot].armed = MpSync_Take(&s_purity.slot[slot].before);
 }
 
 /**
  * @return True if the world is unchanged, which is the only acceptable answer.
  */
-bool MpPurity_End(const char *what, uint32 tick)
+bool MpPurity_End(uint16 slot, const char *what, uint32 tick)
 {
 	static const char *names[] = { "info", "house", "unit", "structure", "map", "team", "unitnew", "rng" };
 	MpSyncChecksum after;
@@ -304,21 +353,22 @@ bool MpPurity_End(const char *what, uint32 tick)
 	uint16 i;
 	bool clean = true;
 
-	if (!s_purity.enabled || !s_purity.armed) return true;
+	if (!s_purity.enabled || slot >= MP_PURITY_SLOTS) return true;
+	if (!s_purity.slot[slot].armed) return true;
 
-	s_purity.armed = false;
+	s_purity.slot[slot].armed = false;
 
 	if (!MpSync_Take(&after)) return true;
-	if (after.total == s_purity.before.total) return true;
+	if (after.total == s_purity.slot[slot].before.total) return true;
 
-	before[0] = s_purity.before.info;      now[0] = after.info;
-	before[1] = s_purity.before.house;     now[1] = after.house;
-	before[2] = s_purity.before.unit;      now[2] = after.unit;
-	before[3] = s_purity.before.structure; now[3] = after.structure;
-	before[4] = s_purity.before.map;       now[4] = after.map;
-	before[5] = s_purity.before.team;      now[5] = after.team;
-	before[6] = s_purity.before.unitNew;   now[6] = after.unitNew;
-	before[7] = s_purity.before.rng;       now[7] = after.rng;
+	before[0] = s_purity.slot[slot].before.info;      now[0] = after.info;
+	before[1] = s_purity.slot[slot].before.house;     now[1] = after.house;
+	before[2] = s_purity.slot[slot].before.unit;      now[2] = after.unit;
+	before[3] = s_purity.slot[slot].before.structure; now[3] = after.structure;
+	before[4] = s_purity.slot[slot].before.map;       now[4] = after.map;
+	before[5] = s_purity.slot[slot].before.team;      now[5] = after.team;
+	before[6] = s_purity.slot[slot].before.unitNew;   now[6] = after.unitNew;
+	before[7] = s_purity.slot[slot].before.rng;       now[7] = after.rng;
 
 	for (i = 0; i < 8; i++) {
 		char line[192];
@@ -327,15 +377,96 @@ bool MpPurity_End(const char *what, uint32 tick)
 
 		clean = false;
 
-		if ((s_purity.reported & (1 << i)) != 0) continue;
-		s_purity.reported |= (1 << i);
+		if ((s_purity.slot[slot].reported & (1 << i)) != 0) continue;
+		s_purity.slot[slot].reported |= (1 << i);
 
 		snprintf(line, sizeof(line), "sim-purity: %s changed %s at tick %u (%08x -> %08x)",
 		         what, names[i], (unsigned)tick, (unsigned)before[i], (unsigned)now[i]);
 		MpPurity_Report(line);
+
+		if (s_purityDump && !s_purityDumped) {
+			s_purityDumped = true;
+			MpSync_Dump("purity-after.bin");
+		}
 	}
 
 	return clean;
+}
+
+/*
+ * isDirty and isHighlighted are instructions to the renderer -- "repaint me",
+ * "draw me lit" -- and they live in the object flags, which are saved.  So the
+ * savegame records which sprites this particular screen needed to redraw, and
+ * two clients drawing two different views need to redraw different things.
+ * Every unit on the map differed in exactly this one bit.
+ *
+ * They come out of the checksum the same way the selection and the score did.
+ */
+static uint8 s_flagBackupUnit[UNIT_INDEX_MAX];
+static uint8 s_flagBackupStructure[STRUCTURE_INDEX_MAX_HARD];
+
+static uint8 MpSync_TakeDrawFlags(ObjectFlags *flags)
+{
+	uint8 saved = (uint8)((flags->s.isDirty ? 1 : 0) | (flags->s.isHighlighted ? 2 : 0));
+
+	flags->s.isDirty       = false;
+	flags->s.isHighlighted = false;
+
+	return saved;
+}
+
+static void MpSync_PutDrawFlags(ObjectFlags *flags, uint8 saved)
+{
+	flags->s.isDirty       = (saved & 1) != 0;
+	flags->s.isHighlighted = (saved & 2) != 0;
+}
+
+static bool MpSync_UnitSave(FILE *fp)
+{
+	uint16 i;
+	bool ret;
+
+	for (i = 0; i < UNIT_INDEX_MAX; i++) {
+		Unit *u = Unit_Get_ByIndex(i);
+
+		if (u == NULL) continue;
+		s_flagBackupUnit[i] = MpSync_TakeDrawFlags(&u->o.flags);
+	}
+
+	ret = Unit_Save(fp);
+
+	for (i = 0; i < UNIT_INDEX_MAX; i++) {
+		Unit *u = Unit_Get_ByIndex(i);
+
+		if (u == NULL) continue;
+		MpSync_PutDrawFlags(&u->o.flags, s_flagBackupUnit[i]);
+	}
+
+	return ret;
+}
+
+static bool MpSync_StructureSave(FILE *fp)
+{
+	uint16 i;
+	bool ret;
+
+	for (i = 0; i < STRUCTURE_INDEX_MAX_HARD; i++) {
+		Structure *st = Structure_Get_ByIndex(i);
+
+		if (st == NULL) continue;
+		s_flagBackupStructure[i] = MpSync_TakeDrawFlags(&st->o.flags);
+	}
+
+	ret = Structure_Save(fp);
+
+	for (i = 0; i < STRUCTURE_INDEX_MAX_HARD; i++) {
+		Structure *st = Structure_Get_ByIndex(i);
+
+		if (st == NULL) continue;
+		MpSync_PutDrawFlags(&st->o.flags, s_flagBackupStructure[i]);
+	}
+
+	return ret;
 }
 
 /** Pack a value little endian, so the checksum does not depend on the host. */
@@ -363,8 +494,8 @@ bool MpSync_Take(MpSyncChecksum *checksum)
 
 	checksum->info      = MpSync_ChunkCrc(&MpSync_InfoSave, &ok);
 	checksum->house     = MpSync_ChunkCrc(&House_Save,     &ok);
-	checksum->unit      = MpSync_ChunkCrc(&Unit_Save,      &ok);
-	checksum->structure = MpSync_ChunkCrc(&Structure_Save, &ok);
+	checksum->unit      = MpSync_ChunkCrc(&MpSync_UnitSave,      &ok);
+	checksum->structure = MpSync_ChunkCrc(&MpSync_StructureSave, &ok);
 	checksum->map       = MpSync_ChunkCrc(&Map_Save,       &ok);
 	checksum->team      = MpSync_ChunkCrc(&Team_Save,      &ok);
 	checksum->unitNew   = MpSync_ChunkCrc(&UnitNew_Save,   &ok);

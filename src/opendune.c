@@ -183,6 +183,10 @@ static uint32 s_mpLiveSteps = 0;
 static uint32 s_mpLiveStalledMs = 0;
 static uint32 s_mpLiveNextSample = 0;
 static uint32 s_mpLiveSampleStep = 300;
+/* Off by default until the squad stops desyncing: units created inside a live
+ * match start their bytecode in different places on the two clients, and a
+ * match that breaks at tick 200 is worse than one with nothing to click. */
+static uint16 s_mpLiveUnits = 0;
 static bool s_mpLiveDesyncSeen = false;
 static uint32 s_mpLiveDumpTick = 0;
 
@@ -1171,10 +1175,20 @@ static void MpGame_Step(void)
 	uint32 due;
 	uint16 budget;
 
+	/* Everything since the last step was somebody else drawing, handling input
+	 * or waiting, and none of that may have moved the world.  The two finer
+	 * clamps name a suspect; this one has no blind spot. */
+	MpPurity_End(0, "the frame outside the simulation", g_timerGame);
+
 	/* Sixty ticks a second, measured against the wall rather than against how
 	 * fast this machine draws.  The other client is pacing itself the same way,
 	 * and lockstep only works if both agree what a second holds. */
-	due = ((Timer_GetTime() - s_mpLiveStart) * 60) / 1000;
+	/* The speed keys multiply the tick rate rather than the frame rate, and in
+	 * a match that stays safe: both clients still run the same ticks in the same
+	 * turns, so a client asking for x2 simply reaches each turn boundary sooner
+	 * and waits there.  The slower player sets the pace, which is the only
+	 * answer that does not let one of them decide how fast the world runs. */
+	due = ((Timer_GetTime() - s_mpLiveStart) * 60 * GameLoop_GetSpeedFactor()) / 1000;
 
 	/* Bounded, so a client that fell behind catches up over several frames
 	 * instead of disappearing into one long one. */
@@ -1187,6 +1201,7 @@ static void MpGame_Step(void)
 			 * for ever.  The turn loop stops; the simulation carries on locally
 			 * so the window stays alive and can be looked at and closed. */
 			if (MpNet_HasLeft(&goneSlot) || !MpNet_IsConnected()) {
+				MpPurity_Begin(0);
 				snprintf(line, sizeof(line), "mp-live: the match ended at turn %u (%s)",
 				         (unsigned)MpTurn_GetTurn(),
 				         MpNet_IsConnected() ? "the other player left" : MpNet_GetError());
@@ -1202,6 +1217,7 @@ static void MpGame_Step(void)
 			 * the next frame would sprint through sixteen ticks to catch up and
 			 * the stall would become a fast-forward. */
 			s_mpLiveStart += Timer_GetTime() - stallStart;
+			MpPurity_Begin(0);
 			return;
 		}
 
@@ -1256,6 +1272,8 @@ static void MpGame_Step(void)
 	{
 		uint32 desyncTurn = 0;
 
+		MpPurity_Begin(0);
+
 		if (MpTurn_HasDesynced(&desyncTurn) && !s_mpLiveDesyncSeen) {
 			snprintf(line, sizeof(line), "mp-live: DESYNC -- the two players disagreed about turn %u",
 			         (unsigned)desyncTurn);
@@ -1266,6 +1284,81 @@ static void MpGame_Step(void)
 			 * samples after a divergence are what name the chunk that caused
 			 * it, and a match that halts stops producing them. */
 			s_mpLiveDesyncSeen = true;
+		}
+	}
+}
+
+/**
+ * Put a starting squad on the map for both players.
+ *
+ * A match that opens with one construction yard each is a fine game and a poor
+ * test: nothing to select, nothing to order, and the first interesting question
+ * -- does a move order cross the wire -- is ten minutes of building away.
+ *
+ * Run identically on both clients, for both houses, in slot order, before the
+ * turn loop starts: it is part of the agreed starting position, not something
+ * either player did.
+ */
+static void MpGame_PlaceStartingUnits(uint16 count)
+{
+	static const uint16 s_squad[] = { UNIT_TRIKE, UNIT_SOLDIER, UNIT_QUAD, UNIT_TROOPER };
+	uint8 slot;
+
+	if (count == 0) return;
+
+	for (slot = 0; slot < MATCH_SLOT_MAX; slot++) {
+		uint16 origin = Skirmish_GetBaseOrigin(slot);
+		uint8 houseID = Match_GetSlotHouse(slot);
+		uint16 made = 0;
+		uint16 ring;
+
+		if (origin == 0xFFFF || houseID == HOUSE_INVALID) continue;
+
+		/* Outwards from the yard until the squad fits.  The base occupies the
+		 * middle, so the first ring is mostly taken. */
+		for (ring = 2; ring < 8 && made < count; ring++) {
+			int16 dx;
+
+			for (dx = (int16)-ring; dx <= (int16)ring && made < count; dx++) {
+				int16 dy;
+
+				for (dy = (int16)-ring; dy <= (int16)ring && made < count; dy++) {
+					uint16 packed;
+					int16 x, y;
+
+					/* The ring, not the disc: the inside was tried already. */
+					if (abs(dx) != (int16)ring && abs(dy) != (int16)ring) continue;
+
+					x = (int16)Tile_GetPackedX(origin) + dx;
+					y = (int16)Tile_GetPackedY(origin) + dy;
+					if (x < 1 || y < 1 || x > 62 || y > 62) continue;
+
+					packed = Tile_PackXY((uint16)x, (uint16)y);
+
+					if (Structure_Get_ByPackedTile(packed) != NULL) continue;
+					if (Unit_Get_ByPackedTile(packed) != NULL) continue;
+					if (g_map[packed].groundTileID == g_bloomTileID) continue;
+					if (Map_GetLandscapeType(packed) != LST_NORMAL_SAND &&
+					    Map_GetLandscapeType(packed) != LST_ENTIRELY_ROCK &&
+					    Map_GetLandscapeType(packed) != LST_CONCRETE_SLAB) continue;
+
+					{
+						Unit *u = Unit_Create(UNIT_INDEX_INVALID, (uint8)s_squad[made % lengthof(s_squad)],
+						                      houseID, Tile_UnpackTile(packed), 0);
+
+						if (u == NULL) continue;
+
+						/* Say what they are doing rather than letting Unit_Create
+						 * decide: it picks the player's default action or the AI's
+						 * depending on who owns the unit, which is one bytecode
+						 * entry point or another -- and a squad that starts its
+						 * script in two different places is a desync at tick one. */
+						Unit_SetAction(u, ACTION_GUARD);
+					}
+
+					made++;
+				}
+			}
 		}
 	}
 }
@@ -1289,9 +1382,9 @@ static void MpGame_Pump(void)
 	MpGame_Step();
 	inside = false;
 
-	/* Whatever region the clamp was measuring, the world just moved inside it
-	 * for a legitimate reason. */
-	MpPurity_Cancel();
+	/* The world just moved inside whatever region the clamp is measuring, and
+	 * moved legitimately.  Forgive that much and keep watching. */
+	MpPurity_Rebase(1);
 }
 
 /**
@@ -1364,6 +1457,14 @@ static bool MpGame_Begin(void)
 	s_mpLiveStalledMs  = 0;
 	s_mpLiveNextSample = s_mpLiveSampleStep;
 	s_mpLiveDesyncSeen = false;
+
+	/* Squad first, then the clock.  Placing units after the turn loop is running
+	 * -- and worse, after the pump is registered -- means the world can advance
+	 * in the middle of placing them, by however many ticks this machine happened
+	 * to spend in Unit_Create.  The two clients then start with the same units
+	 * holding script timers two ticks apart, which is a desync before either
+	 * player has touched anything. */
+	MpGame_PlaceStartingUnits(s_mpLiveUnits);
 
 	MpTurn_Begin(s_mpTurnSlot, MpTransport_Net(), s_mpTurnLength, s_mpTurnDelay);
 
@@ -2401,7 +2502,9 @@ static void GameLoop_Main(void)
 			GUI_ChangeSelectionType(g_selectionTypeNew);
 		}
 
+		MpPurity_Begin(1);
 		GUI_PaletteAnimate();
+		MpPurity_End(1, "GUI_PaletteAnimate", g_timerGame);
 
 		if (g_gameMode == GM_RESTART) {
 			GUI_ChangeSelectionType(SELECTIONTYPE_MENTAT);
@@ -2422,8 +2525,10 @@ static void GameLoop_Main(void)
 		}
 
 		if (l_selectionState != g_selectionState) {
+			MpPurity_Begin(1);
 			Map_SetSelectionObjectPosition(0xFFFF);
 			Map_SetSelectionObjectPosition(g_selectionRectanglePosition);
+			MpPurity_End(1, "Map_SetSelectionObjectPosition", g_timerGame);
 			l_selectionState = g_selectionState;
 		}
 
@@ -2452,11 +2557,13 @@ static void GameLoop_Main(void)
 		/* Input is allowed to change the world only through a command, so the
 		 * same clamp applies: whatever a click does directly here is something
 		 * the other player will never hear about. */
-		MpPurity_Begin();
+		MpPurity_Begin(1);
 		key = GUI_Widget_HandleEvents(g_widgetLinkedListHead);
-		MpPurity_End("GUI_Widget_HandleEvents", g_timerGame);
+		MpPurity_End(1, "GUI_Widget_HandleEvents", g_timerGame);
 
+		MpPurity_Begin(1);
 		GUI_Widget_Viewport_HandleEdgeScroll();
+		MpPurity_End(1, "GUI_Widget_Viewport_HandleEdgeScroll", g_timerGame);
 		/* Group buttons have no widget shortcuts, so handle the physical M/A
 		 * keys here.  Single-unit widgets may consume the same key first; in
 		 * that case they have already switched out of UNIT and this is a no-op. */
@@ -2554,7 +2661,9 @@ static void GameLoop_Main(void)
 		if (g_selectionType == SELECTIONTYPE_TARGET || g_selectionType == SELECTIONTYPE_PLACE || g_selectionType == SELECTIONTYPE_UNIT || g_selectionType == SELECTIONTYPE_STRUCTURE) {
 			if (g_unitSelected != NULL) {
 				if (l_timerUnitStatus < g_timerGame) {
+					MpPurity_Begin(1);
 					Unit_DisplayStatusText(g_unitSelected);
+					MpPurity_End(1, "Unit_DisplayStatusText", g_timerGame);
 					l_timerUnitStatus = g_timerGame + 300;
 				}
 
@@ -2563,11 +2672,17 @@ static void GameLoop_Main(void)
 				}
 			}
 
+			MpPurity_Begin(1);
 			GUI_Widget_ActionPanel_Draw(false);
+			MpPurity_End(1, "GUI_Widget_ActionPanel_Draw", g_timerGame);
 
+			MpPurity_Begin(1);
 			InGame_Numpad_Move(key);
+			MpPurity_End(1, "InGame_Numpad_Move", g_timerGame);
 
+			MpPurity_Begin(1);
 			GUI_DrawCredits(g_playerHouseID, 0);
+			MpPurity_End(1, "GUI_DrawCredits", g_timerGame);
 
 			if (MpTurn_IsActive()) {
 				/* A networked match runs on the turn loop's clock, and the speed
@@ -2592,12 +2707,14 @@ static void GameLoop_Main(void)
 			}
 
 			/* Drawing is not allowed to change the world.  See mpsync.c. */
-			MpPurity_Begin();
+			MpPurity_Begin(1);
 			GUI_DrawScreen(SCREEN_0);
-			MpPurity_End("GUI_DrawScreen", g_timerGame);
+			MpPurity_End(1, "GUI_DrawScreen", g_timerGame);
 		}
 
+		MpPurity_Begin(1);
 		GUI_DisplayText(NULL, 0);
+		MpPurity_End(1, "GUI_DisplayText", g_timerGame);
 
 		if (g_running && !g_debugScenario) {
 			GameLoop_LevelEnd();
@@ -2876,11 +2993,26 @@ int main(int argc, char **argv)
 
 				sscanf(argv[i] + 10, "%u", &seed);
 				if (seed != 0) s_mpLiveSeed = seed;
+			} else if (strncmp(argv[i], "--speed=", 8) == 0) {
+				/* The same knob as the [ and ] keys, set at start so a test does
+				 * not begin by pressing it twice in each window. */
+				unsigned speed = 0;
+
+				sscanf(argv[i] + 8, "%u", &speed);
+				while (speed > 1 && s_gameSpeedFactor < speed) GameLoop_StepSpeed(1);
+			} else if (strncmp(argv[i], "--mp-units=", 11) == 0) {
+				/* How many units each side starts with, so a test has something
+				 * to order about before the first building is up. */
+				unsigned units = 0;
+
+				sscanf(argv[i] + 11, "%u", &units);
+				s_mpLiveUnits = (uint16)units;
 			} else if (strncmp(argv[i], "--sim-purity", 12) == 0) {
 				/* Checksum the world around drawing and around input, and name
 				 * whatever changed it.  One machine, no network: the question
 				 * "did that function change the world" does not need two. */
 				MpPurity_SetEnabled(true);
+				if (strcmp(argv[i], "--sim-purity=dump") == 0) MpPurity_SetDump(true);
 			} else if (strncmp(argv[i], "--mp-dump=", 10) == 0) {
 				/* Write every chunk to a file at one tick, so two clients that
 				 * disagree can be compared byte for byte. */

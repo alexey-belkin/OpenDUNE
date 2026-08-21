@@ -9,6 +9,7 @@
 
 #include "doctrine.h"
 #include "map.h"
+#include "mpturn.h"
 #include "skirmish.h"
 
 #include "animation.h"
@@ -125,7 +126,11 @@ void Map_SetSelection(uint16 packed)
 
 			Map_SetSelectionSize(si->layout);
 
-			Structure_UpdateMap(s);
+			/* Restamping the structure's tiles because somebody clicked it is a
+			 * click writing into the map, which is saved -- and only one of two
+			 * players clicked.  The tiles are already what the simulation says
+			 * they are; this is a leftover refresh. */
+			if (!MpTurn_IsActive()) Structure_UpdateMap(s);
 		} else {
 			Map_SetSelectionSize(STRUCTURE_LAYOUT_1x1);
 		}

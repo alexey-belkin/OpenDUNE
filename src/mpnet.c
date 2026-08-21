@@ -27,6 +27,7 @@
 
 #include "types.h"
 #include "os/common.h"
+#include "os/sleep.h"
 
 #include "mpnet.h"
 
@@ -107,6 +108,7 @@ bool MpNet_Connect(const char *host, uint16 port, const char *room, uint8 slot)
 	char service[16];
 	char request[128];
 	MpSocket sock = MP_SOCKET_INVALID;
+	uint16 attempt;
 	int one = 1;
 
 #if defined(_WIN32)
@@ -133,14 +135,24 @@ bool MpNet_Connect(const char *host, uint16 port, const char *room, uint8 slot)
 		return false;
 	}
 
-	for (entry = results; entry != NULL; entry = entry->ai_next) {
-		sock = socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
-		if (sock == MP_SOCKET_INVALID) continue;
+	/* Three attempts, because a single refused connect is not evidence of
+	 * anything.  Transparent proxies and carrier middleboxes drop the odd
+	 * outbound SYN, and on this machine two clients dialling the same relay at
+	 * the same moment lose one often enough to be annoying -- reported to the
+	 * player as "could not reach the relay", which sends them looking at the
+	 * server instead of at their own network. */
+	for (attempt = 0; attempt < 3 && sock == MP_SOCKET_INVALID; attempt++) {
+		if (attempt != 0) msleep(250);
 
-		if (connect(sock, entry->ai_addr, (int)entry->ai_addrlen) == 0) break;
+		for (entry = results; entry != NULL; entry = entry->ai_next) {
+			sock = socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
+			if (sock == MP_SOCKET_INVALID) continue;
 
-		MpSocket_Close(sock);
-		sock = MP_SOCKET_INVALID;
+			if (connect(sock, entry->ai_addr, (int)entry->ai_addrlen) == 0) break;
+
+			MpSocket_Close(sock);
+			sock = MP_SOCKET_INVALID;
+		}
 	}
 
 	freeaddrinfo(results);

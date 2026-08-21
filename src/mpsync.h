@@ -24,10 +24,11 @@ extern bool MpSync_Take(MpSyncChecksum *checksum);
 extern bool MpSync_Dump(const char *path);
 
 extern void MpPurity_SetEnabled(bool enabled);
+extern void MpPurity_SetDump(bool dump);
 extern bool MpPurity_IsEnabled(void);
-extern void MpPurity_Begin(void);
-extern void MpPurity_Cancel(void);
-extern bool MpPurity_End(const char *what, uint32 tick);
+extern void MpPurity_Begin(uint16 slot);
+extern void MpPurity_Rebase(uint16 slot);
+extern bool MpPurity_End(uint16 slot, const char *what, uint32 tick);
 extern void MpPurity_Report(const char *line);
 extern void MpSync_Format(char *dst, uint16 size, uint32 tick, const MpSyncChecksum *checksum);
 

@@ -4696,6 +4696,15 @@ void GUI_SetPaletteAnimated(uint8 *palette, int16 ticksOfAnimation)
 
 	if (palette == NULL) return;
 
+	/* No fade in a match.  It is a second of dimming on the way into a building
+	 * screen and out of it, it tells the player nothing, and it is a second of
+	 * this client not looking at the wire -- which the other player pays for.
+	 * Snap straight to the target palette instead. */
+	if (MpTurn_IsActive()) {
+		GFX_SetPalette(palette);
+		return;
+	}
+
 	memcpy(data, g_paletteActive, 256 * 3);
 
 	highestDiff = 0;
