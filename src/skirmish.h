@@ -38,6 +38,7 @@ typedef struct SkirmishEconomyPlan {
 } SkirmishEconomyPlan;
 
 extern void Skirmish_SetController(uint8 slot, uint8 controller);
+extern void Skirmish_SetViewpoint(uint8 slot);
 extern bool Skirmish_IsActive(void);
 extern bool Skirmish_IsEconomyMode(void);
 extern void Skirmish_Reset(void);

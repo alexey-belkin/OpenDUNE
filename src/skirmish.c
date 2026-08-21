@@ -343,6 +343,16 @@ void Skirmish_SetController(uint8 slot, uint8 controller)
 	s_controller[slot] = controller;
 }
 
+/* Which house the screen belongs to, as a slot; MATCH_SLOT_MAX means the
+ * spectator a skirmish has always used.  Two clients of one match differ here
+ * and in nothing else, which makes it the one knob worth turning twice. */
+static uint8 s_viewpoint = MATCH_SLOT_MAX;
+
+void Skirmish_SetViewpoint(uint8 slot)
+{
+	s_viewpoint = slot;
+}
+
 bool Skirmish_IsActive(void)
 {
 	return s_active;
@@ -2252,6 +2262,20 @@ static bool Skirmish_StartInternal(uint8 houseID1, uint8 houseID2, uint32 seed, 
 	if (s_economyMode) {
 		g_starportAvailable[UNIT_HARVESTER] = 5;
 		g_starportAvailable[UNIT_CARRYALL]  = 5;
+	}
+
+	/* Whose screen this is.  Last, because it has to name a house that exists:
+	 * the playing houses are allocated with their bases, above.  A skirmish
+	 * watches from HOUSE_MERCENARY, which owns nothing; a person playing sees
+	 * the match from their own house instead, and that difference is the only
+	 * one between two clients of the same match. */
+	if (s_viewpoint < MATCH_SLOT_MAX) {
+		House *view = House_Get_ByIndex((s_viewpoint == 0) ? houseID1 : houseID2);
+
+		if (view != NULL) {
+			g_playerHouseID = (HouseType)view->index;
+			g_playerHouse   = view;
+		}
 	}
 
 	g_tickScenarioStart = g_timerGame;

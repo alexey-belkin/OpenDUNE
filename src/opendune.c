@@ -163,6 +163,7 @@ static uint32 s_mpReplaySeed = 1000;
 static char s_mpRecordFile[256] = "";
 static char s_mpPlayFile[256] = "";
 static uint16 s_mpReplayUnplayed = 0;
+static bool s_mpViewpoint = false;
 
 static void PrintToConsole(const char *str);
 
@@ -1347,6 +1348,55 @@ static void MpHarness_ScriptedPlayer(uint32 tick)
 }
 
 /**
+ * Which parts of the state depend on who is watching.
+ *
+ * A component that differs here is a piece of the simulation still keyed on
+ * g_playerHouseID rather than on the match descriptor: harmless in a campaign,
+ * where the viewpoint and the only player are the same house, and a desync on
+ * the first tick of a real match, where they are not.  See mp.md.
+ */
+static void MpHarness_ReportViewpoint(const MpSyncChecksum *a, const MpSyncChecksum *b, uint16 count)
+{
+	static const char *s_names[] = { "info", "house", "unit", "str", "map", "team", "new", "rng" };
+	uint16 differing[8];
+	uint32 firstTick[8];
+	char line[256];
+	uint16 total = 0;
+	uint16 i;
+	uint8 c;
+
+	memset(differing, 0, sizeof(differing));
+	memset(firstTick, 0, sizeof(firstTick));
+
+	for (i = 0; i < count; i++) {
+		const uint32 va[8] = { a[i].info, a[i].house, a[i].unit, a[i].structure, a[i].map, a[i].team, a[i].unitNew, a[i].rng };
+		const uint32 vb[8] = { b[i].info, b[i].house, b[i].unit, b[i].structure, b[i].map, b[i].team, b[i].unitNew, b[i].rng };
+
+		if (memcmp(&a[i], &b[i], sizeof(a[i])) != 0) total++;
+
+		for (c = 0; c < 8; c++) {
+			if (va[c] == vb[c]) continue;
+			if (differing[c] == 0) firstTick[c] = (uint32)i * s_mpReplayStep;
+			differing[c]++;
+		}
+	}
+
+	snprintf(line, sizeof(line), "mp-viewpoint: %u of %u samples differ between the two viewpoints", (unsigned)total, (unsigned)count);
+	PrintToConsole(line);
+
+	for (c = 0; c < 8; c++) {
+		if (differing[c] == 0) continue;
+
+		snprintf(line, sizeof(line), "mp-viewpoint:   %-6s %4u samples, first at t%u",
+		         s_names[c], (unsigned)differing[c], (unsigned)firstTick[c]);
+		PrintToConsole(line);
+	}
+
+	PrintToConsole((total == 0) ? "mp-viewpoint: PASS (the simulation does not know who is watching)"
+	                            : "mp-viewpoint: FAIL (the simulation still reads the viewpoint)");
+}
+
+/**
  * Stage 3 of mp.md: one pass of the command-layer harness.
  *
  * With the scripted player on, it plays the match and records every order it
@@ -1614,6 +1664,8 @@ static void GameLoop_Main(void)
 			return;
 		}
 
+		if (s_mpViewpoint) Skirmish_SetViewpoint(0);
+
 		if (!MpHarness_ReplayPass(true, live, &liveCount, s_mpRecordFile[0] != '\0')) {
 			PrintToConsole("mp-replay: FAIL (could not start a skirmish)");
 			return;
@@ -1642,9 +1694,19 @@ static void GameLoop_Main(void)
 			return;
 		}
 
-		/* Second pass: same match, same process, no scripted player. */
+		/* Second pass: same match, same process, no scripted player -- and, when
+		 * asked, seen from the other house.  Two clients of one match differ in
+		 * their viewpoint and in nothing else, so anything the simulation still
+		 * reads out of g_playerHouseID shows up here and nowhere else. */
+		if (s_mpViewpoint) Skirmish_SetViewpoint(1);
+
 		if (!MpHarness_ReplayPass(false, replayed, &replayCount, false)) {
 			PrintToConsole("mp-replay: FAIL (could not restart the skirmish)");
+			return;
+		}
+
+		if (s_mpViewpoint) {
+			MpHarness_ReportViewpoint(live, replayed, min(liveCount, replayCount));
 			return;
 		}
 
@@ -2293,6 +2355,10 @@ int main(int argc, char **argv)
 				snprintf(s_mpRecordFile, sizeof(s_mpRecordFile), "%s", argv[i] + 12);
 			} else if (strncmp(argv[i], "--mp-play=", 10) == 0) {
 				snprintf(s_mpPlayFile, sizeof(s_mpPlayFile), "%s", argv[i] + 10);
+			} else if (strncmp(argv[i], "--mp-viewpoint", 14) == 0) {
+				s_mpReplay = true;
+				s_mpViewpoint = true;
+				if (argv[i][14] == '=') sscanf(argv[i] + 15, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
 			} else if (strncmp(argv[i], "--mp-replay", 11) == 0) {
 				s_mpReplay = true;
 				if (argv[i][11] == '=') sscanf(argv[i] + 12, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
@@ -2305,6 +2371,15 @@ int main(int argc, char **argv)
 				sscanf(argv[i] + 8, "%u,%u", &a, &b);
 				if (a >= 1 && a <= MATCH_SLOT_MAX) Skirmish_SetController((uint8)(a - 1), MATCH_CONTROLLER_HUMAN_LOCAL);
 				if (b >= 1 && b <= MATCH_SLOT_MAX) Skirmish_SetController((uint8)(b - 1), MATCH_CONTROLLER_HUMAN_LOCAL);
+			}
+			if (strncmp(argv[i], "--viewpoint=", 12) == 0) {
+				/* Whose screen this process is.  The one thing two clients of the
+				 * same match do not share, so the one thing worth varying between
+				 * two otherwise identical runs. */
+				unsigned v = 0;
+
+				sscanf(argv[i] + 12, "%u", &v);
+				if (v >= 1 && v <= MATCH_SLOT_MAX) Skirmish_SetViewpoint((uint8)(v - 1));
 			}
 			if (strncmp(argv[i], "--skirmish-self-test", 20) == 0) {
 				s_skirmishSelfTest = true;

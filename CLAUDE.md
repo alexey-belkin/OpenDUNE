@@ -199,6 +199,10 @@ diff <(grep '^mp-checksum' a.log) <(grep '^mp-checksum' b.log)
 `--human=N` marks skirmish slot N as played by a person rather than the AI
 (`--human=1,2` for both); under `--mp-replay` the scripted player takes that
 house over, which is what puts the unit orders under test.
+`--mp-viewpoint=ticks[,step[,seed]]` is the same two passes seen from the two
+different houses, and it names every chunk the simulation still decides from
+`g_playerHouseID`. It fails today, on purpose — that list is the work §1 of
+[mp.md](mp.md) describes.
 
 → [mp.md](mp.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data

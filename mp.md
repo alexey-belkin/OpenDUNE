@@ -1,6 +1,6 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stages 0 to 3 (plus 3a and 3b) are in the tree, the rest is design.** The determinism
+**Status: stages 0 to 3 (plus 3a, 3b and the 3c harness) are in the tree, the rest is design.** The determinism
 harness, the RNG split, the match descriptor and the command layer exist as code,
 and the sections at the bottom record what each cost and what each found. The
 rest of this file is the plan and, more importantly, the list of things in the
@@ -984,6 +984,57 @@ real match they do not: each client sees its own house. Every simulation site
 still keyed on the viewpoint rather than on the match descriptor would diverge
 there and cannot diverge here. Per-house fog (§2) is the known one; whether it is
 the only one is the next thing to measure.
+
+## Stage 3c — the viewpoint harness (built; it fails, and that is the point)
+
+Everything measured so far ran with the same `g_playerHouseID` on both sides. Two
+real clients never do: each sees the match from its own house. So the last cheap
+thing to build before a turn loop is a harness that varies **only** that.
+
+```bash
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-viewpoint=40000,500
+```
+
+It is the replay harness with one change: pass 1 records from slot 1's chair,
+pass 2 replays from slot 2's. The commands are identical, the match is identical,
+the seed is identical. Anything that differs is the simulation reading who is
+watching. `--viewpoint=N` sets it by hand for a single run.
+
+### What it says today
+
+```
+mp-viewpoint: 80 of 81 samples differ between the two viewpoints
+mp-viewpoint:   house    80 samples, first at t500
+mp-viewpoint:   str      80 samples, first at t500
+mp-viewpoint:   map      73 samples, first at t2000
+mp-viewpoint:   rng      77 samples, first at t2000
+mp-viewpoint: FAIL (the simulation still reads the viewpoint)
+```
+
+This is §1 of this document, finally with a number against it. The known
+offenders, from a sweep of the simulation files:
+
+| Site | What it decides |
+|---|---|
+| [structure.c:2132](src/structure.c:2132) `Structure_GetBuildable` | **what a house may build at all** — the prerequisite and upgrade rules are enforced for the viewpoint's house and waived for everyone else |
+| [house.c:189](src/house.c:189) the credit clamp | which house gets the no-silo grace, and `g_playerCreditsNoSilo` is one global for one player |
+| [house.c:415](src/house.c:415) `House_UpdateRadarState` | `flags.radarActivated`, which is saved state, updated only for the viewpoint |
+| [structure.c:650](src/structure.c:650) and four more in `Structure_Place` | fog, written into `g_map` |
+| [tile.c:143](src/tile.c:143) `Map_UnveilTile` | the same |
+| [script/unit.c:1028](src/script/unit.c:1028) opcode 0x13 | a **script** branch on whether the viewpoint has seen this unit |
+| [script/structure.c:140](src/script/structure.c:140), [321](src/script/structure.c:321), [532](src/script/structure.c:532), [665](src/script/structure.c:665) | script opcodes answering differently depending on the chair |
+| [map.c:983](src/map.c:983), [1338](src/map.c:1338), [1361](src/map.c:1361) | position validation and unit counting |
+| [structure.c:2169](src/structure.c:2169) `Structure_HouseUnderAttack` | whether the full-scale attack fires |
+
+The buildable mask is the one to notice: with the viewpoint on a playing house
+the scripted player went from 296 commands to 1, because the same house was
+suddenly held to prerequisites nobody else is held to. That is not a subtle
+desync — it is two clients playing different games.
+
+There is one honest caveat on the harness: the two passes differ in the viewpoint
+*and* in that only the first runs the scripted player. That is unavoidable — the
+scripted player itself reads the board — and it is why the recording is the
+control: the commands are identical by construction.
 
 ## Known hazards
 
