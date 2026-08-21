@@ -1111,6 +1111,79 @@ static void MpHarness_Step(void)
 }
 
 /**
+ * Somewhere legal to put a building, found the way a person finds one: by
+ * looking at the map.
+ *
+ * Deliberately not Skirmish_Plan_TakePosition(), which is how the AI answers the
+ * same question -- that one marks the plan entry, appends to the build history
+ * and lays the slabs, so calling it from the scripted player changed the map and
+ * the credits outside the command layer.  The replay caught it at t500 on the
+ * first run: the recorded commands were faithful and the two passes still
+ * disagreed, because the player had done something no command carried.
+ */
+static uint16 MpHarness_FindBuildSpot(uint8 houseID, uint16 type)
+{
+	uint16 x, y, width, height;
+	uint16 dx, dy;
+
+	if (!Skirmish_GetBaseRect(houseID, &x, &y, &width, &height)) return 0xFFFF;
+
+	for (dy = 0; dy < height; dy++) {
+		for (dx = 0; dx < width; dx++) {
+			uint16 packed = Tile_PackXY(x + dx, y + dy);
+
+			if (Structure_IsValidBuildLocation(packed, type, houseID) == 0) continue;
+
+			return packed;
+		}
+	}
+
+	return 0xFFFF;
+}
+
+/**
+ * What to build next, in the order a person would.
+ *
+ * The first version of this took whatever the round-robin landed on, built a
+ * House of Ix, a Heavy Vehicle factory and a Barracks, ran out of money at
+ * t10000 and stood still for the remaining 30000 ticks with its production on
+ * hold.  A test that quiet is barely a test, so the rule below is the minimum
+ * economy: refine before anything, keep the lights on, then whatever is left.
+ */
+static uint16 MpHarness_PickStructure(const House *h, uint32 buildable, uint16 round)
+{
+	static const uint16 s_opening[] = {
+		STRUCTURE_REFINERY, STRUCTURE_WINDTRAP, STRUCTURE_LIGHT_VEHICLE,
+		STRUCTURE_HEAVY_VEHICLE, STRUCTURE_BARRACKS, STRUCTURE_OUTPOST
+	};
+	uint16 i;
+
+	/* Power first once it is short: every structure of a browning-out house
+	 * caps at half its hitpoints. */
+	if (h->powerProduction < h->powerUsage + 20 && (buildable & (1u << STRUCTURE_WINDTRAP)) != 0) return STRUCTURE_WINDTRAP;
+
+	for (i = 0; i < lengthof(s_opening); i++) {
+		if ((h->structuresBuilt & (1u << s_opening[i])) != 0) continue;
+		if ((buildable & (1u << s_opening[i])) == 0) continue;
+
+		return s_opening[i];
+	}
+
+	/* The opening is done; from here it does not matter much what goes up, only
+	 * that something does. */
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		uint16 candidate = (uint16)((round + i) % STRUCTURE_MAX);
+
+		if (candidate == STRUCTURE_SLAB_1x1 || candidate == STRUCTURE_SLAB_2x2) continue;
+		if ((buildable & (1u << candidate)) == 0) continue;
+
+		return candidate;
+	}
+
+	return 0xFFFF;
+}
+
+/**
  * A player with no hands.
  *
  * It stands in for the person the command layer exists for: it looks at the
@@ -1119,37 +1192,91 @@ static void MpHarness_Step(void)
  * state, so the first pass is reproducible -- and the second pass never runs it
  * at all, replaying what it submitted instead.
  *
- * It orders production rather than units, and that limitation is worth stating
- * plainly.  A unit order is refused unless a human controls the unit
- * (UnitSelection_IsControllable), and flagging one of the skirmish AI's houses
- * as human does not work either: an AI house that runs out of money gets its
- * production put on hold, because clearing the hold is a player action, and it
- * never builds again.  A scripted player that really drives a house of its own
- * needs the human-versus-AI mode, which is a later stage.  Until then this
- * exercises the layer with commands that do reach an AI house, which is enough
- * to prove that recording and replaying one is faithful.
+ * It plays a house the AI does not touch (--human), which is what lets it use
+ * the unit orders at all: UnitSelection_IsControllable() refuses a unit no
+ * person controls, so against an AI house the whole unit half of the command
+ * layer was unreachable and the earlier version of this only ordered production.
+ *
+ * Playing a house by hand means doing the things the AI does for itself.  It
+ * has to place what the yard finishes, and it has to clear the hold the engine
+ * puts on production when the money runs out -- both are player actions, and a
+ * house nobody performs them for simply stops building.
  */
 static void MpHarness_ScriptedPlayer(uint32 tick)
 {
 	MpCommand cmd;
+	uint16 selection[8];
+	uint8 houseID;
+	House *h;
 	uint16 round;
+	uint16 count;
 	uint16 i;
+	uint16 j;
 
-	if (tick == 0 || (tick % 500) != 0) return;
+	if (tick == 0 || (tick % 100) != 0) return;
 
-	round = (uint16)(tick / 500);
+	houseID = s_skirmishHouse[0];
+	h = House_Get_ByIndex(houseID);
+	if (h == NULL) return;
 
-	/* Sweep the pool by index rather than by find order: it is the one walk that
-	 * does not depend on when anything was allocated. */
+	round = (uint16)(tick / 100);
+
+	/* Sweep the pools by index rather than by find order: it is the one walk
+	 * that does not depend on when anything was allocated. */
 	for (i = 0; i < STRUCTURE_INDEX_MAX_SOFT; i++) {
 		Structure *s = Structure_Get_ByIndex(i);
 		uint32 buildable;
 		uint16 type;
-		uint16 bit;
 
 		if (s == NULL || !s->o.flags.s.used || !s->o.flags.s.allocated) continue;
-		if (s->o.houseID != s_skirmishHouse[0]) continue;
+		if (s->o.houseID != houseID) continue;
 		if (!g_table_structureInfo[s->o.type].o.flags.factory) continue;
+
+		/* Money came back: let it carry on. */
+		if (s->o.flags.s.onHold && !s->o.flags.s.repairing && !s->o.flags.s.upgrading && h->credits != 0) {
+			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_HOLD, houseID);
+			cmd.object = s->o.index;
+			cmd.value  = 0;
+			MpCommand_Submit(&cmd);
+			continue;
+		}
+
+		if (s->o.type == STRUCTURE_CONSTRUCTION_YARD) {
+			/* Something finished and is waiting for a spot.  The base plan knows
+			 * where it was meant to go -- for a house somebody plays the plan is
+			 * advice rather than a queue, and this is the player taking it. */
+			if (s->o.linkedID != STRUCTURE_INVALID && s->countDown == 0) {
+				Structure *ns = Structure_Get_ByIndex(s->o.linkedID);
+				uint16 spot;
+
+				if (ns == NULL) continue;
+
+				spot = MpHarness_FindBuildSpot(houseID, ns->o.type);
+				if (spot == 0xFFFF) continue;
+
+				MpCommand_Init(&cmd, MP_CMD_STRUCTURE_PLACE, houseID);
+				cmd.object = s->o.index;
+				cmd.packed = spot;
+				MpCommand_Submit(&cmd);
+				continue;
+			}
+
+			if (s->countDown != 0) continue;
+
+			buildable = Structure_GetBuildable(s);
+			if (buildable == 0) continue;
+
+			type = MpHarness_PickStructure(h, buildable, round);
+			if (type == 0xFFFF) continue;
+
+			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, houseID);
+			cmd.object = s->o.index;
+			cmd.value  = type;
+			MpCommand_Submit(&cmd);
+			continue;
+		}
+
+		if (s->countDown != 0 || s->o.linkedID != 0xFF) continue;
 
 		buildable = Structure_GetBuildable(s);
 		if (buildable == 0) continue;
@@ -1157,21 +1284,66 @@ static void MpHarness_ScriptedPlayer(uint32 tick)
 		/* Pick one of the things this factory can make, by the round, so the
 		 * choice is a function of the tick and of what is on the map. */
 		type = 0xFFFF;
-		for (bit = 0; bit < 32; bit++) {
-			uint16 candidate = (uint16)((round + bit) % 32);
+		for (j = 0; j < UNIT_MAX; j++) {
+			uint16 candidate = (uint16)((round + j) % UNIT_MAX);
 
 			if ((buildable & (1u << candidate)) == 0) continue;
 			type = candidate;
 			break;
 		}
-		if (type == 0xFFFF) continue;
+		if (type == 0xFFFF) break;
 
-		MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
+		MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, houseID);
 		cmd.object = s->o.index;
 		cmd.value  = type;
 		MpCommand_Submit(&cmd);
 		break;
 	}
+
+	/* And now the half that could not be reached before: orders to units. */
+	count = 0;
+	for (i = 0; i < UNIT_INDEX_MAX && count < lengthof(selection); i++) {
+		Unit *u = Unit_Get_ByIndex(i);
+
+		if (u == NULL || !u->o.flags.s.used || !u->o.flags.s.allocated) continue;
+		if (u->o.houseID != houseID) continue;
+		if (u->o.flags.s.isNotOnMap) continue;
+		if (g_table_unitInfo[u->o.type].movementType == MOVEMENT_WINGER) continue;
+		/* Leave the harvesters to their own script: ordering them about is a
+		 * fair thing for a player to do, but it drowns the economy and the
+		 * match stops being one. */
+		if (u->o.type == UNIT_HARVESTER) continue;
+
+		selection[count++] = u->o.index;
+	}
+
+	if (count == 0) return;
+
+	/* Three orders in rotation, so the recording carries more than one shape of
+	 * command: go there, attack whatever is there, and stand ground. */
+	switch (round % 3) {
+		case 0:
+			MpCommand_Init(&cmd, MP_CMD_UNIT_DEFAULT_ORDER, houseID);
+			cmd.packed = Skirmish_GetBaseRally(Skirmish_GetOpponent(houseID));
+			break;
+
+		case 1:
+			MpCommand_Init(&cmd, MP_CMD_UNIT_ORDER, houseID);
+			cmd.action = ACTION_ATTACK;
+			cmd.packed = Skirmish_GetBaseOrigin(1);
+			break;
+
+		default:
+			MpCommand_Init(&cmd, MP_CMD_UNIT_ACTION, houseID);
+			cmd.action = ACTION_AREA_GUARD;
+			break;
+	}
+
+	if (cmd.type != MP_CMD_UNIT_ACTION && cmd.packed == 0xFFFF) return;
+
+	cmd.count = (uint8)count;
+	memcpy(cmd.unit, selection, count * sizeof(selection[0]));
+	MpCommand_Submit(&cmd);
 }
 
 /**
@@ -2124,6 +2296,15 @@ int main(int argc, char **argv)
 			} else if (strncmp(argv[i], "--mp-replay", 11) == 0) {
 				s_mpReplay = true;
 				if (argv[i][11] == '=') sscanf(argv[i] + 12, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
+			}
+			if (strncmp(argv[i], "--human=", 8) == 0) {
+				/* Which skirmish slots a person plays, counted the way a person
+				 * counts players: --human=1, or --human=1,2 for both. */
+				unsigned a = 0, b = 0;
+
+				sscanf(argv[i] + 8, "%u,%u", &a, &b);
+				if (a >= 1 && a <= MATCH_SLOT_MAX) Skirmish_SetController((uint8)(a - 1), MATCH_CONTROLLER_HUMAN_LOCAL);
+				if (b >= 1 && b <= MATCH_SLOT_MAX) Skirmish_SetController((uint8)(b - 1), MATCH_CONTROLLER_HUMAN_LOCAL);
 			}
 			if (strncmp(argv[i], "--skirmish-self-test", 20) == 0) {
 				s_skirmishSelfTest = true;

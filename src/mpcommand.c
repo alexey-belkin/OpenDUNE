@@ -8,9 +8,13 @@
 
 #include "mpcommand.h"
 
+#include "opendune.h"
+#include "pool/house.h"
 #include "pool/structure.h"
+#include "house.h"
 #include "structure.h"
 #include "timer.h"
+#include "tools.h"
 #include "unit.h"
 
 typedef struct MpRecord {
@@ -60,6 +64,67 @@ void MpCommand_Submit(const MpCommand *cmd)
 }
 
 /**
+ * Put the structure a Construction Yard has finished down on the map.
+ *
+ * The command names the yard rather than the building, because clearing
+ * linkedID is simulation state and has to happen on every client at the same
+ * tick.  The GUI used to clear it when the player pressed "Place it" and put it
+ * back if they cancelled -- local bookkeeping that would have desynced on the
+ * first placement, since only one client's player presses anything.
+ *
+ * The two side effects are the reason this is not simply Structure_Place():
+ * a Palace remembers where it went, and a Refinery comes with a harvester.  Both
+ * lived in the viewport handler, and the harvester was created for
+ * g_playerHouseID -- correct while only one house could ever place anything, and
+ * a gift to the wrong player the moment two can.
+ */
+static void MpCommand_ExecuteStructurePlace(Structure *yard, uint16 packed)
+{
+	uint8 houseID = yard->o.houseID;
+	Structure *s;
+	uint16 type;
+	House *h;
+
+	if (yard->o.linkedID == STRUCTURE_INVALID) return;
+
+	/* Only what the yard has finished.  Placing a building still under
+	 * construction leaves the yard counting down towards an object it no longer
+	 * has, and it never builds anything again -- which is what the first
+	 * human-versus-AI run did for 40000 ticks. */
+	if (yard->countDown != 0) return;
+
+	s = Structure_Get_ByIndex(yard->o.linkedID);
+	if (s == NULL) return;
+
+	type = s->o.type;
+
+	/* A refused spot leaves the building with the yard, so the player can try
+	 * somewhere else -- which is also what keeps a failed command harmless. */
+	if (!Structure_Place(s, packed)) return;
+
+	yard->o.linkedID = STRUCTURE_INVALID;
+
+	h = House_Get_ByIndex(houseID);
+	if (h == NULL) return;
+
+	if (type == STRUCTURE_PALACE) h->palacePosition = s->o.position;
+
+	if (type == STRUCTURE_REFINERY && g_validateStrictIfZero == 0) {
+		Unit *u;
+
+		g_validateStrictIfZero++;
+		u = Unit_CreateWrapper(houseID, UNIT_HARVESTER, Tools_Index_Encode(s->o.index, IT_STRUCTURE));
+		g_validateStrictIfZero--;
+
+		if (u == NULL) {
+			h->harvestersIncoming++;
+		} else {
+			u->originEncoded = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
+		}
+	}
+}
+
+/**
  * Apply a command to the simulation.
  *
  * Nothing here may read the local selection, the camera or anything else the
@@ -97,6 +162,29 @@ void MpCommand_Execute(const MpCommand *cmd)
 			s = Structure_Get_ByIndex(cmd->object);
 			if (s == NULL || !s->o.flags.s.used) break;
 			Structure_BuildObject(s, cmd->value);
+			break;
+
+		case MP_CMD_STRUCTURE_PLACE:
+			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
+			s = Structure_Get_ByIndex(cmd->object);
+			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
+			MpCommand_ExecuteStructurePlace(s, cmd->packed);
+			break;
+
+		case MP_CMD_STRUCTURE_HOLD:
+			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
+			s = Structure_Get_ByIndex(cmd->object);
+			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
+
+			if (cmd->value != 0) {
+				s->o.flags.s.onHold = true;
+			} else {
+				s->o.flags.s.repairing = false;
+				s->o.flags.s.onHold    = false;
+				s->o.flags.s.upgrading = false;
+			}
 			break;
 
 		default:

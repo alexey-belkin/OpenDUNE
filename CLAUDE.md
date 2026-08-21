@@ -196,6 +196,10 @@ other reads it and prints its own, and `diff` decides:
 diff <(grep '^mp-checksum' a.log) <(grep '^mp-checksum' b.log)
 ```
 
+`--human=N` marks skirmish slot N as played by a person rather than the AI
+(`--human=1,2` for both); under `--mp-replay` the scripted player takes that
+house over, which is what puts the unit orders under test.
+
 → [mp.md](mp.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than

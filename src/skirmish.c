@@ -331,6 +331,18 @@ static const struct {
 	{ MOVEMENT_TRACKED, 5, 8 }
 };
 
+/* Who drives each slot, remembered between matches so the harness can restart
+ * the same one.  Both sides are the AI unless somebody says otherwise -- which
+ * is what --skirmish has always been. */
+static uint8 s_controller[MATCH_SLOT_MAX] = { MATCH_CONTROLLER_AI, MATCH_CONTROLLER_AI };
+
+void Skirmish_SetController(uint8 slot, uint8 controller)
+{
+	if (slot >= MATCH_SLOT_MAX) return;
+
+	s_controller[slot] = controller;
+}
+
 bool Skirmish_IsActive(void)
 {
 	return s_active;
@@ -1959,6 +1971,8 @@ void Skirmish_Economy_Tick(House *h)
 	b = Skirmish_GetBase((uint8)h->index);
 	if (b == NULL) return;
 
+	if (Match_IsHumanControlled((uint8)h->index)) return;
+
 	Skirmish_Economy_SampleQueue(b, h);
 
 	/* The war layer.  Deliberately after the economy sample: what a doctrine may
@@ -2073,6 +2087,12 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
 
 	Doctrine_HouseStart(houseID);
 
+	/* A house somebody plays gets no engine teams and no doctrine: those are the
+	 * AI, and two things steering one army is how a player's orders get quietly
+	 * overwritten a tick later.  It keeps its base plan, which is now advice for
+	 * whoever is playing rather than a queue the AI works through. */
+	if (Match_IsHumanControlled(houseID)) return;
+
 	/* Teams are what makes an AI attack at all: on their own, factory units
 	 * roll out and guard.  One team per movement type, because a team only ever
 	 * recruits units that move like it does.  Economy mode has no enemy.
@@ -2152,8 +2172,8 @@ static bool Skirmish_StartInternal(uint8 houseID1, uint8 houseID2, uint32 seed, 
 	 * the screen belongs to a spectator who owns nothing; a networked match is
 	 * the same descriptor with both controllers human.  See mp.md. */
 	Match_Reset();
-	Match_SetSlot(0, houseID1, MATCH_CONTROLLER_AI);
-	if (houseID2 != HOUSE_INVALID) Match_SetSlot(1, houseID2, MATCH_CONTROLLER_AI);
+	Match_SetSlot(0, houseID1, (MatchController)s_controller[0]);
+	if (houseID2 != HOUSE_INVALID) Match_SetSlot(1, houseID2, (MatchController)s_controller[1]);
 	Match_Begin();
 
 	Sprites_LoadTiles();

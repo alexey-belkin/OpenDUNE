@@ -375,8 +375,17 @@ void GameLoop_Structure(void)
 
 							Structure_SetState(s, STRUCTURE_STATE_READY);
 
-							if (s->o.houseID == g_playerHouseID) {
-								if (s->o.type != STRUCTURE_BARRACKS && s->o.type != STRUCTURE_WOR_TROOPER) {
+							/* Who gets told and who gets served are two different
+							 * questions, and this used to be one branch on
+							 * g_playerHouseID answering both.  The message is for
+							 * whoever is watching; putting the building down for
+							 * a house that has nobody to do it is the AI, and a
+							 * second person's house is neither -- it was silently
+							 * getting the AI's free placement, which is how a
+							 * house nobody was playing built itself a base. */
+							if (Match_IsHumanControlled(s->o.houseID)) {
+								if (s->o.houseID == g_playerHouseID &&
+								    s->o.type != STRUCTURE_BARRACKS && s->o.type != STRUCTURE_WOR_TROOPER) {
 									uint16 stringID = STR_IS_COMPLETED_AND_AWAITING_ORDERS;
 									if (s->o.type == STRUCTURE_HIGH_TECH) stringID = STR_IS_COMPLETE;
 									if (s->o.type == STRUCTURE_CONSTRUCTION_YARD) stringID = STR_IS_COMPLETED_AND_READY_TO_PLACE;

@@ -23,7 +23,9 @@ typedef enum MpCommandType {
 	MP_CMD_UNIT_ACTION,                                     /*!< Untargeted order, applied at once. */
 	MP_CMD_UNIT_HUNT,                                       /*!< Manual hunt. */
 	MP_CMD_UNIT_AIR_TRANSIT,                                /*!< Ask for a lift to a tile. */
-	MP_CMD_STRUCTURE_BUILD                                  /*!< Start, change or cancel what a factory is making. */
+	MP_CMD_STRUCTURE_BUILD,                                 /*!< Start, change or cancel what a factory is making. */
+	MP_CMD_STRUCTURE_PLACE,                                 /*!< Put a finished structure on the map. */
+	MP_CMD_STRUCTURE_HOLD                                   /*!< Hold or resume production; value 1 holds, 0 resumes. */
 } MpCommandType;
 
 /**
@@ -37,7 +39,7 @@ typedef struct MpCommand {
 	uint8  count;                                           /*!< Recipients in unit[]. */
 	uint16 packed;                                          /*!< Target tile, where the type uses one. */
 	uint16 object;                                          /*!< Structure index, where the type uses one. */
-	uint16 value;                                           /*!< Payload: the object type a factory should build. */
+	uint16 value;                                           /*!< Payload: the object type a factory should build, or a flag. */
 	uint16 unit[MP_COMMAND_UNITS_MAX];                      /*!< Recipient unit indices. */
 } MpCommand;
 

@@ -116,17 +116,26 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 				g_structureActiveType = s->objectType;
 				g_selectionState = Structure_IsValidBuildLocation(g_selectionRectanglePosition, g_structureActiveType, g_playerHouseID);
 				g_structureActivePosition = g_selectionPosition;
-				s->o.linkedID = STRUCTURE_INVALID;
+
+				/* linkedID stays with the yard until the placement command runs:
+				 * entering placement mode is one player looking at their own
+				 * screen, and it may not move state the other client cannot see.
+				 * A yard destroyed mid-placement now takes the unplaced building
+				 * with it (Structure_Destroy), which is why Cancel below no
+				 * longer has to put anything back. */
 
 				GUI_ChangeSelectionType(SELECTIONTYPE_PLACE);
 			}
 			break;
 
-		case STR_ON_HOLD:
-			s->o.flags.s.repairing = false;
-			s->o.flags.s.onHold    = false;
-			s->o.flags.s.upgrading = false;
-			break;
+		case STR_ON_HOLD: {
+			MpCommand cmd;
+
+			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_HOLD, s->o.houseID);
+			cmd.object = s->o.index;
+			cmd.value  = 0;
+			MpCommand_Submit(&cmd);
+		} break;
 
 		case STR_BUILD_IT: {
 			MpCommand cmd;
@@ -143,9 +152,14 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 			Structure_ActivateSpecial(s);
 			break;
 
-		case STR_D_DONE:
-			s->o.flags.s.onHold = true;
-			break;
+		case STR_D_DONE: {
+			MpCommand cmd;
+
+			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_HOLD, s->o.houseID);
+			cmd.object = s->o.index;
+			cmd.value  = 1;
+			MpCommand_Submit(&cmd);
+		} break;
 	}
 	return false;
 }
@@ -411,17 +425,7 @@ bool GUI_Widget_Cancel_Click(Widget *w)
 	VARIABLE_NOT_USED(w);
 
 	if (g_structureActiveType != 0xFFFF) {
-		Structure *s  = Structure_Get_ByPackedTile(g_structureActivePosition);
-		Structure *s2 = g_structureActive;
-
-		assert(s2 != NULL);
-
-		if (s != NULL) {
-			s->o.linkedID = s2->o.index & 0xFF;
-		} else {
-			Structure_Free(s2);
-		}
-
+		/* Purely local now: nothing was taken from the yard to give back. */
 		g_structureActive = NULL;
 		g_structureActiveType = 0xFFFF;
 

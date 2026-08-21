@@ -1,6 +1,6 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stages 0 to 3 (plus 3a) are in the tree, the rest is design.** The determinism
+**Status: stages 0 to 3 (plus 3a and 3b) are in the tree, the rest is design.** The determinism
 harness, the RNG split, the match descriptor and the command layer exist as code,
 and the sections at the bottom record what each cost and what each found. The
 rest of this file is the plan and, more importantly, the list of things in the
@@ -896,6 +896,94 @@ the AI does not, which is the next piece of work.
 
 Nothing here touches the simulation: `--mp-checksum` is unchanged between runs
 and the in-process `--mp-replay` still passes.
+
+## Stage 3b — a house the AI does not drive (done)
+
+Stage 3 recorded its own gap plainly: every command in the recording was a build
+order, because `UnitSelection_IsControllable()` refuses a unit no person
+controls, and both skirmish houses were the AI's. The unit half of the command
+layer — the half a player spends the whole match in — had never been executed by
+anything.
+
+`--human=N` marks skirmish slot N as played by a person (`--human=1,2` for both).
+It is a controller on the match descriptor, not a new mode: everything that
+decides whether a house is the AI's already asks `Match_IsHumanControlled()`.
+
+### What had to stop happening to that house
+
+* **Engine teams and the doctrine.** `Skirmish_StartInternal()` no longer creates
+  either for a human house. Two things steering one army is how a player's orders
+  get quietly overwritten a tick later.
+* **The base plan.** It stays, but as advice: nothing works through it any more.
+* **Free placement.** This one was hiding in plain sight
+  ([structure.c:378](src/structure.c:378)). When a Construction Yard finished,
+  one branch on `g_playerHouseID` answered two different questions — *who gets
+  told* and *who puts the building down*. A second person's house is neither the
+  campaign player nor the AI, so it fell into the AI's arm and got its buildings
+  placed for free. The recording said so before the code did: eleven build
+  commands, zero placements, and a base standing on the map anyway.
+
+### What had to start being a command
+
+| Command | Why it could not stay in the GUI |
+|---|---|
+| `MP_CMD_STRUCTURE_PLACE` | `Structure_Place()`, plus the Palace position and the Refinery's free harvester — which was created for `g_playerHouseID`, i.e. for the wrong player the moment two can build |
+| `MP_CMD_STRUCTURE_HOLD` | hold and resume; a house nobody resumes stops building the first time it runs out of money |
+
+The placement command names the **yard**, not the building. Clearing
+`linkedID` is simulation state, and the GUI used to do it when the player pressed
+"Place it" and put it back if they cancelled — local bookkeeping that would have
+desynced on the first placement, because only one client's player presses
+anything. Cancel is now purely local, and a yard destroyed mid-placement takes
+the unplaced building with it, which `Structure_Destroy()` already did.
+
+Whether the spot is legal is still decided locally, from `g_selectionState`, and
+that is not a shortcut: in lockstep the click cannot wait for the placement, so
+the feedback has to come from a local test while the command runs two turns
+later on both machines.
+
+### The scripted player, second attempt
+
+It now plays a house of its own, and three separate mistakes had to be walked out
+of it — each one caught by the replay rather than by reading the code:
+
+1. **It used the AI's answer to "where does this go".**
+   `Skirmish_Plan_TakePosition()` marks the plan entry, appends to the build
+   history and **lays the slabs** — map tiles and credits, changed outside the
+   command layer. The recording was faithful and the two passes still disagreed
+   at t500. It now finds a spot the way a person does, by scanning the base
+   rectangle for a legal one, which reads state and changes none.
+2. **It placed buildings that were not finished.** Placing while the yard is
+   still counting down leaves the yard counting towards an object it no longer
+   has, and it never builds again: forty thousand ticks, two commands, PASS. The
+   command now refuses an unfinished building too, not just the caller.
+3. **It built whatever the round-robin landed on** — a House of Ix, a Heavy
+   Vehicle factory, a Barracks — was broke by t10000 and stood still for the rest
+   of the match. It now opens with a Refinery and keeps the lights on.
+
+### The result
+
+296 commands over 40000 ticks: 11 builds, 5 placements, 75 resumes and **205
+unit orders** — the half that had never run. 81 samples, identical in-process and
+across two processes.
+
+| Tampering | Result |
+|---|---|
+| Drop one unit order (t20000) | diverges from **t20000**, 41 of 81 samples |
+| Drop one placement (t1600) | diverges from **t2000**, 77 of 81 samples |
+
+AI against AI is untouched: the sixteen doctrine metrics are identical to the
+previous run, which is what the spectator house explains — a skirmish sets
+`g_playerHouseID = HOUSE_MERCENARY`, so no AI house was ever taking the branch
+that changed.
+
+### What it does not cover
+
+The viewpoint. Both processes above run with the same `g_playerHouseID`, and in a
+real match they do not: each client sees its own house. Every simulation site
+still keyed on the viewpoint rather than on the match descriptor would diverge
+there and cannot diverge here. Per-house fog (§2) is the known one; whether it is
+the only one is the next thing to measure.
 
 ## Known hazards
 

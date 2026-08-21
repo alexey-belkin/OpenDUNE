@@ -507,32 +507,28 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		si = &g_table_structureInfo[g_structureActiveType];
 		h = g_playerHouse;
 
-		if (Structure_Place(s, g_selectionPosition)) {
+		/* Whether the spot is legal is decided here and the answer is used for
+		 * the feedback, because in a networked match the click cannot wait for
+		 * the placement: the command is stamped for a later turn and both
+		 * clients run it then.  g_selectionState is the same test Structure_Place
+		 * makes, kept up to date by the cursor. */
+		if (g_selectionState != 0) {
+			MpCommand cmd;
+
+			/* g_structureActivePosition is the yard that built it. */
+			s = Structure_Get_ByPackedTile(g_structureActivePosition);
+
+			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_PLACE, g_structureActive->o.houseID);
+			cmd.object = (s != NULL) ? s->o.index : 0xFFFF;
+			cmd.packed = g_selectionPosition;
+			MpCommand_Submit(&cmd);
+
 			Voice_Play(20);
-
-			if (s->o.type == STRUCTURE_PALACE) House_Get_ByIndex(s->o.houseID)->palacePosition = s->o.position;
-
-			if (g_structureActiveType == STRUCTURE_REFINERY && g_validateStrictIfZero == 0) {
-				Unit *u;
-
-				g_validateStrictIfZero++;
-				u = Unit_CreateWrapper(g_playerHouseID, UNIT_HARVESTER, Tools_Index_Encode(s->o.index, IT_STRUCTURE));
-				g_validateStrictIfZero--;
-
-				if (u == NULL) {
-					h->harvestersIncoming++;
-				} else {
-					u->originEncoded = Tools_Index_Encode(s->o.index, IT_STRUCTURE);
-				}
-			}
 
 			GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
 
-			s = Structure_Get_ByPackedTile(g_structureActivePosition);
 			if (s != NULL) {
 				if ((Structure_GetBuildable(s) & (1 << s->objectType)) == 0) {
-					MpCommand cmd;
-
 					MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
 					cmd.object = s->o.index;
 					cmd.value  = 0xFFFE;
