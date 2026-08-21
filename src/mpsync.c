@@ -184,6 +184,59 @@ static bool MpSync_InfoSave(FILE *fp)
 	return ret;
 }
 
+/**
+ * Write every chunk to one file, for when a checksum has said *that* two
+ * clients disagree and the question is *what* about.
+ *
+ * Deliberately the same writers the checksum uses, so the bytes compared here
+ * are the bytes that were hashed there.  Two dumps taken at the same tick on
+ * two clients and run through cmp name the chunk, the offset inside it and --
+ * divided by the record size -- the object.
+ */
+bool MpSync_Dump(const char *path)
+{
+	static const char *names[] = { "info", "house", "unit", "structure", "map", "team", "unitnew" };
+	static bool (* const savers[])(FILE *fp) = {
+		&Info_Save, &House_Save, &Unit_Save, &Structure_Save, &Map_Save, &Team_Save, &UnitNew_Save
+	};
+	uint8 buffer[4096];
+	FILE *out;
+	uint16 i;
+
+	out = fopen(path, "wb");
+	if (out == NULL) return false;
+
+	for (i = 0; i < 7; i++) {
+		FILE *fp = tmpfile();
+		size_t got;
+		char header[64];
+		long size;
+
+		if (fp == NULL) continue;
+
+		if (!savers[i](fp)) {
+			fclose(fp);
+			continue;
+		}
+
+		fseek(fp, 0, SEEK_END);
+		size = ftell(fp);
+		rewind(fp);
+
+		snprintf(header, sizeof(header), "\n== %s %ld\n", names[i], size);
+		fwrite(header, 1, strlen(header), out);
+
+		while ((got = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
+			fwrite(buffer, 1, got, out);
+		}
+
+		fclose(fp);
+	}
+
+	fclose(out);
+	return true;
+}
+
 /** Pack a value little endian, so the checksum does not depend on the host. */
 static void MpSync_PutU32(uint8 *dst, uint32 value)
 {

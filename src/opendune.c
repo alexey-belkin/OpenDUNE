@@ -184,6 +184,7 @@ static uint32 s_mpLiveStalledMs = 0;
 static uint32 s_mpLiveNextSample = 0;
 static uint32 s_mpLiveSampleStep = 300;
 static bool s_mpLiveDesyncSeen = false;
+static uint32 s_mpLiveDumpTick = 0;
 
 static void PrintToConsole(const char *str);
 
@@ -1221,6 +1222,14 @@ static void MpGame_Step(void)
 
 		s_mpLiveSteps++;
 
+		if (s_mpLiveDumpTick != 0 && s_mpLiveSteps == s_mpLiveDumpTick) {
+			char path[64];
+
+			snprintf(path, sizeof(path), "mpdump-s%u-t%u.bin",
+			         (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpLiveSteps);
+			MpSync_Dump(path);
+		}
+
 		if (s_mpLiveSteps >= s_mpLiveNextSample) {
 			MpSyncChecksum sample;
 
@@ -1233,8 +1242,11 @@ static void MpGame_Step(void)
 				PrintToConsole(line);
 			}
 
-			snprintf(line, sizeof(line), "mp-live: tick %u turn %u, %u ms stalled so far",
-			         (unsigned)s_mpLiveSteps, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpLiveStalledMs);
+			/* The two generators separately, because which one drifted says
+			 * where to look: the LCG is the one the presentation used to share. */
+			snprintf(line, sizeof(line), "mp-live: tick %u turn %u, %u ms stalled so far, rng %08x lcg %08x",
+			         (unsigned)s_mpLiveSteps, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpLiveStalledMs,
+			         (unsigned)Tools_Random_GetSeed(), (unsigned)Tools_RandomLCG_GetSeed());
 			PrintToConsole(line);
 
 			s_mpLiveNextSample += s_mpLiveSampleStep;
@@ -1296,13 +1308,32 @@ static bool MpGame_Begin(void)
 		msleep(5);
 	}
 
+	/* Before the match, not after: the viewpoint has to name a house, and the
+	 * houses are allocated during the start.  Set afterwards it does nothing at
+	 * all -- both clients then watch through slot 1's eyes, which looks like a
+	 * working match right up until you notice both windows are showing the same
+	 * corner of the map and neither can give an order to the house it thinks it
+	 * is playing. */
+	Skirmish_SetViewpoint(s_mpTurnSlot);
+
 	if (!MpHarness_StartMatch(s_mpLiveSeed)) {
 		PrintToConsole("mp-live: FAIL (could not start a skirmish)");
 		MpNet_Disconnect();
 		return false;
 	}
 
-	Skirmish_SetViewpoint(s_mpTurnSlot);
+	/* Open on our own base rather than on slot 1's.  The camera is presentation,
+	 * so this is free -- and without it the first thing a player sees is the
+	 * other side's construction yard. */
+	{
+		uint16 origin = Skirmish_GetBaseOrigin(s_mpTurnSlot);
+
+		if (origin != 0xFFFF) {
+			Map_SetViewportPosition(origin);
+			g_minimapPosition = g_viewportPosition;
+			s_skirmishCameraBase = s_mpTurnSlot;
+		}
+	}
 
 	s_mpLiveStart      = Timer_GetTime();
 	s_mpLiveSteps      = 0;
@@ -2804,6 +2835,13 @@ int main(int argc, char **argv)
 
 				sscanf(argv[i] + 10, "%u", &seed);
 				if (seed != 0) s_mpLiveSeed = seed;
+			} else if (strncmp(argv[i], "--mp-dump=", 10) == 0) {
+				/* Write every chunk to a file at one tick, so two clients that
+				 * disagree can be compared byte for byte. */
+				unsigned tick = 0;
+
+				sscanf(argv[i] + 10, "%u", &tick);
+				s_mpLiveDumpTick = tick;
 			} else if (strncmp(argv[i], "--mp-sample=", 12) == 0) {
 				/* How often a live match prints a checksum.  Closer together
 				 * when hunting a desync, because the log has to bracket it. */

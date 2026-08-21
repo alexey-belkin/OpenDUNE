@@ -7,6 +7,7 @@
 #include "os/sleep.h"
 
 #include "house.h"
+#include "mpturn.h"
 #include "match.h"
 
 #include "audio/driver.h"
@@ -438,8 +439,11 @@ bool House_UpdateRadarState(House *h)
 	if (!Match_IsActive() && !onScreen) return false;
 
 	/* The skirmish spectator owns no Outpost and produces no power, yet the
-	 * whole point of watching is seeing the minimap. */
-	if (Skirmish_IsActive() && onScreen && !Match_IsHumanControlled(h->index)) {
+	 * whole point of watching is seeing the minimap.  Not in a match: there the
+	 * convenience would set a *saved* flag on whichever house this client is
+	 * watching, so the two clients would disagree about the world within a
+	 * second of starting.  In a match nobody is a spectator anyway. */
+	if (!Match_IsActive() && Skirmish_IsActive() && onScreen && !Match_IsHumanControlled(h->index)) {
 		h->flags.radarActivated = true;
 		return true;
 	}
@@ -460,8 +464,13 @@ bool House_UpdateRadarState(House *h)
 
 	/* Somebody else's radar: record it and go.  The two seconds of STATIC.WSA
 	 * are for the person watching, and in a match they are for one of the two
-	 * -- so it cannot be what decides the state.  See mp.md, section 6. */
-	if (!onScreen) {
+	 * -- so it cannot be what decides the state.  See mp.md, section 6.
+	 *
+	 * A networked match takes the same exit for its own radar as well: the
+	 * animation is a blocking loop of WSA frames with a Timer_Sleep(3) in it,
+	 * and while it runs this client sends no packets, so the other one stalls
+	 * for two seconds staring at a frozen battle. */
+	if (!onScreen || MpTurn_IsActive()) {
 		h->flags.radarActivated = activate;
 		return activate;
 	}

@@ -21,6 +21,7 @@ typedef struct MpSyncChecksum {
 
 extern uint32 MpSync_Crc32(uint32 crc, const void *buf, uint32 length);
 extern bool MpSync_Take(MpSyncChecksum *checksum);
+extern bool MpSync_Dump(const char *path);
 extern void MpSync_Format(char *dst, uint16 size, uint32 tick, const MpSyncChecksum *checksum);
 
 #endif /* MPSYNC_H */

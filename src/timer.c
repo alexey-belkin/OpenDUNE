@@ -31,6 +31,7 @@
 #include "os/error.h"
 
 #include "timer.h"
+#include "mpturn.h"
 
 
 
@@ -425,6 +426,15 @@ bool Timer_SetTimer(TimerType timer, bool set)
 
 	t = (1 << (timer - 1));
 	ret = (s_timersActive & t) != 0;
+
+	/* A networked match owns the simulation clock, and nothing is allowed to
+	 * hand it back to the wall.  Half a dozen places switch this ticker on when
+	 * they finish with a screen -- GUI_ChangeSelectionType() on the way into the
+	 * game, the factory window, the placement mode -- and every one of them would
+	 * put g_timerGame back on each machine's own 60 Hz, which is two different
+	 * clocks for one world.  It costs exactly one tick of drift to desync, and
+	 * that is what it cost. */
+	if (timer == TIMER_GAME && set && MpTurn_IsActive()) return ret;
 
 	if (set) {
 		s_timersActive |= t;
