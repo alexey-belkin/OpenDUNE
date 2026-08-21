@@ -46,6 +46,13 @@ void Timer_SetMatchPump(void (*pump)(void))
 
 volatile uint32 g_timerGUI = 0;                                      /*!< Tick counter. Increases with 1 every tick when Timer 1 is enabled. Used for GUI. */
 volatile uint32 g_timerGame = 0;                                     /*!< Tick counter. Increases with 1 every tick when Timer 2 is enabled. Used for game timing (units, ..). */
+/*!< Tick counter for explosions and animations.  They used to be scheduled
+ * against g_timerGUI, which is the wall clock: the crater an explosion leaves,
+ * the ground tile an animation sets and the randoms both of them draw are
+ * simulation, so on two machines running at two slightly different frame rates
+ * they happened at two different game ticks.  Outside a match it advances with
+ * g_timerGUI and nothing changes; in a match the simulation stepper owns it. */
+volatile uint32 g_timerAnim = 0;
 volatile uint32 g_timerInput = 0;                                    /*!< Tick counter. Increases with 1 every tick. Used for input timing. */
 volatile uint32 g_timerSleep = 0;                                    /*!< Tick counter. Increases with 1 every tick. Used for sleeping. */
 volatile uint32 g_timerTimeout = 0;                                  /*!< Tick counter. Decreases with 1 every tick when non-zero. Used to timeout. */
@@ -390,7 +397,11 @@ void Timer_Remove(void (*callback)(void))
  */
 void Timer_Tick(void)
 {
-	if ((s_timersActive & TIMER_GUI)  != 0) g_timerGUI++;
+	if ((s_timersActive & TIMER_GUI)  != 0) {
+		g_timerGUI++;
+		/* In a match this one comes from the stepper instead. */
+		if (!MpTurn_IsActive()) g_timerAnim++;
+	}
 	if ((s_timersActive & TIMER_GAME) != 0) g_timerGame++;
 	g_timerInput++;
 	g_timerSleep++;
@@ -434,11 +445,13 @@ void Timer_ResetGame(void)
 void Timer_StepGUI(void)
 {
 	g_timerGUI++;
+	g_timerAnim++;
 }
 
 void Timer_ResetGUI(void)
 {
 	g_timerGUI = 0;
+	g_timerAnim = 0;
 }
 
 /**

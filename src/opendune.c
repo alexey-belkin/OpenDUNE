@@ -187,8 +187,9 @@ static uint32 s_mpLiveSampleStep = 300;
  * match start their bytecode in different places on the two clients, and a
  * match that breaks at tick 200 is worse than one with nothing to click. */
 static uint16 s_mpLiveUnits = 0;
+static uint8 s_mpViewpointOverride = 0;
 static bool s_mpLiveDesyncSeen = false;
-static uint32 s_mpLiveDumpTick = 0;
+static uint32 s_mpLiveDumpTick = 0xFFFFFFFF;   /*!< Zero means the starting position. */
 
 static void PrintToConsole(const char *str);
 
@@ -1238,7 +1239,7 @@ static void MpGame_Step(void)
 
 		s_mpLiveSteps++;
 
-		if (s_mpLiveDumpTick != 0 && s_mpLiveSteps == s_mpLiveDumpTick) {
+		if (s_mpLiveSteps == s_mpLiveDumpTick) {
 			char path[64];
 
 			snprintf(path, sizeof(path), "mpdump-s%u-t%u.bin",
@@ -1431,7 +1432,11 @@ static bool MpGame_Begin(void)
 	 * working match right up until you notice both windows are showing the same
 	 * corner of the map and neither can give an order to the house it thinks it
 	 * is playing. */
-	Skirmish_SetViewpoint(s_mpTurnSlot);
+	/* --viewpoint=N overrides the slot, which is only ever useful for one thing:
+	 * running two clients of one match with the *same* chair.  If a divergence
+	 * survives that, it is not a viewpoint leak and the hunt should look
+	 * elsewhere. */
+	Skirmish_SetViewpoint((s_mpViewpointOverride != 0) ? (uint8)(s_mpViewpointOverride - 1) : s_mpTurnSlot);
 
 	if (!MpHarness_StartMatch(s_mpLiveSeed)) {
 		PrintToConsole("mp-live: FAIL (could not start a skirmish)");
@@ -1465,6 +1470,16 @@ static bool MpGame_Begin(void)
 	 * holding script timers two ticks apart, which is a desync before either
 	 * player has touched anything. */
 	MpGame_PlaceStartingUnits(s_mpLiveUnits);
+
+	/* Tick zero is the starting position itself, before anything has simulated:
+	 * the only place to tell "they were created differently" from "they drifted
+	 * apart". */
+	if (s_mpLiveDumpTick == 0) {
+		char path[64];
+
+		snprintf(path, sizeof(path), "mpdump-s%u-t0.bin", (unsigned)(s_mpTurnSlot + 1));
+		MpSync_Dump(path);
+	}
 
 	MpTurn_Begin(s_mpTurnSlot, MpTransport_Net(), s_mpTurnLength, s_mpTurnDelay);
 
@@ -3083,6 +3098,12 @@ int main(int argc, char **argv)
 				sscanf(argv[i] + 8, "%u,%u", &a, &b);
 				if (a >= 1 && a <= MATCH_SLOT_MAX) Skirmish_SetController((uint8)(a - 1), MATCH_CONTROLLER_HUMAN_LOCAL);
 				if (b >= 1 && b <= MATCH_SLOT_MAX) Skirmish_SetController((uint8)(b - 1), MATCH_CONTROLLER_HUMAN_LOCAL);
+			}
+			if (strncmp(argv[i], "--viewpoint=", 12) == 0) {
+				unsigned over = 0;
+
+				sscanf(argv[i] + 12, "%u", &over);
+				if (over >= 1 && over <= MATCH_SLOT_MAX) s_mpViewpointOverride = (uint8)over;
 			}
 			if (strncmp(argv[i], "--viewpoint=", 12) == 0) {
 				/* Whose screen this process is.  The one thing two clients of the

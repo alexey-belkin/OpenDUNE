@@ -3021,8 +3021,19 @@ void GameLoop_Unit(void)
 		if (tickScript) {
 			if (u->o.script.delay == 0) {
 				if (Script_IsLoaded(&u->o.script)) {
+					/* The original throttles a unit's thinking to three opcodes
+					 * a tick while it is off the player's screen -- a rendering
+					 * optimisation that reaches straight into the simulation.
+					 * With two players there is no single screen: each client
+					 * gives its own units the full budget and the opponent's
+					 * three, so the same unit runs its script at two different
+					 * speeds on the two machines.  Harvesters show it first,
+					 * because they spend the most time on one screen and off
+					 * the other.  Under the lockstep loop nobody is throttled;
+					 * the single-player game and the AI bench keep the original
+					 * behaviour, because there the one screen is the only one. */
 					int opcodesLeft = SCRIPT_UNIT_OPCODES_PER_TICK + 2;
-					if (!ui->o.flags.scriptNoSlowdown && !Map_IsPositionInViewport(u->o.position, NULL, NULL)) {
+					if (!MpTurn_IsActive() && !ui->o.flags.scriptNoSlowdown && !Map_IsPositionInViewport(u->o.position, NULL, NULL)) {
 						opcodesLeft = 3;
 					}
 

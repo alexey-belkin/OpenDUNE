@@ -91,7 +91,7 @@ static void Animation_Func_Pause(Animation *animation, int16 parameter)
 {
 	assert(parameter >= 0);
 
-	animation->tickNext = g_timerGUI + parameter + (Tools_Random_256() % 4);
+	animation->tickNext = g_timerAnim + parameter + (Tools_Random_256() % 4);
 }
 
 /**
@@ -233,7 +233,7 @@ void Animation_Start(const AnimationCommandStruct *commands, tile32 tile, uint16
 	for (i = 0; i < ANIMATION_MAX; i++, animation++) {
 		if (animation->commands != NULL) continue;
 
-		animation->tickNext   = g_timerGUI;
+		animation->tickNext   = g_timerAnim;
 		animation->tileLayout = tileLayout;
 		animation->houseID    = houseID;
 		animation->current    = 0;
@@ -278,13 +278,13 @@ void Animation_Tick(void)
 	Animation *animation = g_animations;
 	int i;
 
-	if (s_animationTimer > g_timerGUI) return;
+	if (s_animationTimer > g_timerAnim) return;
 	s_animationTimer += 10000;
 
 	for (i = 0; i < ANIMATION_MAX; i++, animation++) {
 		if (animation->commands == NULL) continue;
 
-		if (animation->tickNext <= g_timerGUI) {
+		if (animation->tickNext <= g_timerAnim) {
 			const AnimationCommandStruct *commands = animation->commands + animation->current;
 			int16 parameter = commands->parameter;
 			assert((parameter & 0x0800) == 0 || (parameter & 0xF000) != 0); /* Validate if the compiler sign-extends correctly */

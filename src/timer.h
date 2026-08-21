@@ -10,6 +10,7 @@ typedef enum TimerType {
 
 extern volatile uint32 g_timerGUI;
 extern volatile uint32 g_timerGame;
+extern volatile uint32 g_timerAnim;
 extern volatile uint32 g_timerInput;
 extern volatile uint32 g_timerSleep;
 extern volatile uint32 g_timerTimeout;

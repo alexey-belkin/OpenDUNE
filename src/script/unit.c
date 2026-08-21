@@ -1025,7 +1025,14 @@ uint16 Script_Unit_GetInfo(ScriptEngine *script)
 		case 0x10: return u->orientation[ui->o.flags.hasTurret ? 1 : 0].current;
 		case 0x11: return abs(u->orientation[ui->o.flags.hasTurret ? 1 : 0].target - u->orientation[ui->o.flags.hasTurret ? 1 : 0].current);
 		case 0x12: return (ui->movementType & 0x40) == 0 ? 0 : 1;
-		case 0x13: return (u->o.seenByHouses & (1 << g_playerHouseID)) == 0 ? 0 : 1;
+		/* "Can the player see me" -- asked by the bytecode itself, and answered
+		 * from whoever is watching.  On two clients that is two different
+		 * answers to a question the script then branches on, so the same unit
+		 * runs two different programs: at tick one its script sat at offset
+		 * 1016 on one machine and 2070 on the other.  v1 has one fog layer, so
+		 * in a match the honest answer is whether anybody has seen it. */
+		case 0x13: return (Match_IsActive() ? (u->o.seenByHouses != 0)
+		                                    : ((u->o.seenByHouses & (1 << g_playerHouseID)) != 0)) ? 1 : 0;
 		default:   return 0;
 	}
 }
