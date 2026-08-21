@@ -45,6 +45,9 @@ extern void MpCommand_Init(MpCommand *cmd, MpCommandType type, uint8 houseID);
 extern void MpCommand_Submit(const MpCommand *cmd);
 extern void MpCommand_Execute(const MpCommand *cmd);
 
+extern bool MpCommand_SaveRecord(const char *filename, uint32 seed);
+extern bool MpCommand_LoadRecord(const char *filename, uint32 seed);
+
 extern void MpCommand_RecordBegin(void);
 extern void MpCommand_RecordEnd(void);
 extern uint16 MpCommand_GetRecordCount(void);

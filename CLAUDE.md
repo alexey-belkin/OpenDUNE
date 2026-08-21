@@ -186,7 +186,17 @@ state or pointer values — and the precondition for multiplayer.
 `--mp-replay=ticks[,step[,seed]]` plays a match twice in one process: once with a
 scripted player issuing commands, once replaying the recording. It is the guard
 on the command layer and on anything that has to start a match from a known
-state. → [mp.md](mp.md).
+state. Adding `--mp-record=FILE` or `--mp-play=FILE` splits those two passes
+across two processes — one writes the recording and prints its checksums, the
+other reads it and prints its own, and `diff` decides:
+
+```bash
+./opendune --skirmish=ordos,harkonnen --mp-replay=40000,500 --mp-record=rec.mpc > a.log
+./opendune --skirmish=ordos,harkonnen --mp-replay=40000,500 --mp-play=rec.mpc   > b.log
+diff <(grep '^mp-checksum' a.log) <(grep '^mp-checksum' b.log)
+```
+
+→ [mp.md](mp.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than
 leaving it running.

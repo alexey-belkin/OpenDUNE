@@ -160,6 +160,9 @@ static bool s_mpReplay = false;
 static uint32 s_mpReplayTicks = 40000;
 static uint32 s_mpReplayStep = 4000;
 static uint32 s_mpReplaySeed = 1000;
+static char s_mpRecordFile[256] = "";
+static char s_mpPlayFile[256] = "";
+static uint16 s_mpReplayUnplayed = 0;
 
 static void PrintToConsole(const char *str);
 
@@ -1171,6 +1174,77 @@ static void MpHarness_ScriptedPlayer(uint32 tick)
 	}
 }
 
+/**
+ * Stage 3 of mp.md: one pass of the command-layer harness.
+ *
+ * With the scripted player on, it plays the match and records every order it
+ * gives; with it off, it plays the same match and executes whatever is already
+ * in the recording instead.  Two passes that agree at every sample mean the
+ * command stream is a complete account of what the player did -- the property
+ * lockstep rests on, tested without a socket in sight.
+ *
+ * Printing the samples turns the same pass into half of the cross-process test:
+ * two processes, one recording, and diff decides.
+ */
+static bool MpHarness_ReplayPass(bool scripted, MpSyncChecksum *out, uint16 *outCount, bool print)
+{
+	char line[256];
+	uint16 samples = 0;
+	uint16 commands = 0;
+	uint16 next = 0;
+	uint32 tick;
+
+	if (!MpHarness_StartMatch(s_mpReplaySeed)) return false;
+
+	if (scripted) {
+		MpCommand_RecordBegin();
+	} else {
+		commands = MpCommand_GetRecordCount();
+	}
+
+	for (tick = 0; ; tick++) {
+		/* Act first, sample second.  A sample taken on the same tick as a
+		 * command, before anything else simulates, is what gives this test
+		 * teeth: sampled a step later instead, the AI has re-ordered the same
+		 * units in the meantime and a dropped command leaves no trace.  That is
+		 * not a hypothetical -- it is what the first version of this test did,
+		 * and deleting a command from the replay still passed. */
+		if (scripted) {
+			MpHarness_ScriptedPlayer(tick);
+		} else {
+			/* The recording is in tick order, so one cursor walks it. */
+			while (next < commands) {
+				uint32 when;
+				const MpCommand *cmd = MpCommand_GetRecorded(next, &when);
+
+				if (cmd == NULL || when != g_timerGame) break;
+				MpCommand_Execute(cmd);
+				next++;
+			}
+		}
+
+		if (((tick % s_mpReplayStep) == 0 || tick == s_mpReplayTicks) && samples < MP_REPLAY_SAMPLES_MAX) {
+			if (!MpSync_Take(&out[samples])) return false;
+
+			if (print) {
+				MpSync_Format(line, sizeof(line), tick, &out[samples]);
+				PrintToConsole(line);
+			}
+			samples++;
+		}
+
+		if (tick == s_mpReplayTicks) break;
+
+		MpHarness_Step();
+	}
+
+	if (scripted) MpCommand_RecordEnd();
+
+	*outCount = samples;
+	s_mpReplayUnplayed = (uint16)(commands - next);
+	return true;
+}
+
 static void GameLoop_Main(void)
 {
 	static uint32 l_timerNext = 0;
@@ -1332,55 +1406,48 @@ static void GameLoop_Main(void)
 		return;
 	}
 
-	/* Stage 3 of mp.md: the command layer, proved by replaying it.
-	 *
-	 * A scripted player issues orders to one house while both AIs play as usual;
-	 * every order goes through MpCommand_Submit() and is recorded with its tick.
-	 * The second pass replays that recording into the same match with the
-	 * scripted player switched off.  If the two agree at every sample, the
-	 * command stream is a complete account of what the player did -- which is
-	 * the property lockstep rests on, tested here without a socket in sight. */
 	if (s_mpReplay) {
 		MpSyncChecksum live[MP_REPLAY_SAMPLES_MAX];
-		MpSyncChecksum replayed;
+		MpSyncChecksum replayed[MP_REPLAY_SAMPLES_MAX];
 		char line[256];
-		uint16 samples = 0;
+		uint16 liveCount = 0;
+		uint16 replayCount = 0;
 		uint16 commands;
-		uint16 next;
-		uint32 tick;
+		uint16 i;
 
-		if (!MpHarness_StartMatch(s_mpReplaySeed)) {
+		/* The consumer half of the cross-process test: no scripted player at
+		 * all, just somebody else's recording and this process's own opinion of
+		 * what the match looks like as it runs. */
+		if (s_mpPlayFile[0] != '\0') {
+			if (!MpCommand_LoadRecord(s_mpPlayFile, s_mpReplaySeed)) {
+				PrintToConsole("mp-replay: FAIL (could not read the recording, or it was taken on another seed)");
+				return;
+			}
+
+			commands = MpCommand_GetRecordCount();
+			if (commands == 0) {
+				PrintToConsole("mp-replay: FAIL (the recording is empty, so nothing would be tested)");
+				return;
+			}
+
+			if (!MpHarness_ReplayPass(false, replayed, &replayCount, true)) {
+				PrintToConsole("mp-replay: FAIL (could not run the match)");
+				return;
+			}
+
+			snprintf(line, sizeof(line), "mp-replay: played %u of %u commands, %u samples",
+			         (unsigned)(commands - s_mpReplayUnplayed), (unsigned)commands, (unsigned)replayCount);
+			PrintToConsole(line);
+			PrintToConsole((s_mpReplayUnplayed == 0) ? "mp-replay: PLAYED" : "mp-replay: FAIL (commands left unreplayed)");
+			return;
+		}
+
+		if (!MpHarness_ReplayPass(true, live, &liveCount, s_mpRecordFile[0] != '\0')) {
 			PrintToConsole("mp-replay: FAIL (could not start a skirmish)");
 			return;
 		}
 
-		MpCommand_RecordBegin();
-
-		for (tick = 0; ; tick++) {
-			/* Act first, sample second.  A sample taken on the same tick as a
-			 * command, before anything else simulates, is what gives this test
-			 * teeth: sampled a step later instead, the AI has re-ordered the
-			 * same units in the meantime and a dropped command leaves no trace.
-			 * That is not a hypothetical -- it is what the first version of this
-			 * test did, and deleting a command from the replay still passed. */
-			MpHarness_ScriptedPlayer(tick);
-
-			if (((tick % s_mpReplayStep) == 0 || tick == s_mpReplayTicks) && samples < MP_REPLAY_SAMPLES_MAX) {
-				if (!MpSync_Take(&live[samples])) {
-					PrintToConsole("mp-replay: FAIL (could not serialise the state)");
-					return;
-				}
-				samples++;
-			}
-
-			if (tick == s_mpReplayTicks) break;
-
-			MpHarness_Step();
-		}
-
-		MpCommand_RecordEnd();
 		commands = MpCommand_GetRecordCount();
-
 		snprintf(line, sizeof(line), "mp-replay: recorded %u commands over %u ticks", (unsigned)commands, (unsigned)s_mpReplayTicks);
 		PrintToConsole(line);
 
@@ -1389,50 +1456,41 @@ static void GameLoop_Main(void)
 			return;
 		}
 
-		/* Second pass: same match, no scripted player, the recording instead. */
-		if (!MpHarness_StartMatch(s_mpReplaySeed)) {
+		/* The producer half: hand the recording to a file and stop.  Whether the
+		 * other process agrees is decided outside, by diffing the two logs --
+		 * this one has no way to know and should not pretend to. */
+		if (s_mpRecordFile[0] != '\0') {
+			if (!MpCommand_SaveRecord(s_mpRecordFile, s_mpReplaySeed)) {
+				PrintToConsole("mp-replay: FAIL (could not write the recording)");
+				return;
+			}
+
+			snprintf(line, sizeof(line), "mp-replay: RECORDED %u commands, %u samples", (unsigned)commands, (unsigned)liveCount);
+			PrintToConsole(line);
+			return;
+		}
+
+		/* Second pass: same match, same process, no scripted player. */
+		if (!MpHarness_ReplayPass(false, replayed, &replayCount, false)) {
 			PrintToConsole("mp-replay: FAIL (could not restart the skirmish)");
 			return;
 		}
 
-		next = 0;
-		for (tick = 0, samples = 0; ; tick++) {
-			/* The recording is in tick order, so one cursor walks it -- and it
-			 * runs where the scripted player ran, before the sample. */
-			while (next < commands) {
-				uint32 when;
-				const MpCommand *cmd = MpCommand_GetRecorded(next, &when);
+		for (i = 0; i < liveCount && i < replayCount; i++) {
+			if (memcmp(&replayed[i], &live[i], sizeof(live[i])) == 0) continue;
 
-				if (cmd == NULL || when != g_timerGame) break;
-				MpCommand_Execute(cmd);
-				next++;
-			}
-
-			if (((tick % s_mpReplayStep) == 0 || tick == s_mpReplayTicks) && samples < MP_REPLAY_SAMPLES_MAX) {
-				if (!MpSync_Take(&replayed)) {
-					PrintToConsole("mp-replay: FAIL (could not serialise the state)");
-					return;
-				}
-
-				if (memcmp(&replayed, &live[samples], sizeof(replayed)) != 0) {
-					MpSync_Format(line, sizeof(line), tick, &live[samples]);
-					PrintToConsole(line);
-					MpSync_Format(line, sizeof(line), tick, &replayed);
-					PrintToConsole(line);
-					PrintToConsole("mp-replay: FAIL (the replay diverged -- something the player did never became a command)");
-					return;
-				}
-				samples++;
-			}
-
-			if (tick == s_mpReplayTicks) break;
-
-			MpHarness_Step();
+			MpSync_Format(line, sizeof(line), (uint32)i * s_mpReplayStep, &live[i]);
+			PrintToConsole(line);
+			MpSync_Format(line, sizeof(line), (uint32)i * s_mpReplayStep, &replayed[i]);
+			PrintToConsole(line);
+			PrintToConsole("mp-replay: FAIL (the replay diverged -- something the player did never became a command)");
+			return;
 		}
 
-		snprintf(line, sizeof(line), "mp-replay: %u samples matched, %u of %u commands replayed", (unsigned)samples, (unsigned)next, (unsigned)commands);
+		snprintf(line, sizeof(line), "mp-replay: %u samples matched, %u of %u commands replayed",
+		         (unsigned)replayCount, (unsigned)(commands - s_mpReplayUnplayed), (unsigned)commands);
 		PrintToConsole(line);
-		PrintToConsole((next == commands) ? "mp-replay: PASS" : "mp-replay: FAIL (commands left unreplayed)");
+		PrintToConsole((s_mpReplayUnplayed == 0 && liveCount == replayCount) ? "mp-replay: PASS" : "mp-replay: FAIL (commands left unreplayed)");
 		return;
 	}
 
@@ -2059,6 +2117,10 @@ int main(int argc, char **argv)
 			if (strncmp(argv[i], "--mp-checksum", 13) == 0) {
 				s_mpChecksum = true;
 				if (argv[i][13] == '=') sscanf(argv[i] + 14, "%u,%u,%u", &s_mpChecksumTicks, &s_mpChecksumStep, &s_mpChecksumSeed);
+			} else if (strncmp(argv[i], "--mp-record=", 12) == 0) {
+				snprintf(s_mpRecordFile, sizeof(s_mpRecordFile), "%s", argv[i] + 12);
+			} else if (strncmp(argv[i], "--mp-play=", 10) == 0) {
+				snprintf(s_mpPlayFile, sizeof(s_mpPlayFile), "%s", argv[i] + 10);
 			} else if (strncmp(argv[i], "--mp-replay", 11) == 0) {
 				s_mpReplay = true;
 				if (argv[i][11] == '=') sscanf(argv[i] + 12, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);

@@ -1,6 +1,6 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stages 0 to 3 are in the tree, the rest is design.** The determinism
+**Status: stages 0 to 3 (plus 3a) are in the tree, the rest is design.** The determinism
 harness, the RNG split, the match descriptor and the command layer exist as code,
 and the sections at the bottom record what each cost and what each found. The
 rest of this file is the plan and, more importantly, the list of things in the
@@ -825,6 +825,77 @@ handler ([viewport.c:509](src/gui/viewport.c:509)); untangling it belongs with t
 non-modal build panel of §5. Repair, the Starport order, the Palace weapon, the
 rally point and the production queue are still direct calls. Each is a command
 waiting to be written, and the replay is how each will be checked.
+
+## Stage 3a — the same recording in a second process (done)
+
+Stage 0 proved that a match repeats. Stage 3 proved that a recording of what the
+player did is enough to reproduce the match. Both ran inside **one process**, and
+one process is the weakest possible place to prove either: static-initialisation
+order, address-space layout, whatever the environment leaked in — all of it is
+held constant for free, and none of it will be constant between two players.
+
+So the recording now goes to a file, and the second pass is a second process.
+
+```bash
+./opendune --skirmish=ordos,harkonnen --mp-replay=40000,500 --mp-record=rec.mpc > a.log
+./opendune --skirmish=ordos,harkonnen --mp-replay=40000,500 --mp-play=rec.mpc   > b.log
+diff <(grep '^mp-checksum' a.log) <(grep '^mp-checksum' b.log)
+```
+
+`--mp-record=FILE` and `--mp-play=FILE` are modifiers on `--mp-replay`, which
+keeps its parameters (`ticks,step,seed`) and its meaning; with neither modifier
+it still runs both passes in one process and decides for itself. With a modifier
+it runs **one** pass and prints its samples, because a single process has no
+standing to judge — `diff` does. Both halves share one function
+(`MpHarness_ReplayPass()`), so the recorded and the replayed match cannot drift
+apart through two copies of the loop.
+
+The recording is text, one command per line, with the seed in the header:
+
+```
+opendune-commands 1
+seed 1000
+count 80
+cmd 500 6 2 255 65535 0 1 0
+```
+
+Text rather than a packed struct on purpose. The whole value of a recording is
+that it can be read when a replay disagrees, and a line per command diffs where a
+binary blob only says "different" — as the negative controls below show, it names
+the tick. The seed line is a refusal, not a comment: a recording replayed onto
+another map would diverge for a reason that has nothing to do with the command
+layer, which is exactly the false alarm a desync hunt does not need.
+
+### The result
+
+81 samples over 40000 ticks, byte-identical between the two processes, all eight
+components. Two producer runs also wrote the same recording file.
+
+### The negative controls, which matter more
+
+A cross-process test that passes proves nothing until it can also fail:
+
+| Tampering | Result |
+|---|---|
+| Drop one command (line 45 of 80, tick 21000) | diverges, first at **t21000** |
+| Shift one command by a single tick (21000 → 21001) | diverges, first at **t21000** |
+| Change the seed in the header | refused before the match starts |
+
+The one-tick shift is the interesting one. That command still executes, and the
+consumer still reports 80 of 80 played — it is *only* the checksum log that
+catches it. Which is the point: the tally is bookkeeping, the log is the test.
+
+### What this still does not cover
+
+The recording is 80 commands and every one of them is `MP_CMD_STRUCTURE_BUILD`,
+for the reason stage 3 recorded — the unit-order commands cannot reach a house
+the AI drives. Two processes agreeing about production is worth having, but the
+unit-order half of the command layer is still untested against anything, and no
+amount of process separation fixes that. It needs a house a human controls and
+the AI does not, which is the next piece of work.
+
+Nothing here touches the simulation: `--mp-checksum` is unchanged between runs
+and the in-process `--mp-replay` still passes.
 
 ## Known hazards
 
