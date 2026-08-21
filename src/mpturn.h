@@ -5,6 +5,7 @@
 
 #include "match.h"
 #include "mpcommand.h"
+#include "mpsync.h"
 
 enum {
 	MP_TURN_LENGTH_DEFAULT = 8,                             /*!< Ticks per turn: 8 at 60 Hz is 133 ms. */
@@ -25,7 +26,7 @@ enum {
 typedef struct MpPacket {
 	uint32 turn;                                            /*!< The turn these commands belong to. */
 	uint32 checkTurn;                                       /*!< Which turn the checksum below describes. */
-	uint32 checksum;                                        /*!< State as of checkTurn, for desync detection. */
+	MpSyncChecksum check;                                   /*!< State as of checkTurn, chunk by chunk. */
 	uint16 count;                                           /*!< Commands in cmd[]. */
 	MpCommand cmd[MP_TURN_COMMANDS_MAX];
 } MpPacket;
@@ -53,6 +54,8 @@ extern bool MpTurn_IsDue(void);
 extern uint32 MpTurn_GetTurn(void);
 extern uint32 MpTurn_GetStalls(void);
 extern bool MpTurn_HasDesynced(uint32 *turn);
+extern const char *MpTurn_GetDesyncChunks(void);
+extern void MpTurn_SetSnapshots(bool enabled);
 
 extern uint16 MpPacket_Format(char *dst, uint16 size, const MpPacket *packet);
 extern bool MpPacket_Parse(const char *src, MpPacket *packet);

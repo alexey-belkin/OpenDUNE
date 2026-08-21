@@ -2741,7 +2741,11 @@ static uint32 GUI_FactoryWindow_LoadGraymapTbl(void)
 
 static uint16 GUI_FactoryWindow_CalculateStarportPrice(uint16 credits)
 {
-	credits = (credits / 10) * 4 + (credits / 10) * (Tools_RandomLCG_Range(0, 6) + Tools_RandomLCG_Range(0, 6));
+	if (Match_IsActive()) {
+		credits = (credits / 10) * 4 + (credits / 10) * (Tools_RandomUI_Range(0, 6) + Tools_RandomUI_Range(0, 6));
+	} else {
+		credits = (credits / 10) * 4 + (credits / 10) * (Tools_RandomLCG_Range(0, 6) + Tools_RandomLCG_Range(0, 6));
+	}
 
 	return min(credits, 999);
 }
@@ -2767,7 +2771,19 @@ static void GUI_FactoryWindow_InitItems(void)
 		uint16 seed = (seconds / 60) + g_scenarioID + g_playerHouseID;
 		seed *= seed;
 
-		Tools_RandomLCG_Seed(seed);
+		/* Opening a window must not reach into the simulation's random stream.
+		 * The original reseeds the game generator here so that the Starport
+		 * prices stay put while you look at them, and derives the seed from the
+		 * viewer's own house -- so in a match, one player opening the Starport
+		 * moved every random the other player's game was about to draw, and
+		 * moved it to a different place.  The prices still hold still: they are
+		 * drawn from the interface generator, seeded the same way, and the
+		 * simulation's stream is left where the simulation left it. */
+		if (Match_IsActive()) {
+			Tools_RandomUI_Seed(seed);
+		} else {
+			Tools_RandomLCG_Seed(seed);
+		}
 	}
 
 	if (!g_factoryWindowConstructionYard) {

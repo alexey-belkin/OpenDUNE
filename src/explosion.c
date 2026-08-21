@@ -11,6 +11,7 @@
 #include "audio/sound.h"
 #include "house.h"
 #include "map.h"
+#include "mpturn.h"
 #include "sprites.h"
 #include "structure.h"
 #include "tile.h"
@@ -130,6 +131,14 @@ static void Explosion_Func_ScreenShake(Explosion *e, uint16 parameter)
 	VARIABLE_NOT_USED(e);
 	VARIABLE_NOT_USED(parameter);
 #endif
+
+	/* Two players, and this one sleeps.  Shaking the screen is drawing, but it
+	 * runs from inside a simulation step and spends about thirty milliseconds
+	 * of wall clock doing it -- which stalls the world, eats into the latency
+	 * budget the turn delay is there to cover, and makes a step take an amount
+	 * of real time that the other machine has no reason to match.  In a match
+	 * the ground does not shake. */
+	if (MpTurn_IsActive()) return;
 
 	for(i = 0; i < 2; i++) {
 #if defined(_WIN32)

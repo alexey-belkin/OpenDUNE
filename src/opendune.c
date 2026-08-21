@@ -190,6 +190,7 @@ static uint16 s_mpLiveUnits = 0;
 static uint8 s_mpViewpointOverride = 0;
 static bool s_mpLiveDesyncSeen = false;
 static uint32 s_mpLiveDumpTick = 0xFFFFFFFF;   /*!< Zero means the starting position. */
+static bool s_mpDesyncDump = false;            /*!< Keep a rolling dump of recent turns. */
 
 static void PrintToConsole(const char *str);
 
@@ -1172,9 +1173,26 @@ static bool MpGame_IsLive(void)
  */
 static void MpGame_Step(void)
 {
+	/* Never inside itself.  A simulation step is allowed to sleep -- the
+	 * original's screen shake does, in the middle of an explosion -- and every
+	 * sleep goes through sleepIdle(), which is where the match pump lives.  So
+	 * a step could re-enter the stepper and run further ticks from inside the
+	 * one it had not finished, as many as the sleep happened to last.  That is
+	 * the wall clock deciding how many ticks pass inside a tick, which is two
+	 * different answers on two machines: the explosions on the two clients
+	 * drifted a tick apart and never came back.
+	 *
+	 * The guard used to live in the pump, which only stopped the pump from
+	 * re-entering itself -- not the frame loop's own call from being re-entered
+	 * through a sleep, which is the case that happens. */
+	static bool inside = false;
+
 	char line[256];
 	uint32 due;
 	uint16 budget;
+
+	if (inside) return;
+	inside = true;
 
 	/* Everything since the last step was somebody else drawing, handling input
 	 * or waiting, and none of that may have moved the world.  The two finer
@@ -1209,6 +1227,7 @@ static void MpGame_Step(void)
 				PrintToConsole(line);
 				MpTurn_End();
 				MpNet_Disconnect();
+				inside = false;
 				return;
 			}
 
@@ -1219,6 +1238,7 @@ static void MpGame_Step(void)
 			 * the stall would become a fast-forward. */
 			s_mpLiveStart += Timer_GetTime() - stallStart;
 			MpPurity_Begin(0);
+			inside = false;
 			return;
 		}
 
@@ -1276,9 +1296,16 @@ static void MpGame_Step(void)
 		MpPurity_Begin(0);
 
 		if (MpTurn_HasDesynced(&desyncTurn) && !s_mpLiveDesyncSeen) {
-			snprintf(line, sizeof(line), "mp-live: DESYNC -- the two players disagreed about turn %u",
-			         (unsigned)desyncTurn);
+			snprintf(line, sizeof(line), "mp-live: DESYNC at turn %u (tick %u), about: %s",
+			         (unsigned)desyncTurn, (unsigned)(desyncTurn * MP_TURN_LENGTH_DEFAULT),
+			         MpTurn_GetDesyncChunks());
 			PrintToConsole(line);
+
+			if (s_mpDesyncDump) {
+				snprintf(line, sizeof(line), "mp-live: both players' turn %u is in mpdesync-s*-turn%u.bin",
+				         (unsigned)desyncTurn, (unsigned)desyncTurn);
+				PrintToConsole(line);
+			}
 
 			/* Said once, then played on.  Stopping here would be the honest
 			 * thing in front of a player and useless in front of a log: the
@@ -1287,6 +1314,8 @@ static void MpGame_Step(void)
 			s_mpLiveDesyncSeen = true;
 		}
 	}
+
+	inside = false;
 }
 
 /**
@@ -1375,13 +1404,9 @@ static void MpGame_PlaceStartingUnits(uint16 count)
  */
 static void MpGame_Pump(void)
 {
-	static bool inside = false;
+	if (!MpTurn_IsActive()) return;
 
-	if (!MpTurn_IsActive() || inside) return;
-
-	inside = true;
 	MpGame_Step();
-	inside = false;
 
 	/* The world just moved inside whatever region the clamp is measuring, and
 	 * moved legitimately.  Forgive that much and keep watching. */
@@ -1482,6 +1507,7 @@ static bool MpGame_Begin(void)
 	}
 
 	MpTurn_Begin(s_mpTurnSlot, MpTransport_Net(), s_mpTurnLength, s_mpTurnDelay);
+	MpTurn_SetSnapshots(s_mpDesyncDump);
 
 	Timer_SetMatchPump(&MpGame_Pump);
 
@@ -2081,6 +2107,7 @@ static void GameLoop_Main(void)
 		houseID = s_skirmishHouse[s_mpTurnSlot];
 
 		MpTurn_Begin(s_mpTurnSlot, transport, s_mpTurnLength, s_mpTurnDelay);
+		MpTurn_SetSnapshots(s_mpDesyncDump);
 
 		startedAt = Timer_GetTime();
 
@@ -3028,6 +3055,12 @@ int main(int argc, char **argv)
 				 * "did that function change the world" does not need two. */
 				MpPurity_SetEnabled(true);
 				if (strcmp(argv[i], "--sim-purity=dump") == 0) MpPurity_SetDump(true);
+			} else if (strcmp(argv[i], "--mp-desync-dump") == 0) {
+				/* Keep the last few turns of state on disk so that when the two
+				 * players disagree about turn N, both still have their own turn
+				 * N to compare.  The mismatch is always noticed after the fact;
+				 * this is what stops the evidence from being gone by then. */
+				s_mpDesyncDump = true;
 			} else if (strncmp(argv[i], "--mp-dump=", 10) == 0) {
 				/* Write every chunk to a file at one tick, so two clients that
 				 * disagree can be compared byte for byte. */

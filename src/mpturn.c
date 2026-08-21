@@ -25,6 +25,8 @@ static struct {
 	uint32 stalls;                                          /*!< Ticks spent waiting for somebody's packet. */
 	bool desynced;
 	uint32 desyncTurn;
+	char desyncChunks[80];                                  /*!< Which chunks disagreed, named. */
+	bool snapshots;                                         /*!< Keep a rolling dump of recent turns. */
 
 	MpPacket outbox;                                        /*!< What we have collected since the last send. */
 } s_turn;
@@ -92,6 +94,26 @@ uint32 MpTurn_GetStalls(void)
 	return s_turn.stalls;
 }
 
+/**
+ * Keep the last few turns of state on disk, so a desync can be looked at.
+ *
+ * The mismatch is noticed `delay` turns after the state it describes, by which
+ * time that state is gone.  With this on, every turn is dumped and the dumps
+ * older than the delay are deleted again -- so when the two clients disagree
+ * about turn N, both of them still have their own turn N on disk and the answer
+ * is a diff.  It costs a write of the whole simulation state per turn, which is
+ * why it is a flag and not the default.
+ */
+void MpTurn_SetSnapshots(bool enabled)
+{
+	s_turn.snapshots = enabled;
+}
+
+const char *MpTurn_GetDesyncChunks(void)
+{
+	return s_turn.desyncChunks;
+}
+
 bool MpTurn_HasDesynced(uint32 *turn)
 {
 	if (turn != NULL) *turn = s_turn.desyncTurn;
@@ -125,6 +147,63 @@ bool MpTurn_IsDue(void)
 }
 
 /**
+ * Name the chunks two checksums disagree about.
+ *
+ * "The two players disagreed" is not a lead; "they disagreed about the unit
+ * pool and the random stream" is.  Every desync hunt in this fork has started
+ * by knowing which chunk moved first, so the wire carries all nine numbers and
+ * not just the combined one.
+ */
+static void MpTurn_NameDifferences(char *dst, uint16 size, const MpSyncChecksum *a, const MpSyncChecksum *b)
+{
+	const char *names[8];
+	uint32 x[8];
+	uint32 y[8];
+	uint16 used = 0;
+	uint16 i;
+
+	names[0] = "info";      x[0] = a->info;      y[0] = b->info;
+	names[1] = "house";     x[1] = a->house;     y[1] = b->house;
+	names[2] = "unit";      x[2] = a->unit;      y[2] = b->unit;
+	names[3] = "structure"; x[3] = a->structure; y[3] = b->structure;
+	names[4] = "map";       x[4] = a->map;       y[4] = b->map;
+	names[5] = "team";      x[5] = a->team;      y[5] = b->team;
+	names[6] = "unitNew";   x[6] = a->unitNew;   y[6] = b->unitNew;
+	names[7] = "rng";       x[7] = a->rng;       y[7] = b->rng;
+
+	dst[0] = '\0';
+
+	for (i = 0; i < 8; i++) {
+		if (x[i] == y[i]) continue;
+		if (used + 1 >= size) break;
+		used += (uint16)snprintf(dst + used, size - used, "%s%s", (used == 0) ? "" : " ", names[i]);
+	}
+
+	/* All nine matched and the totals still differ: the combined number is the
+	 * only thing left that could have, which means the checksum is broken, not
+	 * the game.  Say so rather than printing an empty list. */
+	if (dst[0] == '\0') snprintf(dst, size, "(totals only)");
+}
+
+/**
+ * Write this turn's state next to the others, and drop the ones too old to be
+ * the subject of a mismatch that has not been reported yet.
+ */
+static void MpTurn_Snapshot(uint32 turn)
+{
+	char path[64];
+
+	snprintf(path, sizeof(path), "mpdesync-s%u-turn%u.bin", (unsigned)(s_turn.localSlot + 1), (unsigned)turn);
+	MpSync_Dump(path);
+
+	if (turn > (uint32)s_turn.delay + 2) {
+		snprintf(path, sizeof(path), "mpdesync-s%u-turn%u.bin",
+		         (unsigned)(s_turn.localSlot + 1), (unsigned)(turn - s_turn.delay - 3));
+		remove(path);
+	}
+}
+
+/**
  * Close one turn and open the next.
  *
  * Returns false when somebody's packet has not arrived: the caller must then
@@ -135,19 +214,21 @@ bool MpTurn_Advance(void)
 {
 	MpPacket packet;
 	uint32 checkTurn;
-	uint32 checksum = 0;
+	MpSyncChecksum checksum;
 	bool haveChecksum = false;
 	uint8 slot;
+
+	memset(&checksum, 0, sizeof(checksum));
 
 	if (!s_turn.active) return true;
 
 	/* Ours first, so a single-player-in-two-processes match cannot deadlock on
 	 * itself, and so the others have the longest possible time to receive it. */
 	if (s_turn.outbox.turn == s_turn.turn + s_turn.delay) {
-		MpSyncChecksum state;
-
 		s_turn.outbox.checkTurn = s_turn.turn;
-		s_turn.outbox.checksum  = MpSync_Take(&state) ? state.total : 0;
+		if (!MpSync_Take(&s_turn.outbox.check)) memset(&s_turn.outbox.check, 0, sizeof(s_turn.outbox.check));
+
+		if (s_turn.snapshots && !s_turn.desynced) MpTurn_Snapshot(s_turn.turn);
 
 		if (!s_turn.transport->send(s_turn.localSlot, &s_turn.outbox)) return false;
 
@@ -180,11 +261,13 @@ bool MpTurn_Advance(void)
 		checkTurn = packet.checkTurn;
 		if (checkTurn != MP_TURN_NO_CHECKSUM) {
 			if (!haveChecksum) {
-				checksum = packet.checksum;
+				checksum = packet.check;
 				haveChecksum = true;
-			} else if (packet.checksum != checksum && !s_turn.desynced) {
+			} else if (packet.check.total != checksum.total && !s_turn.desynced) {
 				s_turn.desynced   = true;
 				s_turn.desyncTurn = checkTurn;
+				MpTurn_NameDifferences(s_turn.desyncChunks, sizeof(s_turn.desyncChunks),
+				                       &checksum, &packet.check);
 			}
 		}
 
@@ -212,9 +295,13 @@ uint16 MpPacket_Format(char *dst, uint16 size, const MpPacket *packet)
 	uint16 used;
 	uint16 i;
 
-	used = (uint16)snprintf(dst, size, "turn %u check %u %08x count %u\n",
+	used = (uint16)snprintf(dst, size, "turn %u check %u %08x %08x %08x %08x %08x %08x %08x %08x %08x count %u\n",
 	                        (unsigned)packet->turn, (unsigned)packet->checkTurn,
-	                        (unsigned)packet->checksum, (unsigned)packet->count);
+	                        (unsigned)packet->check.info, (unsigned)packet->check.house,
+	                        (unsigned)packet->check.unit, (unsigned)packet->check.structure,
+	                        (unsigned)packet->check.map, (unsigned)packet->check.team,
+	                        (unsigned)packet->check.unitNew, (unsigned)packet->check.rng,
+	                        (unsigned)packet->check.total, (unsigned)packet->count);
 
 	for (i = 0; i < packet->count && i < MP_TURN_COMMANDS_MAX; i++) {
 		const MpCommand *cmd = &packet->cmd[i];
@@ -239,20 +326,31 @@ uint16 MpPacket_Format(char *dst, uint16 size, const MpPacket *packet)
 
 bool MpPacket_Parse(const char *src, MpPacket *packet)
 {
-	unsigned turn, checkTurn, checksum, count;
+	unsigned turn, checkTurn, count;
+	unsigned c[9];
 	const char *p = src;
 	int consumed = 0;
 	uint16 i;
 
 	memset(packet, 0, sizeof(*packet));
 
-	if (sscanf(p, "turn %u check %u %x count %u%n", &turn, &checkTurn, &checksum, &count, &consumed) != 4) return false;
+	if (sscanf(p, "turn %u check %u %x %x %x %x %x %x %x %x %x count %u%n",
+	           &turn, &checkTurn, &c[0], &c[1], &c[2], &c[3], &c[4], &c[5], &c[6], &c[7], &c[8],
+	           &count, &consumed) != 12) return false;
 	if (count > MP_TURN_COMMANDS_MAX) return false;
 
-	packet->turn      = (uint32)turn;
-	packet->checkTurn = (uint32)checkTurn;
-	packet->checksum  = (uint32)checksum;
-	packet->count     = (uint16)count;
+	packet->turn            = (uint32)turn;
+	packet->checkTurn       = (uint32)checkTurn;
+	packet->check.info      = (uint32)c[0];
+	packet->check.house     = (uint32)c[1];
+	packet->check.unit      = (uint32)c[2];
+	packet->check.structure = (uint32)c[3];
+	packet->check.map       = (uint32)c[4];
+	packet->check.team      = (uint32)c[5];
+	packet->check.unitNew   = (uint32)c[6];
+	packet->check.rng       = (uint32)c[7];
+	packet->check.total     = (uint32)c[8];
+	packet->count           = (uint16)count;
 
 	p += consumed;
 

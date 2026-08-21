@@ -38,3 +38,5 @@ bin/telemetry/
 # the multiplayer relay, built beside its source
 /tools/relay/relay
 /tools/relay/relay-*
+mpdesync-*.bin
+mpdump-*.bin

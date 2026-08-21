@@ -1334,6 +1334,109 @@ manual override until then.
   two real people, and the two easiest to catch before the match instead of at
   turn 0.
 
+## Stage 6 — the real game loop, and what it cost (done; the interface is not)
+
+`--mp-relay` on its own, without `--mp-turnloop`, is the actual game: two
+windows, two players, the map drawn, the mouse live, and the simulation stepped
+by the turn loop underneath it.
+
+```bash
+tools/mpduel.sh                       # both sides on this machine, through the relay
+tools/mpduel.sh --seed=1234 --units=0 # a named map, no starting squad
+```
+
+The script is the short way to start both clients; the long way is two command
+lines differing only in the slot:
+
+```bash
+./opendune --skirmish=ordos,harkonnen --human=1,2 --speed=2 --mp-units=4 \
+           --mp-relay=146.103.110.160:31337,room1,1
+```
+
+`--speed=N` sets the tick multiplier, `--mp-units=N` puts a starting squad next
+to each base (there is nothing to order about otherwise), `--mp-seed=N` names
+the map, `--mp-sample=N` how often a checksum is logged.
+
+### The stepper
+
+`MpGame_Step()` is the whole loop. The wall clock says how many ticks are *due*,
+the turn loop says how many may run, and drawing gets the time left over. A
+stall returns immediately instead of spinning, so a missing packet freezes the
+world and not the program.
+
+It is registered as `Timer_SetMatchPump(&MpGame_Pump)` and called from the timer
+idle hook as well as from the frame loop, which is what keeps the world running
+while a player is inside the fullscreen build screen — a modal screen in this
+engine is a loop that owns the process, and in a match it may not own the world.
+
+### What had to stop being presentation
+
+Every one of these was a place where drawing, input or the wall clock reached
+into the simulation. They are listed in the order they were found, because the
+order is the lesson: each fix uncovered the next.
+
+| What | Why it desynced |
+|---|---|
+| `Unit_Sort()` in `GUI_DrawScreen()` | reordered the simulation's unit array once per drawn frame |
+| the INFO chunk | carried the selection, the active structure, the hints — the chair, saved |
+| `upgradeTimeLeft` armed in `widget_draw.c` | a draw function starting a countdown |
+| `Timer_SetTimer(TIMER_GAME, true)` | half a dozen screens handed the game clock back to the wall |
+| `radarActivated` | set by the spectator convenience in `House_UpdateRadarState()` |
+| `g_hintsShown1/2` | a note about the person, stored in the world |
+| `Structure_UpdateMap()` from `Map_SetSelection()` | a click restamping tiles |
+| `isDirty` / `isHighlighted` | renderer instructions living in the savegame |
+| the script opcode budget | 52 opcodes on screen, 3 off it — two screens, two speeds |
+| `g_timerGUI` driving explosions and animations | craters and ground tiles on the render clock |
+| `Explosion_Func_ScreenShake()` | sleeps inside a simulation step, and sleeping re-entered the stepper |
+| `GUI_FactoryWindow_InitItems()` | reseeded the *game* LCG, from the viewer's own house, on opening a window |
+
+The last two are the ones worth remembering. Screen shake calls `sleepIdle()`
+eight times from inside `Explosion_Tick()`, and `sleepIdle()` is where the match
+pump lives — so a step re-entered the stepper and ran however many further ticks
+the sleep happened to last. The guard against that was in the pump, which only
+stopped the pump re-entering *itself*; it now lives in `MpGame_Step()`, which is
+where the re-entry actually arrives. And the Starport window reseeds the
+simulation's random generator so that its prices hold still while you look at
+them — in a match, one player opening a window moved every random the other
+player's game was about to draw. Both now use the interface generator.
+
+### The desync detector
+
+Every turn packet carries a checksum of the state as of turn N, chunk by chunk,
+and each client compares it with everyone else's. Nobody is the authority: a
+mismatch is reported and the match stops being trustworthy from that moment,
+because the loser's game would be corrupt either way.
+
+```
+mp-live: DESYNC at turn 6 (tick 48), about: map rng
+```
+
+`--mp-desync-dump` adds the evidence. The mismatch is always noticed `delay`
+turns after the state it describes, by which time that state is gone — so with
+the flag on, every turn is dumped and the dumps older than the delay deleted
+again. When the two clients disagree about turn N, both still have their own
+turn N on disk, and the answer is a diff:
+
+```bash
+./opendune ... --mp-relay=HOST,room,1 --mp-desync-dump
+# mp-live: both players' turn 6 is in mpdesync-s*-turn6.bin
+```
+
+That is how the last three were found, each in one run: one differing byte in
+one tile named the bloom on tile (52,31), and the explosion trace either side of
+it named the sleep.
+
+### What is still missing
+
+* **The interface.** A lobby, a room code the player can type, a build handshake
+  (same binary, same `opendune.ini`) — see §5's list, all still true.
+* **Everything the player can do that is not yet a command.** Repair, Starport
+  orders, the Palace, rally points, the production queue.
+* **`Map_FindLocationTile()`** ([map.c:965](src/map.c:965)) still reads
+  `g_minimapPosition` in case 5 and gates validity on `g_playerHouseID` in cases
+  4 to 7. It is reachable from reinforcements and from the AI, neither of which
+  a two-human match uses yet.
+
 ## Known hazards
 
 * **The unit pool.** Two humans building freely will hit the per-type

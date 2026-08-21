@@ -232,6 +232,19 @@ tools/relay/relay -listen 127.0.0.1:31337 -verbose &
 ./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=20000,1000 --mp-relay=127.0.0.1:31337,r1,2 &
 ```
 
+`--mp-relay` *without* `--mp-turnloop` is the real game: two windows, two
+players, the map drawn and the simulation stepped by the turn loop underneath.
+`tools/mpduel.sh` starts both sides on this machine and says at the end whether
+they agreed. `--speed=N` sets the tick multiplier, `--mp-units=N` gives each
+player a starting squad, `--mp-seed=N` names the map.
+
+Every turn packet carries a checksum per savegame chunk, so a live match reports
+its own desync — `mp-live: DESYNC at turn 6 (tick 48), about: map rng`. Add
+`--mp-desync-dump` and both clients keep the last few turns on disk, so the turn
+the mismatch names can be diffed byte for byte (`mpdesync-s*-turnN.bin`). That
+pair — the chunk name and the two dumps — is how the desyncs in stage 6 of
+mp.md were found, one run each.
+
 → [mp.md](mp.md), [tools/relay/README.md](tools/relay/README.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than
@@ -253,9 +266,10 @@ leaving it running.
 * [mp.md](mp.md) — internet multiplayer (deterministic lockstep): the plan, and
   the engine changes it needs — `g_playerHouseID` as a simulation input, the
   shared RNG streams, per-house fog, the modal windows that stop the world, and
-  the radar animation. Stages 0 to 5 are built — determinism, the RNG split, the
-  match descriptor, the command layer, the turn loop and the relay; the lobby and
-  the interface work are still design
+  the radar animation. Stages 0 to 6 are built — determinism, the RNG split, the
+  match descriptor, the command layer, the turn loop, the relay and the real
+  game loop with its desync detector; the lobby and the rest of the interface
+  work are still design
 * [harvester.md](harvester.md) — harvester state model and its bug history; the
   worked example of supplementing a script correctly
 * [skirmish.md](skirmish.md) — AI vs AI mode: spectator model, base plans, and
