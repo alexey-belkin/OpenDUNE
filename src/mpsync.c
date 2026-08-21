@@ -8,6 +8,10 @@
 
 #include "saveload/saveload.h"
 #include "scenario.h"
+#include "opendune.h"
+#include "house.h"
+#include "unit.h"
+#include "gui/gui.h"
 #include "structure.h"
 #include "team.h"
 #include "tools.h"
@@ -102,6 +106,18 @@ static uint32 MpSync_ChunkCrc(bool (*saveProc)(FILE *fp), bool *ok)
  * every kill.  Stashed and restored around the write rather than removed from
  * the chunk: the format stays the savegame's.
  */
+/**
+ * The INFO chunk, with everything that only describes one player taken out.
+ *
+ * Two kinds of thing live in there and only one of them is the match. The
+ * mission tallies and the score are per client because each client is keeping
+ * score for its own house. The selection, the active action, the building being
+ * placed and where the minimap is pointing are per client because they are the
+ * chair, not the world -- and every one of them is saved, so a checksum that
+ * counted them would call two people watching the same match a desync. The
+ * fields that are genuinely shared -- the scenario, the clock, the starport
+ * stock, the missile countdown -- stay in.
+ */
 static bool MpSync_InfoSave(FILE *fp)
 {
 	uint16 killedAllied     = g_scenario.killedAllied;
@@ -111,6 +127,17 @@ static bool MpSync_InfoSave(FILE *fp)
 	uint16 harvestedAllied  = g_scenario.harvestedAllied;
 	uint16 harvestedEnemy   = g_scenario.harvestedEnemy;
 	int16  score            = g_scenario.score;
+
+	uint16 creditsNoSilo    = g_playerCreditsNoSilo;
+	uint16 minimapPosition  = g_minimapPosition;
+	uint16 selectionRect    = g_selectionRectanglePosition;
+	uint16 selectionType    = g_selectionType;
+	uint16 activeType       = g_structureActiveType;
+	uint16 activePosition   = g_structureActivePosition;
+	Structure *activeStructure = g_structureActive;
+	Unit *unitSelected      = g_unitSelected;
+	Unit *unitActive        = g_unitActive;
+	uint16 activeAction     = g_activeAction;
 	bool ret;
 
 	g_scenario.killedAllied = g_scenario.killedEnemy = 0;
@@ -118,7 +145,33 @@ static bool MpSync_InfoSave(FILE *fp)
 	g_scenario.harvestedAllied = g_scenario.harvestedEnemy = 0;
 	g_scenario.score = 0;
 
+	g_playerCreditsNoSilo = 0;
+	g_minimapPosition = 0;
+	g_selectionRectanglePosition = 0;
+	g_selectionType = 0;
+	/* 0xFFFF, not 0: "nothing is being placed" has a sentinel here, and 0 is
+	 * a real structure type.  Info_Save() reads the pointer whenever the type
+	 * says something is being placed, so zeroing the pair is a null dereference
+	 * rather than a clear. */
+	g_structureActiveType = 0xFFFF;
+	g_structureActivePosition = 0;
+	g_structureActive = NULL;
+	g_unitSelected = NULL;
+	g_unitActive = NULL;
+	g_activeAction = 0;
+
 	ret = Info_Save(fp);
+
+	g_playerCreditsNoSilo = creditsNoSilo;
+	g_minimapPosition = minimapPosition;
+	g_selectionRectanglePosition = selectionRect;
+	g_selectionType = selectionType;
+	g_structureActiveType = activeType;
+	g_structureActivePosition = activePosition;
+	g_structureActive = activeStructure;
+	g_unitSelected = unitSelected;
+	g_unitActive = unitActive;
+	g_activeAction = activeAction;
 
 	g_scenario.killedAllied    = killedAllied;
 	g_scenario.killedEnemy     = killedEnemy;

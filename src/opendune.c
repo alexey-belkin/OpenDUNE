@@ -177,6 +177,13 @@ static bool s_mpRealtime = false;
 static char s_mpRelayHost[128] = "";
 static uint16 s_mpRelayPort = 31337;
 static char s_mpRelayRoom[64] = "opendune";
+static uint32 s_mpLiveSeed = 1000;
+static uint32 s_mpLiveStart = 0;
+static uint32 s_mpLiveSteps = 0;
+static uint32 s_mpLiveStalledMs = 0;
+static uint32 s_mpLiveNextSample = 0;
+static uint32 s_mpLiveSampleStep = 300;
+static bool s_mpLiveDesyncSeen = false;
 
 static void PrintToConsole(const char *str);
 
@@ -1122,6 +1129,194 @@ static void MpHarness_Step(void)
 
 	Explosion_Tick();
 	Animation_Tick();
+
+	/* On the game clock for the same reason as the two above: it reorders the
+	 * array GameLoop_Unit() walks, and per frame that order would depend on the
+	 * frame rate. */
+	Unit_SortOrder();
+}
+
+/**
+ * Whether this process is playing a real, drawn match over the relay.
+ *
+ * The turn loop harness and the game are two different callers of the same
+ * loop: the harness owns its clock and draws nothing, the game draws every
+ * frame and until now let a 60 Hz ticker own its clock.  Naming the relay
+ * without naming the harness asks for the second one.
+ */
+static bool MpGame_IsLive(void)
+{
+	return (s_mpRelayHost[0] != '\0' && !s_mpTurnLoop);
+}
+
+/**
+ * Simulate up to now, in turns.
+ *
+ * The game loop used to run one simulation step per drawn frame while a wall
+ * clock ticker advanced g_timerGame underneath it -- two clocks, neither
+ * driving the other, which is fine when there is nobody to agree with and
+ * impossible when there is.  Here the wall clock decides how many ticks are
+ * *due*, the turn loop decides how many may actually run, and drawing is what
+ * happens with the time left over.
+ *
+ * A stall returns immediately rather than spinning: the frame still draws, the
+ * mouse still moves, and the match resumes on the tick the packet lands. That
+ * is what a stall has to look like to a player -- a freeze of the world, not of
+ * the program.
+ */
+static void MpGame_Step(void)
+{
+	char line[256];
+	uint32 due;
+	uint16 budget;
+
+	/* Sixty ticks a second, measured against the wall rather than against how
+	 * fast this machine draws.  The other client is pacing itself the same way,
+	 * and lockstep only works if both agree what a second holds. */
+	due = ((Timer_GetTime() - s_mpLiveStart) * 60) / 1000;
+
+	/* Bounded, so a client that fell behind catches up over several frames
+	 * instead of disappearing into one long one. */
+	for (budget = 0; budget < 16 && s_mpLiveSteps < due; budget++) {
+		if (MpTurn_IsDue() && !MpTurn_Advance()) {
+			uint32 stallStart = Timer_GetTime();
+			uint8 goneSlot = 0;
+
+			/* The other player leaving ends the match rather than pausing it
+			 * for ever.  The turn loop stops; the simulation carries on locally
+			 * so the window stays alive and can be looked at and closed. */
+			if (MpNet_HasLeft(&goneSlot) || !MpNet_IsConnected()) {
+				snprintf(line, sizeof(line), "mp-live: the match ended at turn %u (%s)",
+				         (unsigned)MpTurn_GetTurn(),
+				         MpNet_IsConnected() ? "the other player left" : MpNet_GetError());
+				PrintToConsole(line);
+				MpTurn_End();
+				MpNet_Disconnect();
+				return;
+			}
+
+			s_mpLiveStalledMs += Timer_GetTime() - stallStart;
+
+			/* Time the world stood still is time the schedule must forget, or
+			 * the next frame would sprint through sixteen ticks to catch up and
+			 * the stall would become a fast-forward. */
+			s_mpLiveStart += Timer_GetTime() - stallStart;
+			return;
+		}
+
+		Timer_StepGame();
+		Timer_StepGUI();
+
+		GameLoop_Team();
+		GameLoop_Unit();
+		GameLoop_Structure();
+		GameLoop_House();
+
+		/* On the game clock, not the render clock: craters and animations are
+		 * map state, and two clients do not draw at the same rate.  GUI_DrawScreen()
+		 * leaves them alone while a match is on. */
+		Explosion_Tick();
+		Animation_Tick();
+		Unit_SortOrder();
+
+		s_mpLiveSteps++;
+
+		if (s_mpLiveSteps >= s_mpLiveNextSample) {
+			MpSyncChecksum sample;
+
+			/* Printed as well as exchanged.  The turn packets already carry a
+			 * checksum and the loop compares them, so a desync is caught without
+			 * this -- but a log the two players can diff afterwards says *what*
+			 * diverged, and the packets say only that something did. */
+			if (MpSync_Take(&sample)) {
+				MpSync_Format(line, sizeof(line), s_mpLiveSteps, &sample);
+				PrintToConsole(line);
+			}
+
+			snprintf(line, sizeof(line), "mp-live: tick %u turn %u, %u ms stalled so far",
+			         (unsigned)s_mpLiveSteps, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpLiveStalledMs);
+			PrintToConsole(line);
+
+			s_mpLiveNextSample += s_mpLiveSampleStep;
+		}
+	}
+
+	{
+		uint32 desyncTurn = 0;
+
+		if (MpTurn_HasDesynced(&desyncTurn) && !s_mpLiveDesyncSeen) {
+			snprintf(line, sizeof(line), "mp-live: DESYNC -- the two players disagreed about turn %u",
+			         (unsigned)desyncTurn);
+			PrintToConsole(line);
+
+			/* Said once, then played on.  Stopping here would be the honest
+			 * thing in front of a player and useless in front of a log: the
+			 * samples after a divergence are what name the chunk that caused
+			 * it, and a match that halts stops producing them. */
+			s_mpLiveDesyncSeen = true;
+		}
+	}
+}
+
+/**
+ * Join the room and start the match everybody agreed on.
+ *
+ * Both clients build the same map from the same seed and hand both houses to
+ * the AI, so what the two windows show is one match seen from two chairs --
+ * which is exactly the claim stage 3c made and the first chance to watch it
+ * being true.
+ */
+static bool MpGame_Begin(void)
+{
+	char line[256];
+	uint32 until;
+
+	if (!MpNet_Connect(s_mpRelayHost, s_mpRelayPort, s_mpRelayRoom, s_mpTurnSlot)) {
+		snprintf(line, sizeof(line), "mp-live: FAIL (%s)", MpNet_GetError());
+		PrintToConsole(line);
+		return false;
+	}
+
+	snprintf(line, sizeof(line), "mp-live: room %s, slot %u, seed %u -- waiting for the other player",
+	         s_mpRelayRoom, (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpLiveSeed);
+	PrintToConsole(line);
+
+	until = Timer_GetTime() + s_mpNetWaitMs;
+	while (!MpNet_IsReady()) {
+		MpNet_Pump();
+
+		if (!MpNet_IsConnected() || Timer_GetTime() > until) {
+			snprintf(line, sizeof(line), "mp-live: FAIL (%s)",
+			         MpNet_IsConnected() ? "the other player never joined" : MpNet_GetError());
+			PrintToConsole(line);
+			MpNet_Disconnect();
+			return false;
+		}
+
+		msleep(5);
+	}
+
+	if (!MpHarness_StartMatch(s_mpLiveSeed)) {
+		PrintToConsole("mp-live: FAIL (could not start a skirmish)");
+		MpNet_Disconnect();
+		return false;
+	}
+
+	Skirmish_SetViewpoint(s_mpTurnSlot);
+
+	s_mpLiveStart      = Timer_GetTime();
+	s_mpLiveSteps      = 0;
+	s_mpLiveStalledMs  = 0;
+	s_mpLiveNextSample = s_mpLiveSampleStep;
+	s_mpLiveDesyncSeen = false;
+
+	MpTurn_Begin(s_mpTurnSlot, MpTransport_Net(), s_mpTurnLength, s_mpTurnDelay);
+
+	snprintf(line, sizeof(line), "mp-live: playing, tl%u d%u, viewpoint slot %u",
+	         (unsigned)s_mpTurnLength, (unsigned)s_mpTurnDelay, (unsigned)(s_mpTurnSlot + 1));
+	PrintToConsole(line);
+
+	return true;
 }
 
 /**
@@ -2125,6 +2320,10 @@ static void GameLoop_Main(void)
 				WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
 				WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
 				started = Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_warPlaySeed, &planA, &planB);
+			} else if (MpGame_IsLive()) {
+				/* Two processes, one match, seen from two chairs -- the same
+				 * thing --mp-turnloop proves headless, with the drawing left in. */
+				started = MpGame_Begin();
 			} else {
 				started = Skirmish_Start(s_skirmishHouse[0], s_skirmishHouse[1]);
 			}
@@ -2307,10 +2506,15 @@ static void GameLoop_Main(void)
 
 			GUI_DrawCredits(g_playerHouseID, 0);
 
-			/* Every step above x1 is another sequential simulation tick.
-			 * Advancing the game timer between passes keeps every timer-driven
-			 * system in step, rather than speeding up selected subsystems. */
-			{
+			if (MpTurn_IsActive()) {
+				/* A networked match runs on the turn loop's clock, and the speed
+				 * keys do not apply to it: how fast the world runs is not a thing
+				 * one player gets to decide. */
+				MpGame_Step();
+			} else {
+				/* Every step above x1 is another sequential simulation tick.
+				 * Advancing the game timer between passes keeps every timer-driven
+				 * system in step, rather than speeding up selected subsystems. */
 				uint16 passes = GameLoop_GetSpeedFactor();
 				uint16 pass;
 
@@ -2443,6 +2647,9 @@ static void PrintToConsole(const char * str)
 	}
 	putchar('\n');
 #endif
+	/* A match that is watched rather than measured ends by somebody closing the
+	 * window, and a block buffered stdout would take the whole log with it. */
+	fflush(stdout);
 }
 
 #ifdef TOS
@@ -2589,6 +2796,21 @@ int main(int argc, char **argv)
 				sscanf(argv[i] + 10, "%u,%u", &length, &delay);
 				if (length != 0) s_mpTurnLength = (uint16)length;
 				if (delay  != 0) s_mpTurnDelay  = (uint8)delay;
+			} else if (strncmp(argv[i], "--mp-seed=", 10) == 0) {
+				/* Which map the match is played on.  Both players must name the
+				 * same one; distributing it is the lobby's job, and there is no
+				 * lobby yet. */
+				unsigned seed = 0;
+
+				sscanf(argv[i] + 10, "%u", &seed);
+				if (seed != 0) s_mpLiveSeed = seed;
+			} else if (strncmp(argv[i], "--mp-sample=", 12) == 0) {
+				/* How often a live match prints a checksum.  Closer together
+				 * when hunting a desync, because the log has to bracket it. */
+				unsigned step = 0;
+
+				sscanf(argv[i] + 12, "%u", &step);
+				if (step != 0) s_mpLiveSampleStep = step;
 			} else if (strncmp(argv[i], "--mp-wait=", 10) == 0) {
 				/* How long either transport waits for a packet that has not
 				 * come, and how long the lobby waits for the second player. */
@@ -2727,6 +2949,9 @@ int main(int argc, char **argv)
 	g_mouseDisabled = 0;
 
 	GameLoop_Main();
+
+	if (MpTurn_IsActive()) MpTurn_End();
+	if (MpGame_IsLive()) MpNet_Disconnect();
 
 	PrintToConsole(String_Get_ByIndex(STR_THANK_YOU_FOR_PLAYING_DUNE_II));
 

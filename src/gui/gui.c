@@ -32,6 +32,7 @@
 #include "../input/mouse.h"
 #include "../load.h"
 #include "../map.h"
+#include "../mpturn.h"
 #include "../opendune.h"
 #include "../pool/pool.h"
 #include "../pool/house.h"
@@ -4590,9 +4591,15 @@ void GUI_DrawScreen(Screen screenID)
 
 	if (!GFX_Screen_IsActive(SCREEN_0)) g_viewport_forceRedraw = true;
 
-	Explosion_Tick();
-	Animation_Tick();
-	Unit_Sort();
+	/* Craters and animations write into g_map, which is saved state, so under
+	 * lockstep they are simulation and belong on the game clock -- the turn loop
+	 * steps them there.  Left here they would run at whatever rate each client
+	 * happens to draw at, which is a desync by construction. */
+	if (!MpTurn_IsActive()) {
+		Explosion_Tick();
+		Animation_Tick();
+		Unit_Sort();
+	}
 
 	if (!g_viewport_forceRedraw && g_viewportPosition != g_minimapPosition) {
 		uint16 viewportX = Tile_GetPackedX(g_viewportPosition);

@@ -3539,14 +3539,19 @@ Team *Unit_GetTeam(Unit *u)
 /**
  * ?? Sorts unit array and count enemy/allied units.
  */
-void Unit_Sort(void)
+/**
+ * One bubble pass over the draw order.
+ *
+ * One pass, not a sort: the array converges over successive calls, which is
+ * fine for drawing and fatal for a networked match, because the array it
+ * reorders is the same one GameLoop_Unit() walks.  Called once per drawn frame,
+ * as the single player game does, the order in which units simulate depends on
+ * how fast each client draws -- so under lockstep it is called once per game
+ * tick instead, and this half is separate for that reason.
+ */
+void Unit_SortOrder(void)
 {
-	House *h;
 	uint16 i;
-
-	h = g_playerHouse;
-	h->unitCountEnemy = 0;
-	h->unitCountAllied = 0;
 
 	for (i = 0; i < g_unitFindCount - 1; i++) {
 		Unit *u1;
@@ -3566,6 +3571,28 @@ void Unit_Sort(void)
 			g_unitFindArray[i + 1] = u1;
 		}
 	}
+}
+
+/**
+ * The draw order, and the radar's friend/enemy tally with it.
+ *
+ * The tally is recomputed from the viewpoint every frame into a field that is
+ * saved -- so on two clients watching one match it is a saved field that
+ * depends on who is watching, which is a desync.  The networked path does not
+ * come through here at all: it steps Unit_SortOrder() on the game clock and
+ * leaves the tally to the incremental counters in Unit_HouseUnitCount_Add(),
+ * which already know which house has seen what.
+ */
+void Unit_Sort(void)
+{
+	House *h;
+	uint16 i;
+
+	Unit_SortOrder();
+
+	h = g_playerHouse;
+	h->unitCountEnemy = 0;
+	h->unitCountAllied = 0;
 
 	for (i = 0; i < g_unitFindCount; i++) {
 		Unit *u;

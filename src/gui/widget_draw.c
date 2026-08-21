@@ -16,6 +16,7 @@
 #include "../pool/unit.h"
 #include "../sprites.h"
 #include "../string.h"
+#include "../mpturn.h"
 #include "../structure.h"
 #include "../table/strings.h"
 #include "../tile.h"
@@ -637,7 +638,14 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 
 			h = House_Get_ByIndex(s->o.houseID);
 
-			if (s->upgradeTimeLeft == 0 && Structure_IsUpgradable(s)) s->upgradeTimeLeft = 100;
+			/* A draw function writing simulation state: upgradeTimeLeft is
+			 * saved, and this arms it from whichever structure the local player
+			 * happens to have selected.  In a networked match that is a desync
+			 * by construction -- two players select different things -- so the
+			 * offer is simply not made there.  Upgrading is not routed through
+			 * a command yet either (mp.md, "Not yet routed"), so nothing is
+			 * lost that was available. */
+			if (!MpTurn_IsActive() && s->upgradeTimeLeft == 0 && Structure_IsUpgradable(s)) s->upgradeTimeLeft = 100;
 			GUI_UpdateProductionStringID();
 		} break;
 
