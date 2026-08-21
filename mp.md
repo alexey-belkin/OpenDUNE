@@ -1,7 +1,8 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stages 0 to 3 (plus 3a, 3b and the 3c harness) are in the tree, the rest is design.** The determinism
-harness, the RNG split, the match descriptor and the command layer exist as code,
+**Status: stages 0 to 5 are in the tree except the lobby; the interface work is design.** The determinism
+harness, the RNG split, the match descriptor, the command layer, the turn loop
+and the relay exist as code,
 and the sections at the bottom record what each cost and what each found. The
 rest of this file is the plan and, more importantly, the list of things in the
 engine that have to change before any of it can work. The order of the sections
@@ -447,8 +448,9 @@ Each stage is verifiable on its own, which matters because there is no test suit
 | 1 | **done** — split the RNG into simulation and UI streams; seed the simulation per match | five runs identical, `--war-metrics` unchanged, three self-tests pass |
 | 2 | **done (v1)** — match descriptor replacing `g_playerHouseID` in the logic; skirmish becomes a case of it | state byte-identical, the sixteen `--war-metrics` numbers unmoved |
 | 3 | **done** — command layer plus local replay: record commands, replay, compare checksums | `--mp-replay` passes on three seeds; dropping one command fails it |
-| 4 | network-gated stepper, render decoupled, `Mp_Pump()` in every nested loop (§5 v1) | two processes on localhost; modal-surface test from §5 |
-| 5 | relay and lobby: rooms, join codes, timeout, config hash handshake | a match over the internet |
+| 4 | **done** — the lockstep turn loop, with a loopback and a file transport | two processes playing one match; a measured ping table |
+| 5 | **done, less the lobby** — a relay and a TCP transport: rooms, join codes, drop detection | two processes playing one match through a socket, on five seeds |
+| 5b | the lobby: creating and finding a room from the menu, config hash handshake, the render decoupling and `Mp_Pump()` of §5 | a match started without a command line |
 | 6 | per-house fog, non-modal build panel (§5 v2), reconnect by state upload, more than two houses, AI slots, spectators | |
 
 **Stage 3 deserves the emphasis.** A local replay with no network at all proves the
@@ -1138,12 +1140,149 @@ Every configuration in the table agreed on every checksum.
 
 ### What is still missing before this is multiplayer
 
-* **A socket and a relay.** The file transport proves the loop, not the network:
-  no loss, no reordering, no NAT.
 * **The real game loop.** The turn loop runs in the harness, which owns its own
   clock. In the game, `g_timerGame` is driven by a 60 Hz timer that does not stop
   — §4 of this document, still design.
 * **A lobby**, and the modal windows and radar animation of §5 and §6.
+
+## Stage 5 — the relay and the socket (done; the lobby is not)
+
+The file transport proved the turn loop, not the network. It had no loss, no
+reordering, no NAT and no second machine — three of those still do not appear on
+a localhost socket, but the code path does, and the code path is what stage 5
+replaces.
+
+### Why a relay and not a direct connection
+
+Peer to peer needs hole punching, and behind symmetric NAT — most home routers,
+every mobile network — it still fails. Both clients dialling **out** to one public
+address works everywhere there is internet at all, and it gives room codes for
+free: the room is the join code, and neither player has to know the other's
+address or open a port.
+
+The cost is one extra hop of latency each way, and the ping table below says what
+that costs. The answer is: raise `D` by one.
+
+### The relay knows nothing about the game
+
+[tools/relay/relay.go](tools/relay/relay.go) is about three hundred lines of Go
+and it never parses a command. A packet arrives, it goes to everybody else in the
+room, and that is the whole of it. It holds no state a client could disagree
+with and decides nothing — two clients that disagree about the world find out
+from each other's checksums, not from the relay.
+
+That is deliberate and it is the same principle as §"No player is the source of
+truth", one level down: **a bug in the relay cannot become a bug in the match.**
+It can only stop packets, and a stopped packet is a stall, which is visible.
+
+The wire protocol is line-oriented and readable on purpose, because when a match
+desyncs the packets are the evidence and watching a room with `netcat` is worth
+more than the bytes it costs:
+
+```
+client -> relay   JOIN <room> <slot>\n
+relay  -> client  WELCOME <slot> <members>\n
+relay  -> client  READY <members>\n           once the room is full
+relay  -> client  LEFT <slot>\n               when somebody drops
+client -> relay   PKT <length>\n<length bytes>
+relay  -> client  PKT <slot> <length>\n<length bytes>
+```
+
+The slot in an outgoing `PKT` is filled in by the relay from the connection it
+arrived on, never from what the sender claims: a client cannot speak for its
+opponent.
+
+**TCP, not UDP.** At the default turn length a client sends 7.5 packets per
+second of a few dozen bytes each — a match is under a kilobyte per second in both
+directions together. Head-of-line blocking, the usual reason to avoid TCP, costs
+one turn here, and lockstep was going to wait for that packet anyway. What TCP
+buys in return is ordering, retransmission and NAT traversal that already work,
+on every platform, with no code. The transport sits behind `MpTransport`, so if
+that judgement turns out wrong it is one file.
+
+### The socket side
+
+[src/mpnet.c](src/mpnet.c) is the third `MpTransport`. The join is done with the
+socket still blocking, because there is nothing to do until it succeeds;
+everything after is non-blocking, because the game loop may never wait on the
+network anywhere except the deliberate stall in `MpTurn_Advance()`.
+
+Two details are worth naming:
+
+* **Our own packet never round-trips.** `send` stores the local packet straight
+  into the receive window. Hearing our own move back from the relay before we
+  could act on it would put a whole ping into every turn for nothing.
+* **TCP is a stream, so a packet is not a read.** `MpNet_ParseBuffer()` consumes
+  whole messages and leaves a partial one in the buffer for the next pump. This
+  is the bug that would otherwise appear only under load, on a real link, in
+  front of a player.
+
+### The result
+
+```bash
+tools/relay/relay -listen :31337 -verbose
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=20000,1000 --mp-relay=HOST:31337,room,1 &
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=20000,1000 --mp-relay=HOST:31337,room,2 &
+```
+
+Twenty thousand ticks, 21 checksum samples, **identical on all five seeds tried**
+— 1000, 7919, 24757, 31337, 40595. One seed is not a sample; that lesson is
+recorded twice already in this file.
+
+### The negative controls
+
+| Tampering | Result |
+|---|---|
+| The two players on different maps | both report a disagreement about turn 0, independently |
+| One player never joins | "the other player never joined", at the lobby, before a tick is simulated |
+| One player quits mid-match | "slot 2 left the match at turn 253" |
+
+The last one is the one that changed the code. The first version noticed nothing
+and sat out the full twenty-second packet timeout, because our own socket was
+still perfectly healthy — it is the *relay* that knows the other player is gone,
+and it says so with `LEFT`. Twenty seconds of a frozen screen is what that bug
+would have looked like to a player. Acting on `LEFT` turned it into an immediate
+answer.
+
+### The ping table again, over a real socket
+
+`-lag` on the relay holds every forwarded frame back by a fixed delay, so two
+processes on one machine can be made to feel like two players on different
+continents. It lives in the relay rather than in the game on purpose: a client
+that could tell a slow relay from a slow opponent would be a client with a second
+source of truth.
+
+Thirty seconds of match, paced at 60 Hz:
+
+| Ping | D | Budget | Stalled, slot 1 | Stalled, slot 2 |
+|---|---|---|---|---|
+| 0 ms | 2 | 266 ms | 0 ms | 0 ms |
+| 25 ms | 2 | 266 ms | 38 ms | 21 ms |
+| 75 ms | 2 | 266 ms | 88 ms | 72 ms |
+| 150 ms | 2 | 266 ms | **2434 ms** | **2457 ms** |
+| 150 ms | 3 | 400 ms | 153 ms | 154 ms |
+| 150 ms | 4 | 533 ms | 161 ms | 146 ms |
+
+Every row agreed on every checksum, including the stuttering one: a stall is not
+a desync, it is the loop doing its job.
+
+The interesting row is 150 ms at `D=2`. The budget is 266 ms and the ping is
+150 ms, so on paper it fits with room to spare — and it does not. What the file
+transport's clean arithmetic hid is that the remaining 116 ms has to absorb the
+scheduler, the relay's own hop and the jitter of both, and it does not always.
+**The usable ping is well under the budget, not equal to it**, and the margin is
+what `D` is for. At 150 ms, `D=3`.
+
+### What is still missing after this
+
+* **A lobby.** Room codes exist on the wire and nowhere in the interface: today
+  both players type a command line. This is the next piece of work.
+* **The real game loop**, still. `--mp-turnloop` owns its clock; the game does
+  not (§4).
+* **A handshake.** Nothing yet checks that the two clients are the same build
+  with the same `opendune.ini` — the two most likely causes of a desync between
+  two real people, and the two easiest to catch before the match instead of at
+  turn 0.
 
 ## Known hazards
 

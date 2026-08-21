@@ -58,6 +58,7 @@
 #include "map.h"
 #include "match.h"
 #include "mpcommand.h"
+#include "mpnet.h"
 #include "mpturn.h"
 #include "mpsync.h"
 #include "pool/pool.h"
@@ -173,6 +174,9 @@ static char s_mpNetDirectory[256] = "";
 static uint32 s_mpNetWaitMs = 30000;
 static uint32 s_mpNetLagMs = 0;
 static bool s_mpRealtime = false;
+static char s_mpRelayHost[128] = "";
+static uint16 s_mpRelayPort = 31337;
+static char s_mpRelayRoom[64] = "opendune";
 
 static void PrintToConsole(const char *str);
 
@@ -1659,7 +1663,40 @@ static void GameLoop_Main(void)
 		uint32 tick;
 		uint8 houseID;
 
-		if (s_mpNetDirectory[0] != '\0') {
+		if (s_mpRelayHost[0] != '\0') {
+			uint32 until;
+
+			if (!MpNet_Connect(s_mpRelayHost, s_mpRelayPort, s_mpRelayRoom, s_mpTurnSlot)) {
+				snprintf(line, sizeof(line), "mp-turnloop: FAIL (%s)", MpNet_GetError());
+				PrintToConsole(line);
+				return;
+			}
+
+			snprintf(line, sizeof(line), "mp-turnloop: room %s, slot %u, waiting for the other player",
+			         s_mpRelayRoom, (unsigned)(s_mpTurnSlot + 1));
+			PrintToConsole(line);
+
+			/* Both players in the room before the first tick.  A match that
+			 * started half joined would spend its opening turns stalled, and the
+			 * stall figures below are meant to measure the wire, not the lobby. */
+			until = Timer_GetTime() + s_mpNetWaitMs;
+			while (!MpNet_IsReady()) {
+				MpNet_Pump();
+
+				if (!MpNet_IsConnected() || Timer_GetTime() > until) {
+					snprintf(line, sizeof(line), "mp-turnloop: FAIL (%s)",
+					         MpNet_IsConnected() ? "the other player never joined" : MpNet_GetError());
+					PrintToConsole(line);
+					MpNet_Disconnect();
+					return;
+				}
+
+				msleep(5);
+			}
+
+			transport = MpTransport_Net();
+			Skirmish_SetViewpoint(s_mpTurnSlot);
+		} else if (s_mpNetDirectory[0] != '\0') {
 			transport = MpTransport_File(s_mpNetDirectory);
 			MpTransport_File_SetLag(s_mpNetLagMs);
 			Skirmish_SetViewpoint(s_mpTurnSlot);
@@ -1704,7 +1741,7 @@ static void GameLoop_Main(void)
 				 * this process speaks for the empty slot too -- one turn ahead
 				 * of the one being applied, which is what the absent player
 				 * would have sent. */
-				if (s_mpNetDirectory[0] == '\0') {
+				if (s_mpNetDirectory[0] == '\0' && s_mpRelayHost[0] == '\0') {
 					uint8 other = (uint8)((s_mpTurnSlot == 0) ? 1 : 0);
 					MpPacket empty;
 
@@ -1725,15 +1762,40 @@ static void GameLoop_Main(void)
 				waited += 2;
 				stalledMs += Timer_GetTime() - stallStart;
 
-					/* Time spent here is time the simulation clock stood still, so it
+				/* Time spent here is time the simulation clock stood still, so it
 				 * has to come off the real-time schedule as well -- otherwise the
 				 * pacing below would sprint to catch up and hide the stall. */
 				if (s_mpRealtime) startedAt += Timer_GetTime() - stallStart;
 
-			if (waited > s_mpNetWaitMs) {
+				/* The other player leaving is not a stall, it is the end of the
+				 * match, and the relay says so the moment it happens.  Sitting
+				 * out the full timeout for a packet nobody is left to send would
+				 * turn a one-line answer into twenty seconds of silence -- and
+				 * in a real game, into twenty seconds of frozen screen. */
+				if (s_mpRelayHost[0] != '\0') {
+					uint8 goneSlot = 0;
+
+					if (MpNet_HasLeft(&goneSlot)) {
+						snprintf(line, sizeof(line), "mp-turnloop: FAIL (slot %u left the match at turn %u)",
+						         (unsigned)(goneSlot + 1), (unsigned)MpTurn_GetTurn());
+						PrintToConsole(line);
+						MpNet_Disconnect();
+						return;
+					}
+
+					if (!MpNet_IsConnected()) {
+						snprintf(line, sizeof(line), "mp-turnloop: FAIL (%s)", MpNet_GetError());
+						PrintToConsole(line);
+						MpNet_Disconnect();
+						return;
+					}
+				}
+
+				if (waited > s_mpNetWaitMs) {
 					snprintf(line, sizeof(line), "mp-turnloop: FAIL (no packet for turn %u after %u ms)",
 					         (unsigned)MpTurn_GetTurn(), (unsigned)waited);
 					PrintToConsole(line);
+					if (s_mpRelayHost[0] != '\0') MpNet_Disconnect();
 					return;
 				}
 			}
@@ -1759,10 +1821,20 @@ static void GameLoop_Main(void)
 		{
 			uint32 desyncTurn = 0;
 			bool desynced = MpTurn_HasDesynced(&desyncTurn);
+			char wire[192];
 
-			snprintf(line, sizeof(line), "mp-turnloop: slot %u tl%u d%u lag%u played %u turns over %u ticks, %u samples, %u ms stalled",
+			if (s_mpRelayHost[0] != '\0') {
+				snprintf(wire, sizeof(wire), "relay %s:%u room %s", s_mpRelayHost, (unsigned)s_mpRelayPort, s_mpRelayRoom);
+			} else {
+				snprintf(wire, sizeof(wire), "lag%u", (unsigned)s_mpNetLagMs);
+			}
+
+			/* Name the wire, because the same numbers mean different things on
+			 * each one: the file transport's lag is a figure we chose, the
+			 * relay's is whatever the internet did. */
+			snprintf(line, sizeof(line), "mp-turnloop: slot %u tl%u d%u %s played %u turns over %u ticks, %u samples, %u ms stalled",
 			         (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpTurnLength, (unsigned)s_mpTurnDelay,
-			         (unsigned)s_mpNetLagMs, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpReplayTicks,
+			         wire, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpReplayTicks,
 			         (unsigned)samples, (unsigned)stalledMs);
 			PrintToConsole(line);
 
@@ -1775,6 +1847,7 @@ static void GameLoop_Main(void)
 		}
 
 		MpTurn_End();
+		if (s_mpRelayHost[0] != '\0') MpNet_Disconnect();
 		return;
 	}
 
@@ -2516,6 +2589,31 @@ int main(int argc, char **argv)
 				sscanf(argv[i] + 10, "%u,%u", &length, &delay);
 				if (length != 0) s_mpTurnLength = (uint16)length;
 				if (delay  != 0) s_mpTurnDelay  = (uint8)delay;
+			} else if (strncmp(argv[i], "--mp-wait=", 10) == 0) {
+				/* How long either transport waits for a packet that has not
+				 * come, and how long the lobby waits for the second player. */
+				unsigned wait = 0;
+
+				sscanf(argv[i] + 10, "%u", &wait);
+				if (wait != 0) s_mpNetWaitMs = wait;
+			} else if (strncmp(argv[i], "--mp-relay=", 11) == 0) {
+				/* host[:port][,room[,slot]] -- where the relay is, and which
+				 * match to join once we get there. */
+				unsigned port = 0, slot = 0;
+				char host[128];
+				char room[64];
+
+				host[0] = '\0';
+				room[0] = '\0';
+				if (sscanf(argv[i] + 11, "%127[^:,]:%u,%63[^,],%u", host, &port, room, &slot) < 2) {
+					host[0] = '\0';
+					room[0] = '\0';
+					sscanf(argv[i] + 11, "%127[^,],%63[^,],%u", host, room, &slot);
+				}
+				if (host[0] != '\0') snprintf(s_mpRelayHost, sizeof(s_mpRelayHost), "%s", host);
+				if (room[0] != '\0') snprintf(s_mpRelayRoom, sizeof(s_mpRelayRoom), "%s", room);
+				if (port != 0) s_mpRelayPort = (uint16)port;
+				if (slot >= 1 && slot <= MATCH_SLOT_MAX) s_mpTurnSlot = (uint8)(slot - 1);
 			} else if (strncmp(argv[i], "--mp-realtime", 13) == 0) {
 				s_mpRealtime = true;
 			} else if (strncmp(argv[i], "--mp-lag=", 9) == 0) {

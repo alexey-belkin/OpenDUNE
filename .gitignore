@@ -34,3 +34,7 @@ tools/extractpak
 
 # Recorded matches: regenerate telemetry.html from them with tools/telemetry_report.py
 bin/telemetry/
+
+# the multiplayer relay, built beside its source
+/tools/relay/relay
+/tools/relay/relay-*

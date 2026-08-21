@@ -25,7 +25,7 @@ rules for shared state. **Read it before touching anything behavioural.**
 | `src/table/` | static data: `unitinfo.c`, `structureinfo.c`, `actioninfo.c` |
 | `src/skirmish.c` `src/ecosearch.c` `src/warsearch.c` | the AI test bench: match setup, the economy search, the war search |
 | `src/saveload/` | save format — extending a struct means touching this |
-| `tools/` | asset extractors, `dis_emc.py` for the game scripts, `telemetry_report.py` for recorded matches |
+| `tools/` | asset extractors, `dis_emc.py` for the game scripts, `telemetry_report.py` for recorded matches, `relay/` (the multiplayer relay, Go) |
 | `bin/` | build output and `bin/data/` (game files) |
 | `bundle/` | `make bundle` output — **wiped on every build** |
 
@@ -218,7 +218,21 @@ sender — together they measure whether a given ping stalls anybody.
 ./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=2,/tmp/net &
 ```
 
-→ [mp.md](mp.md).
+`--mp-relay=host[:port],room[,slot]` is the same two processes over a real TCP
+socket, through the relay in `tools/relay/` — the transport a match on the
+internet actually uses. Start the relay first; both sides must name the same room
+and the same seed and take different slots. `--mp-wait=ms` bounds both the wait
+for the second player and the wait for a packet, and the relay's own `-lag`
+emulates a ping (it belongs there, not in the game: a client must not be able to
+tell a slow relay from a slow opponent).
+
+```bash
+tools/relay/relay -listen 127.0.0.1:31337 -verbose &
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=20000,1000 --mp-relay=127.0.0.1:31337,r1,1 &
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=20000,1000 --mp-relay=127.0.0.1:31337,r1,2 &
+```
+
+→ [mp.md](mp.md), [tools/relay/README.md](tools/relay/README.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than
 leaving it running.
@@ -239,8 +253,9 @@ leaving it running.
 * [mp.md](mp.md) — internet multiplayer (deterministic lockstep): the plan, and
   the engine changes it needs — `g_playerHouseID` as a simulation input, the
   shared RNG streams, per-house fog, the modal windows that stop the world, and
-  the radar animation. Stage 0, the `--mp-checksum` determinism harness, is built;
-  everything else is still design
+  the radar animation. Stages 0 to 5 are built — determinism, the RNG split, the
+  match descriptor, the command layer, the turn loop and the relay; the lobby and
+  the interface work are still design
 * [harvester.md](harvester.md) — harvester state model and its bug history; the
   worked example of supplementing a script correctly
 * [skirmish.md](skirmish.md) — AI vs AI mode: spectator model, base plans, and

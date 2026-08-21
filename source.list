@@ -102,6 +102,7 @@ load.c
 map.c
 match.c
 mpcommand.c
+mpnet.c
 mpsync.c
 mpturn.c
 object.c
@@ -248,6 +249,7 @@ load.h
 map.h
 match.h
 mpcommand.h
+mpnet.h
 mpsync.h
 mpturn.h
 object.h
