@@ -8,7 +8,7 @@
 
 enum {
 	MP_TURN_LENGTH_DEFAULT = 8,                             /*!< Ticks per turn: 8 at 60 Hz is 133 ms. */
-	MP_TURN_DELAY_DEFAULT  = 2,                             /*!< A command issued during turn N runs at turn N+D. */
+	MP_TURN_DELAY_DEFAULT  = 3,                             /*!< A command issued during turn N runs at turn N+D. */
 	MP_TURN_COMMANDS_MAX   = 32                             /*!< Commands one player may issue in one turn. */
 };
 

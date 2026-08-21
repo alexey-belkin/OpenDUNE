@@ -1129,6 +1129,9 @@ Twenty seconds of match, both players on one machine:
 | 400 ms | 8 | 4 | 533 ms | 287 ms | 1.4 % |
 | 400 ms | 16 | 2 | 533 ms | 458 ms | 2.3 % |
 
+(This table was measured before the default delay became 3; the `D` column is
+what was passed, not what a run without `--mp-turn` would do today.)
+
 The budget is `D * TL` ticks, and the table says what the design argued: while
 the ping fits inside it the match does not stutter at all, and when it does not,
 it stutters badly. Both ways out work — a longer delay or longer turns — and both
@@ -1272,6 +1275,53 @@ transport's clean arithmetic hid is that the remaining 116 ms has to absorb the
 scheduler, the relay's own hop and the jitter of both, and it does not always.
 **The usable ping is well under the budget, not equal to it**, and the margin is
 what `D` is for. At 150 ms, `D=3`.
+
+### Deployed, and what the real internet said
+
+The relay runs on a VDSina VPS in Moscow that was already carrying a LiteLLM
+proxy — one core, 1.6 GB, nginx on 80 and 443, the proxy bound to localhost. The
+relay took port 31337, about a megabyte of memory and no measurable CPU, under
+`DynamicUser=yes` with the filesystem, devices and address families locked down,
+because it must not be able to reach its neighbour's secrets.
+
+Measuring the link taught something the localhost runs could not:
+
+| | |
+|---|---|
+| `connect()` | 0.3 ms |
+| First application round trip | 650–870 ms |
+| Round trip on a warm connection | median **93 ms**, p90 170 ms |
+
+The first two lines are a transparent proxy on this machine's path: it completes
+the TCP handshake locally and only then dials out, so the connection *looks*
+instant and the first byte costs most of a second. Only the third line is the
+number the match runs on — **the join is slow and the match is not**, and a
+naive one-shot ping measurement would have reported the wrong figure by a factor
+of seven.
+
+Three matches, three seeds, through the real relay: **identical**. That is the
+first test with real loss, reordering and NAT in it.
+
+Thirty seconds paced at 60 Hz, both clients on one machine so both legs share
+the path:
+
+| TL | D | Budget | Stalled, slot 1 | slot 2 | Share |
+|---|---|---|---|---|---|
+| 8 | 2 | 266 ms | 1303 ms | 1304 ms | **4.3 %** |
+| 8 | 3 | 400 ms | 131 ms | 131 ms | 0.4 % |
+| 8 | 4 | 533 ms | 228 ms | 119 ms | 0.6 % |
+| 16 | 2 | 533 ms | 199 ms | 126 ms | 0.5 % |
+
+The emulated table predicted this exactly: a 93 ms median with a 170 ms p90 does
+not fit a 266 ms budget, because the budget has to cover the p90 and the
+scheduler, not the median. `D=3` is clean and `D=4` buys nothing further.
+
+**So `MP_TURN_DELAY_DEFAULT` is 3, not 2.** The default should be the one that
+works on the transport v1 actually uses, and every real match goes through a
+relay. It costs 133 ms more between the click and the order taking effect —
+400 ms in a game where a tank takes a second and a half to turn around. Choosing
+it from the measured ping instead of a constant is v2; `--mp-turn=TL,D` is the
+manual override until then.
 
 ### What is still missing after this
 
