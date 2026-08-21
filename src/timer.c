@@ -33,6 +33,15 @@
 #include "timer.h"
 #include "mpturn.h"
 
+/* Set by the game loop, because the thing that steps a match lives up there and
+ * this file is meant to know only about clocks. */
+static void (*s_matchPump)(void) = NULL;
+
+void Timer_SetMatchPump(void (*pump)(void))
+{
+	s_matchPump = pump;
+}
+
 
 
 volatile uint32 g_timerGUI = 0;                                      /*!< Tick counter. Increases with 1 every tick when Timer 1 is enabled. Used for GUI. */
@@ -131,10 +140,27 @@ static void Timer_InterruptRun(int arg)
 	timerLock = false;
 }
 
+/*
+ * Every modal screen in this game -- the build list, the mentat, a briefing --
+ * is a loop of its own that spins on sleepIdle() until the player leaves it.
+ * On one machine that is fine: the world may as well stop while somebody reads.
+ * In a match it is not, because the world belongs to two people, and the one
+ * who is not reading watches a frozen battle until the other closes the window.
+ *
+ * So the pump goes here rather than into each of those loops: they all already
+ * come through this function, and none of them has to know a match is on.
+ * mp.md section 5 calls this Mp_Pump().
+ */
+static void Timer_PumpMatch(void)
+{
+	if (MpTurn_IsActive() && s_matchPump != NULL) s_matchPump();
+}
+
 #if defined(TOS) || defined(DOS)
 void SleepAndProcessBackgroundTasks(void)
 {
 	Timer_InterruptRun(0);
+	Timer_PumpMatch();
 }
 
 #elif defined(__HAIKU__)
@@ -153,6 +179,8 @@ void SleepAndProcessBackgroundTasks(void)
 		Timer_InterruptRun(dontRunCallonce);
 		dontRunCallonce = 1;
 	} while (system_time() - s_nextTrigger > 0);
+
+	Timer_PumpMatch();
 }
 
 #elif !defined(_WIN32) || defined(WITH_SDL) || defined(WITH_SDL2)
@@ -195,6 +223,7 @@ void SleepAndProcessBackgroundTasks(void)
 		s_timer_count = 0;
 		Timer_InterruptRun(1);	/* don't run "callonce" timers */
 	}
+	Timer_PumpMatch();
 }
 #endif /* _WIN32 */
 

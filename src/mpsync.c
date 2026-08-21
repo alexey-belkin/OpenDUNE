@@ -237,6 +237,107 @@ bool MpSync_Dump(const char *path)
 	return true;
 }
 
+/*
+ * The clamp: drawing is not allowed to change the world.
+ *
+ * Every viewpoint leak found so far has been one shape -- something on the
+ * presentation side of a line this code does not have wrote something the
+ * savegame stores.  They were all found the expensive way: two processes, a
+ * relay, a divergence noticed a minute later with the cause long off screen,
+ * then an evening of bisecting samples.
+ *
+ * That was the wrong detector for the question.  The question is not "do two
+ * machines agree" -- it is "did that function change the world", and one
+ * machine can answer it, in the same frame, with the name of the function.
+ * Take a checksum, run the suspect, take it again: if they differ, the suspect
+ * is impure and the chunk says where to look.
+ *
+ * It is the write barrier a garbage collector uses, or the borrow checker's
+ * question, done cheaply in C for exactly one invariant.
+ */
+static struct {
+	bool enabled;
+	bool armed;
+	MpSyncChecksum before;
+	uint32 reported;                                        /*!< One report per chunk, or a bad frame prints for ever. */
+} s_purity;
+
+void MpPurity_SetEnabled(bool enabled)
+{
+	s_purity.enabled = enabled;
+}
+
+bool MpPurity_IsEnabled(void)
+{
+	return s_purity.enabled;
+}
+
+void MpPurity_Begin(void)
+{
+	if (!s_purity.enabled) return;
+
+	s_purity.armed = MpSync_Take(&s_purity.before);
+}
+
+/**
+ * Give up on the region in progress.
+ *
+ * The match pump steps the simulation from inside sleepIdle(), and modal
+ * screens sit inside the very regions this clamp watches -- so when the world
+ * moves for that reason, it moved legitimately and the measurement is void.
+ * Cancelling is honest; subtracting the pump's effect would not be.
+ */
+void MpPurity_Cancel(void)
+{
+	s_purity.armed = false;
+}
+
+/**
+ * @return True if the world is unchanged, which is the only acceptable answer.
+ */
+bool MpPurity_End(const char *what, uint32 tick)
+{
+	static const char *names[] = { "info", "house", "unit", "structure", "map", "team", "unitnew", "rng" };
+	MpSyncChecksum after;
+	uint32 before[8];
+	uint32 now[8];
+	uint16 i;
+	bool clean = true;
+
+	if (!s_purity.enabled || !s_purity.armed) return true;
+
+	s_purity.armed = false;
+
+	if (!MpSync_Take(&after)) return true;
+	if (after.total == s_purity.before.total) return true;
+
+	before[0] = s_purity.before.info;      now[0] = after.info;
+	before[1] = s_purity.before.house;     now[1] = after.house;
+	before[2] = s_purity.before.unit;      now[2] = after.unit;
+	before[3] = s_purity.before.structure; now[3] = after.structure;
+	before[4] = s_purity.before.map;       now[4] = after.map;
+	before[5] = s_purity.before.team;      now[5] = after.team;
+	before[6] = s_purity.before.unitNew;   now[6] = after.unitNew;
+	before[7] = s_purity.before.rng;       now[7] = after.rng;
+
+	for (i = 0; i < 8; i++) {
+		char line[192];
+
+		if (before[i] == now[i]) continue;
+
+		clean = false;
+
+		if ((s_purity.reported & (1 << i)) != 0) continue;
+		s_purity.reported |= (1 << i);
+
+		snprintf(line, sizeof(line), "sim-purity: %s changed %s at tick %u (%08x -> %08x)",
+		         what, names[i], (unsigned)tick, (unsigned)before[i], (unsigned)now[i]);
+		MpPurity_Report(line);
+	}
+
+	return clean;
+}
+
 /** Pack a value little endian, so the checksum does not depend on the host. */
 static void MpSync_PutU32(uint8 *dst, uint32 value)
 {

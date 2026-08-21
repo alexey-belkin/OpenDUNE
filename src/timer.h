@@ -35,6 +35,7 @@ extern void Timer_Remove(void (*callback)(void));
 
 #if !defined(_WIN32) || defined(WITH_SDL) || defined(WITH_SDL2)
 extern void SleepAndProcessBackgroundTasks(void);
+extern void Timer_SetMatchPump(void (*pump)(void));
 #endif /* !_WIN32 || SDL || SDL2 */
 
 #endif /* TIMER_H */

@@ -1271,6 +1271,30 @@ static void MpGame_Step(void)
 }
 
 /**
+ * Step the match from inside somebody else's loop.
+ *
+ * Registered with the timer's idle hook, so every modal screen in the game --
+ * the build list, the mentat, a briefing -- keeps the world turning for the
+ * other player while this one reads.  Reentrant by refusal: the simulation
+ * itself reaches sleepIdle() in places, and stepping a turn from inside a turn
+ * would be a different game.
+ */
+static void MpGame_Pump(void)
+{
+	static bool inside = false;
+
+	if (!MpTurn_IsActive() || inside) return;
+
+	inside = true;
+	MpGame_Step();
+	inside = false;
+
+	/* Whatever region the clamp was measuring, the world just moved inside it
+	 * for a legitimate reason. */
+	MpPurity_Cancel();
+}
+
+/**
  * Join the room and start the match everybody agreed on.
  *
  * Both clients build the same map from the same seed and hand both houses to
@@ -1342,6 +1366,8 @@ static bool MpGame_Begin(void)
 	s_mpLiveDesyncSeen = false;
 
 	MpTurn_Begin(s_mpTurnSlot, MpTransport_Net(), s_mpTurnLength, s_mpTurnDelay);
+
+	Timer_SetMatchPump(&MpGame_Pump);
 
 	snprintf(line, sizeof(line), "mp-live: playing, tl%u d%u, viewpoint slot %u",
 	         (unsigned)s_mpTurnLength, (unsigned)s_mpTurnDelay, (unsigned)(s_mpTurnSlot + 1));
@@ -2423,7 +2449,13 @@ static void GameLoop_Main(void)
 
 		GFX_Screen_SetActive(SCREEN_0);
 
+		/* Input is allowed to change the world only through a command, so the
+		 * same clamp applies: whatever a click does directly here is something
+		 * the other player will never hear about. */
+		MpPurity_Begin();
 		key = GUI_Widget_HandleEvents(g_widgetLinkedListHead);
+		MpPurity_End("GUI_Widget_HandleEvents", g_timerGame);
+
 		GUI_Widget_Viewport_HandleEdgeScroll();
 		/* Group buttons have no widget shortcuts, so handle the physical M/A
 		 * keys here.  Single-unit widgets may consume the same key first; in
@@ -2559,7 +2591,10 @@ static void GameLoop_Main(void)
 				}
 			}
 
+			/* Drawing is not allowed to change the world.  See mpsync.c. */
+			MpPurity_Begin();
 			GUI_DrawScreen(SCREEN_0);
+			MpPurity_End("GUI_DrawScreen", g_timerGame);
 		}
 
 		GUI_DisplayText(NULL, 0);
@@ -2643,6 +2678,12 @@ static bool OpenDune_Init(int screen_magnification, VideoScaleFilter filter, int
  *
  * @param str IBM 437 code page encoded character string
  */
+/** The clamp reports through here, because the console printer is local. */
+void MpPurity_Report(const char *line)
+{
+	PrintToConsole(line);
+}
+
 static void PrintToConsole(const char * str)
 {
 #if defined(TOS) || defined(DOS)
@@ -2835,6 +2876,11 @@ int main(int argc, char **argv)
 
 				sscanf(argv[i] + 10, "%u", &seed);
 				if (seed != 0) s_mpLiveSeed = seed;
+			} else if (strncmp(argv[i], "--sim-purity", 12) == 0) {
+				/* Checksum the world around drawing and around input, and name
+				 * whatever changed it.  One machine, no network: the question
+				 * "did that function change the world" does not need two. */
+				MpPurity_SetEnabled(true);
 			} else if (strncmp(argv[i], "--mp-dump=", 10) == 0) {
 				/* Write every chunk to a file at one tick, so two clients that
 				 * disagree can be compared byte for byte. */
