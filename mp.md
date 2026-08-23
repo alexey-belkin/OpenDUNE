@@ -1395,6 +1395,7 @@ order is the lesson: each fix uncovered the next.
 | `Explosion_Func_ScreenShake()` | sleeps inside a simulation step, and sleeping re-entered the stepper |
 | `GUI_FactoryWindow_InitItems()` | reseeded the *game* LCG, from the viewer's own house, on opening a window |
 | `GUI_Widget_TextButton_Click()` with one unit selected | ordered the unit where it stood instead of submitting the order |
+| the target click with one unit selected | the same fork one step further along, and the one a player trips first |
 | `GUI_Widget_RepairUpgrade_Click()` | started a repair on the clicking client only |
 
 The last two are the ones worth remembering. Screen shake calls `sleepIdle()`
@@ -1446,8 +1447,19 @@ it named the sleep.
 
 * **The interface.** A lobby, a room code the player can type, a build handshake
   (same binary, same `opendune.ini`) — see §5's list, all still true.
-* **Everything the player can do that is not yet a command.** The Palace, rally
-  points, the production queue.
+* **The production queue** is the last thing a player can do that is not a
+  command. The Palace, the rally point, the Death Hand's aim and the Starport
+  all travel now.
+
+  The action panel is worth a second note, because the same fork bit twice. Its
+  buttons and shortcuts run through `GUI_Widget_TextButton_Click()`, and its
+  targeted orders finish with a click on the map in `GUI_Widget_Viewport_Click()`
+  -- and *both* had a group road that submitted an order and a single-unit road
+  that carried it out on the spot. Routing the button was not enough: pressing
+  Move only decides what the next click means, and the order happens on the
+  click. That second road is the one a player trips first, because pointing one
+  unit at a tile is the most ordinary thing they do. Both roads submit now, in
+  both places.
 
   The Starport now travels, and it needed one thing the others did not: a price.
   Its prices come from a generator seeded with the *viewer's* own house, so the

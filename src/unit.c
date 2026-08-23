@@ -6670,7 +6670,10 @@ void Unit_LaunchHouseMissile(uint16 packed)
 
 	packed = Tile_PackTile(tile);
 
-	isAI = !Match_IsHumanControlled(g_unitHouseMissile->o.houseID);
+	/* Whether *this* screen goes back to the structure view, which only the
+	 * owner's does -- the other player never picked up the crosshair. */
+	isAI = !Match_IsHumanControlled(g_unitHouseMissile->o.houseID) ||
+	       g_unitHouseMissile->o.houseID != g_playerHouseID;
 
 	Unit_Free(g_unitHouseMissile);
 

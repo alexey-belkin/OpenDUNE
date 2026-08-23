@@ -409,7 +409,12 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 			if (s != NULL && s->o.houseID == g_playerHouseID && g_table_structureInfo[s->o.type].o.flags.factory &&
 				s->o.type != STRUCTURE_CONSTRUCTION_YARD) {
-				Structure_SetRallyPoint(s, packed);
+				MpCommand cmd;
+
+				MpCommand_Init(&cmd, MP_CMD_STRUCTURE_RALLY, s->o.houseID);
+				cmd.object = s->o.index;
+				cmd.packed = packed;
+				MpCommand_Submit(&cmd);
 				g_viewport_forceRedraw = true;
 			}
 		}
@@ -473,7 +478,11 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		GUI_DisplayText(NULL, -1);
 
 		if (g_unitHouseMissile != NULL) {
-			Unit_LaunchHouseMissile(packed);
+			MpCommand cmd;
+
+			MpCommand_Init(&cmd, MP_CMD_HOUSE_MISSILE, (uint8)g_playerHouseID);
+			cmd.packed = packed;
+			MpCommand_Submit(&cmd);
 			return true;
 		}
 
@@ -492,7 +501,24 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 		action = g_activeAction;
 
-		UnitSelection_IssueOrder(u, action, packed);
+		/* The same fork the action panel had, one step further along: a group's
+		 * target click goes out as an order above, and a single unit's used to
+		 * be carried out right here.  The button press only changes what the
+		 * next click means -- this is the click, and it is where the order
+		 * actually happens, so this is what has to travel.  Left local it moved
+		 * one player's unit on one machine, which is the desync a player is most
+		 * likely to cause, because it is the most ordinary thing they do. */
+		{
+			MpCommand cmd;
+
+			MpCommand_Init(&cmd, MP_CMD_UNIT_ORDER, (uint8)g_playerHouseID);
+			cmd.action  = (uint8)action;
+			cmd.packed  = packed;
+			cmd.count   = 1;
+			cmd.unit[0] = u->o.index;
+
+			MpCommand_Submit(&cmd);
+		}
 
 		if (g_enableVoices == 0) {
 			Driver_Sound_Play(36, 0xFF);

@@ -1085,7 +1085,11 @@ void Structure_ActivateSpecial(Structure *s)
 			/* Give the user 7 seconds to select their target */
 			g_houseMissileCountdown = 7;
 
-			GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
+			/* Arming the missile is the world's business and both clients do
+			 * it; being handed the crosshair is the owner's, and doing it to
+			 * the other player would take their interface away for something
+			 * happening on the far side of the map. */
+			if (s->o.houseID == g_playerHouseID) GUI_ChangeSelectionType(SELECTIONTYPE_TARGET);
 		} break;
 
 		case HOUSE_WEAPON_FREMEN: {

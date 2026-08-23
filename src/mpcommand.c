@@ -205,6 +205,31 @@ void MpCommand_Execute(const MpCommand *cmd)
 			Structure_StarportOrder(s, cmd->unit, cmd->count, cmd->value);
 			break;
 
+		case MP_CMD_STRUCTURE_RALLY:
+			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
+			s = Structure_Get_ByIndex(cmd->object);
+			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
+			/* Not saved state, and still a desync: the rally point is what a
+			 * new unit is ordered to drive to, so a factory pointed somewhere
+			 * on one client builds units that go somewhere else. */
+			Structure_SetRallyPoint(s, cmd->packed);
+			break;
+
+		case MP_CMD_STRUCTURE_SPECIAL:
+			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
+			s = Structure_Get_ByIndex(cmd->object);
+			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
+			Structure_ActivateSpecial(s);
+			break;
+
+		case MP_CMD_HOUSE_MISSILE:
+			/* Aiming draws randoms and frees a unit, so it happens on both
+			 * clients or neither. */
+			Unit_LaunchHouseMissile(cmd->packed);
+			break;
+
 		case MP_CMD_STRUCTURE_HOLD:
 			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
 			s = Structure_Get_ByIndex(cmd->object);

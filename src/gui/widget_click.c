@@ -149,9 +149,13 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 
 		case STR_LAUNCH:
 		case STR_FREMEN:
-		case STR_SABOTEUR:
-			Structure_ActivateSpecial(s);
-			break;
+		case STR_SABOTEUR: {
+			MpCommand cmd;
+
+			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_SPECIAL, s->o.houseID);
+			cmd.object = s->o.index;
+			MpCommand_Submit(&cmd);
+		} break;
 
 		case STR_D_DONE: {
 			MpCommand cmd;

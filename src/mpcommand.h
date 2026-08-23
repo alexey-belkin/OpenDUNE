@@ -27,7 +27,10 @@ typedef enum MpCommandType {
 	MP_CMD_STRUCTURE_PLACE,                                 /*!< Put a finished structure on the map. */
 	MP_CMD_STRUCTURE_HOLD,                                  /*!< Hold or resume production; value 1 holds, 0 resumes. */
 	MP_CMD_STRUCTURE_REPAIR,                                /*!< The repair/upgrade button: a toggle, resolved where it runs. */
-	MP_CMD_STRUCTURE_STARPORT                               /*!< A Starport order: what, how many, and what it cost. */
+	MP_CMD_STRUCTURE_STARPORT,                              /*!< A Starport order: what, how many, and what it cost. */
+	MP_CMD_STRUCTURE_RALLY,                                 /*!< Point a factory at a tile. */
+	MP_CMD_STRUCTURE_SPECIAL,                               /*!< The Palace: arm the missile, call the Fremen, send the saboteur. */
+	MP_CMD_HOUSE_MISSILE                                    /*!< Aim the armed missile at a tile. */
 } MpCommandType;
 
 /**
