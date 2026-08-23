@@ -25,7 +25,8 @@ typedef enum MpCommandType {
 	MP_CMD_UNIT_AIR_TRANSIT,                                /*!< Ask for a lift to a tile. */
 	MP_CMD_STRUCTURE_BUILD,                                 /*!< Start, change or cancel what a factory is making. */
 	MP_CMD_STRUCTURE_PLACE,                                 /*!< Put a finished structure on the map. */
-	MP_CMD_STRUCTURE_HOLD                                   /*!< Hold or resume production; value 1 holds, 0 resumes. */
+	MP_CMD_STRUCTURE_HOLD,                                  /*!< Hold or resume production; value 1 holds, 0 resumes. */
+	MP_CMD_STRUCTURE_REPAIR                                 /*!< The repair/upgrade button: a toggle, resolved where it runs. */
 } MpCommandType;
 
 /**

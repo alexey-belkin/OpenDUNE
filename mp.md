@@ -824,9 +824,14 @@ AI mode with a house the AI does not also drive.
 `Structure_Place()` — the placement click also creates the free harvester,
 records the palace position and changes selection type, all in the viewport
 handler ([viewport.c:509](src/gui/viewport.c:509)); untangling it belongs with the
-non-modal build panel of §5. Repair, the Starport order, the Palace weapon, the
-rally point and the production queue are still direct calls. Each is a command
-waiting to be written, and the replay is how each will be checked.
+non-modal build panel of §5. The Starport order, the Palace weapon, the rally
+point and the production queue are still direct calls. Each is a command waiting
+to be written, and the replay is how each will be checked.
+
+Placement and repair have since been routed (§6). The Starport is the one that
+needs more than a command: its prices come from a generator seeded with the
+*viewer's* house, so before a purchase can cross the wire both clients have to
+agree what the buying house is being charged.
 
 ## Stage 3a — the same recording in a second process (done)
 
@@ -1389,6 +1394,8 @@ order is the lesson: each fix uncovered the next.
 | `g_timerGUI` driving explosions and animations | craters and ground tiles on the render clock |
 | `Explosion_Func_ScreenShake()` | sleeps inside a simulation step, and sleeping re-entered the stepper |
 | `GUI_FactoryWindow_InitItems()` | reseeded the *game* LCG, from the viewer's own house, on opening a window |
+| `GUI_Widget_TextButton_Click()` with one unit selected | ordered the unit where it stood instead of submitting the order |
+| `GUI_Widget_RepairUpgrade_Click()` | started a repair on the clicking client only |
 
 The last two are the ones worth remembering. Screen shake calls `sleepIdle()`
 eight times from inside `Explosion_Tick()`, and `sleepIdle()` is where the match
@@ -1430,8 +1437,18 @@ it named the sleep.
 
 * **The interface.** A lobby, a room code the player can type, a build handshake
   (same binary, same `opendune.ini`) — see §5's list, all still true.
-* **Everything the player can do that is not yet a command.** Repair, Starport
-  orders, the Palace, rally points, the production queue.
+* **Everything the player can do that is not yet a command.** Starport orders,
+  the Palace, rally points, the production queue.
+
+  The action panel deserves a note. Its buttons and their keyboard shortcuts run
+  through `GUI_Widget_TextButton_Click()`, which had two roads out: a group went
+  through `UnitSelection_BeginAction()` and became an order on the wire, and a
+  *single* selected unit fell through to the original's code and was changed
+  where it stood. `Unit_SetAction()` loads bytecode, so from that click the two
+  clients ran different scripts for that unit -- the unit chunk first, then the
+  tiles it walked over, then the randoms its script drew. Both roads now submit
+  the same order. The deviation shake that the click did on the way past went
+  with it, into the executor, for the same reason: it changes a unit.
 * **`Map_FindLocationTile()`** ([map.c:965](src/map.c:965)) still reads
   `g_minimapPosition` in case 5 and gates validity on `g_playerHouseID` in cases
   4 to 7. It is reachable from reinforcements and from the AI, neither of which

@@ -5496,7 +5496,19 @@ void UnitSelection_ApplyActionToList(const uint16 *list, uint16 count, ActionTyp
 	if (count > UNIT_SELECTION_MAX) count = UNIT_SELECTION_MAX;
 	for (i = 0; i < count; i++) {
 		Unit *unit = Unit_Get_ByIndex(list[i]);
-		ActionType unitAction = (action == ACTION_MAX) ? UnitSelection_GetUnitSpecialAction(unit) : action;
+		ActionType unitAction;
+
+		/* Clicking an order at a deviated unit shakes the deviation loose
+		 * instead of ordering it, and shakes it loose whoever asked -- the
+		 * original does this in the click handler, where in a match it is one
+		 * client changing a unit that both clients own a copy of.  It belongs
+		 * in the order, so both do it. */
+		if (unit->deviated != 0) {
+			Unit_Deviation_Decrease(unit, 5);
+			if (unit->deviated == 0) continue;
+		}
+
+		unitAction = (action == ACTION_MAX) ? UnitSelection_GetUnitSpecialAction(unit) : action;
 
 		if (unitAction == ACTION_INVALID || !UnitSelection_UnitHasAction(unit, unitAction)) continue;
 

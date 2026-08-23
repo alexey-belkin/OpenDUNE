@@ -182,6 +182,21 @@ void MpCommand_Execute(const MpCommand *cmd)
 			MpCommand_ExecuteStructurePlace(s, cmd->packed);
 			break;
 
+		case MP_CMD_STRUCTURE_REPAIR:
+			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
+			s = Structure_Get_ByIndex(cmd->object);
+			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
+
+			/* A toggle, not a state: both clients hold the same flags, so both
+			 * resolve it the same way.  The widget the click handler used to
+			 * pass in was the button's own highlight -- presentation, and the
+			 * other client has no such button.  Both functions ignore a NULL
+			 * one. */
+			if (Structure_SetRepairingState(s, -1, NULL)) break;
+			Structure_SetUpgradingState(s, -1, NULL);
+			break;
+
 		case MP_CMD_STRUCTURE_HOLD:
 			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
 			s = Structure_Get_ByIndex(cmd->object);

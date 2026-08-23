@@ -344,14 +344,6 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 		unitAction = u->actionID;
 	}
 
-	if (u->deviated != 0) {
-		Unit_Deviation_Decrease(u, 5);
-		if (u->deviated == 0) {
-			GUI_Widget_MakeNormal(w, false);
-			return true;
-		}
-	}
-
 	GUI_Widget_MakeSelected(w, false);
 
 	ai = &g_table_actionInfo[action];
@@ -365,19 +357,26 @@ bool GUI_Widget_TextButton_Click(Widget *w)
 		return true;
 	}
 
-	Unit_BeginManualOrder(u);
-	Unit_SetManualHunt(u, false);
-	Unit_Harvester_BeginOrder(u, action);
-	Object_Script_Variable4_Clear(&u->o);
-	u->targetAttack = 0;
-	u->targetMove = 0;
-	u->route[0] = 0xFF;
-	if (action == ACTION_GUARD || action == ACTION_AREA_GUARD) {
-		Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
-		Unit_SetGuardAction(u, action);
-	}
+	/* One unit selected used to take a different road out of this function than
+	 * two did: the group above submits an order, and this branch reached in and
+	 * changed the unit where it stood.  Unit_SetAction() loads bytecode, so the
+	 * clicking player's copy of that unit started running a different script
+	 * from everybody else's -- the unit chunk diverged, then the tiles it walked
+	 * over, then the randoms its script drew.  It is the same order either way;
+	 * it goes the same way.
+	 *
+	 * The deviation shake that used to sit above this went with it, into the
+	 * executor, for the same reason. */
+	{
+		MpCommand cmd;
 
-	Unit_SetAction(u, action);
+		MpCommand_Init(&cmd, MP_CMD_UNIT_ACTION, (uint8)g_playerHouseID);
+		cmd.action  = (uint8)action;
+		cmd.count   = 1;
+		cmd.unit[0] = u->o.index;
+
+		MpCommand_Submit(&cmd);
+	}
 
 	if (ui->movementType == MOVEMENT_FOOT) Sound_StartSound(ai->soundID);
 
@@ -481,12 +480,20 @@ bool GUI_Widget_Picture_Click(Widget *w)
  */
 bool GUI_Widget_RepairUpgrade_Click(Widget *w)
 {
+	MpCommand cmd;
 	Structure *s;
 
-	s = Structure_Get_ByPackedTile(g_selectionPosition);
+	VARIABLE_NOT_USED(w);
 
-	if (Structure_SetRepairingState(s, -1, w)) return false;
-	Structure_SetUpgradingState(s, -1, w);
+	s = Structure_Get_ByPackedTile(g_selectionPosition);
+	if (s == NULL) return false;
+
+	/* Starting a repair changes the structure and spends the house's money, so
+	 * it is an order and not a button press.  Pressed here it was one player's
+	 * building repairing itself on one machine. */
+	MpCommand_Init(&cmd, MP_CMD_STRUCTURE_REPAIR, s->o.houseID);
+	cmd.object = s->o.index;
+	MpCommand_Submit(&cmd);
 
 	return false;
 }
