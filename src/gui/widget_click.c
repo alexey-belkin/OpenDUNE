@@ -96,12 +96,15 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 
 	s = Structure_Get_ByPackedTile(g_selectionPosition);
 	if (Structure_Queue_CanOrder(s)) {
-		bool changed;
+		MpCommand cmd;
 
 		/* This button fires on mouse release: 0x04 is left and 0x40 is right. */
-		changed = ((w->state.buttonState & 0x40) != 0) ? Structure_Queue_RemoveOrder(s) : Structure_Queue_AddOrder(s);
-		if (changed && (w->state.buttonState & 0x40) == 0) s->o.flags.s.onHold = false;
-		if (changed) GUI_Widget_ActionPanel_Draw(true);
+		MpCommand_Init(&cmd, MP_CMD_STRUCTURE_QUEUE, s->o.houseID);
+		cmd.object = s->o.index;
+		cmd.value  = ((w->state.buttonState & 0x40) != 0) ? 1 : 0;
+		MpCommand_Submit(&cmd);
+
+		GUI_Widget_ActionPanel_Draw(true);
 		return false;
 	}
 

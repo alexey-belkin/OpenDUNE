@@ -2119,7 +2119,15 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 		if (s == NULL) break;
 		if (s->o.type == STRUCTURE_SLAB_1x1 || s->o.type == STRUCTURE_SLAB_2x2 || s->o.type == STRUCTURE_WALL) continue;
 
-		Structure_UpdateMap(s);
+		/* Tiles yes, animations no.  This runs because a full-screen repaint
+		 * scribbled over the map -- a reason the other client does not have, and
+		 * restarting every structure's animation re-slots them all and shifts
+		 * the random stream underneath both. */
+		if (MpTurn_IsActive()) {
+			Structure_RedrawMap(s);
+		} else {
+			Structure_UpdateMap(s);
+		}
 	}
 
 	find.houseID = HOUSE_INVALID;

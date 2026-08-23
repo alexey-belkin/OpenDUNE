@@ -10,6 +10,7 @@
 #include "gui.h"
 #include "widget.h"
 #include "../mpcommand.h"
+#include "../mpturn.h"
 #include "../audio/driver.h"
 #include "../audio/sound.h"
 #include "../config.h"
@@ -582,7 +583,12 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 			GUI_DisplayHint(si->o.hintStringID, si->o.spriteID);
 
-			House_UpdateRadarState(h);
+			/* The placement command does this on both clients when it runs
+			 * (Structure_Place -> House_UpdateRadarState).  Doing it here as
+			 * well is the placing client alone setting a saved flag a few
+			 * turns early -- a disagreement that heals, which is worse than one
+			 * that does not, because it reports as a desync and then hides. */
+			if (!MpTurn_IsActive()) House_UpdateRadarState(h);
 
 			if (h->powerProduction < h->powerUsage) {
 				if ((h->structuresBuilt & (1 << STRUCTURE_OUTPOST)) != 0) {

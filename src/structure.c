@@ -2138,8 +2138,9 @@ bool Structure_SetRepairingState(Structure *s, int8 state, Widget *w)
 /**
  * Update the map with the right data for this structure.
  * @param s The structure to update on the map.
+ * @param animate Also (re)start the structure's animation.
  */
-void Structure_UpdateMap(Structure *s)
+static void Structure_UpdateMapEx(Structure *s, bool animate)
 {
 	const StructureInfo *si;
 	uint16 layoutSize;
@@ -2177,6 +2178,38 @@ void Structure_UpdateMap(Structure *s)
 	}
 
 	s->o.flags.s.isDirty = true;
+
+	if (animate) Structure_StartAnimation(s);
+}
+
+void Structure_UpdateMap(Structure *s)
+{
+	Structure_UpdateMapEx(s, true);
+}
+
+/**
+ * Restamp a structure's tiles without touching its animation.
+ *
+ * The redraw after a full-screen interface repaint wants the tiles back and
+ * nothing else.  Restarting the animation there is a simulation act performed
+ * for a presentation reason: Animation_Start() takes the first free slot, and
+ * Animation_Tick() walks the slots in order drawing a random for every pause,
+ * so re-slotting every structure on one client puts the two clients' random
+ * streams out of step.  Animations are not in the checksum, so it is invisible
+ * until it surfaces somewhere that is -- a walk cycle, a build frame.
+ */
+void Structure_RedrawMap(Structure *s)
+{
+	Structure_UpdateMapEx(s, false);
+}
+
+void Structure_StartAnimation(Structure *s)
+{
+	const StructureInfo *si;
+
+	if (s == NULL) return;
+
+	si = &g_table_structureInfo[s->o.type];
 
 	if (s->state >= STRUCTURE_STATE_IDLE) {
 		uint16 animationIndex = (s->state > STRUCTURE_STATE_READY) ? STRUCTURE_STATE_READY : s->state;

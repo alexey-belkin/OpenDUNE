@@ -205,6 +205,22 @@ void MpCommand_Execute(const MpCommand *cmd)
 			Structure_StarportOrder(s, cmd->unit, cmd->count, cmd->value);
 			break;
 
+		case MP_CMD_STRUCTURE_QUEUE:
+			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
+			s = Structure_Get_ByIndex(cmd->object);
+			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
+
+			/* The queue is not saved state, and it still decides what the
+			 * factory builds next -- so a queue filled on one client alone is a
+			 * factory that produces different things on the two machines. */
+			if (cmd->value != 0) {
+				Structure_Queue_RemoveOrder(s);
+			} else if (Structure_Queue_AddOrder(s)) {
+				s->o.flags.s.onHold = false;
+			}
+			break;
+
 		case MP_CMD_STRUCTURE_RALLY:
 			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
 			s = Structure_Get_ByIndex(cmd->object);
