@@ -1,0 +1,278 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Каждое действие игрока в сетевом матче OpenDUNE: меняет ли оно мир, и какой командой оно едет">
+<title>Что игрок может сделать</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root {
+    color-scheme: light dark;
+    --ground:   #E9EAE3;
+    --card:     #F7F8F3;
+    --ink:      #1A1D18;
+    --muted:    #666B62;
+    --faint:    #8B9088;
+    --rule:     #CBCDC2;
+    --hair:     #DEE0D6;
+    --accent:   #2E3A8C;
+    --good:     #2B6640;
+    --warn:     #8A6410;
+    --bad:      #A32E2E;
+    --tagbg:    #E0E2D6;
+    --badbg:    #F3DEDE;
+
+    --step--1: clamp(.76rem, .74rem + .1vw, .82rem);
+    --step-0:  clamp(.94rem, .9rem + .18vw, 1.02rem);
+    --step-1:  clamp(1.12rem, 1.05rem + .3vw, 1.3rem);
+    --step-2:  clamp(1.4rem, 1.25rem + .7vw, 1.85rem);
+    --step-3:  clamp(1.9rem, 1.5rem + 1.9vw, 3.1rem);
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --serif: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #14161A; --card: #1B1E22; --ink: #E4E7E0; --muted: #9AA098;
+      --faint: #767C74; --rule: #343A40; --hair: #262B31; --accent: #93A4E8;
+      --good: #7CC397; --warn: #D6AC55; --bad: #E58585; --tagbg: #262B31;
+      --badbg: #3A2326;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #14161A; --card: #1B1E22; --ink: #E4E7E0; --muted: #9AA098;
+    --faint: #767C74; --rule: #343A40; --hair: #262B31; --accent: #93A4E8;
+    --good: #7CC397; --warn: #D6AC55; --bad: #E58585; --tagbg: #262B31;
+    --badbg: #3A2326;
+  }
+
+  body {
+    background: var(--ground); color: var(--ink);
+    font-family: var(--serif); font-size: var(--step-0); line-height: 1.6;
+    margin: 0; padding: clamp(1.2rem, 4vw, 3.5rem) clamp(1rem, 5vw, 2rem) 5rem;
+  }
+  .sheet { max-width: 68rem; margin: 0 auto; display: flex; flex-direction: column; gap: clamp(2rem, 5vw, 3.4rem); }
+
+  header { display: flex; flex-direction: column; gap: .9rem; }
+  .kicker {
+    font-family: var(--mono); font-size: var(--step--1); letter-spacing: .14em;
+    text-transform: uppercase; color: var(--faint);
+  }
+  h1 {
+    font-family: var(--sans); font-size: var(--step-3); font-weight: 700;
+    letter-spacing: -.025em; line-height: 1.02; margin: 0; text-wrap: balance;
+  }
+  .standfirst { max-width: 46rem; color: var(--muted); margin: 0; }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  .tally {
+    display: grid; gap: 1px; background: var(--rule);
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    border: 1px solid var(--rule); margin-top: .6rem;
+  }
+  .tally div { background: var(--card); padding: .75rem .85rem; }
+  .tally b {
+    display: block; font-family: var(--mono); font-size: var(--step-2);
+    font-weight: 600; letter-spacing: -.03em; font-variant-numeric: tabular-nums;
+  }
+  .tally b.is-bad { color: var(--bad); }
+  .tally b.is-good { color: var(--good); }
+  .tally span { font-family: var(--mono); font-size: var(--step--1); color: var(--muted); letter-spacing: .04em; }
+
+  section { display: flex; flex-direction: column; gap: .85rem; }
+  h2 {
+    font-family: var(--sans); font-size: var(--step-2); font-weight: 700;
+    letter-spacing: -.02em; margin: 0; padding-bottom: .4rem;
+    border-bottom: 2px solid var(--ink); text-wrap: balance;
+  }
+  h2 small {
+    display: block; font-family: var(--mono); font-size: var(--step--1);
+    font-weight: 400; letter-spacing: .04em; color: var(--faint); margin-top: .35rem;
+  }
+  section > p { margin: 0; max-width: 46rem; color: var(--muted); }
+  section > p strong { color: var(--ink); font-weight: 600; }
+
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--card); }
+  table { border-collapse: collapse; width: 100%; min-width: 46rem; font-size: var(--step--1); }
+  th {
+    text-align: left; font-family: var(--mono); font-weight: 600;
+    letter-spacing: .09em; text-transform: uppercase; font-size: .72rem;
+    color: var(--faint); padding: .6rem .8rem; border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  td { padding: .55rem .8rem; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.n { font-family: var(--sans); font-weight: 600; min-width: 12rem; line-height: 1.35; }
+  td.n em { display: block; font-family: var(--mono); font-style: normal; font-weight: 400; font-size: .92em; color: var(--faint); letter-spacing: .02em; margin-top: .12rem; }
+  td.w { white-space: nowrap; font-family: var(--mono); }
+  td.c { font-family: var(--mono); white-space: nowrap; }
+  td.d { font-family: var(--serif); line-height: 1.5; min-width: 16rem; color: var(--muted); }
+  td.d b { color: var(--ink); font-weight: 600; }
+  tr.flag td { background: var(--badbg); }
+
+  .dot { font-family: var(--mono); font-size: .68rem; letter-spacing: .07em; text-transform: uppercase; white-space: nowrap; }
+  .dot.world { color: var(--bad); font-weight: 600; }
+  .dot.local { color: var(--muted); }
+  .cmd { color: var(--good); font-weight: 600; }
+  .none { color: var(--bad); font-weight: 600; }
+  .part { color: var(--warn); font-weight: 600; }
+
+  code {
+    font-family: var(--mono); font-size: .92em;
+    background: var(--tagbg); padding: .08rem .28rem; border-radius: 2px;
+  }
+  .note {
+    border-left: 3px solid var(--rule); padding: .1rem 0 .1rem 1rem;
+    color: var(--muted); max-width: 48rem; margin: 0;
+  }
+  .note b { color: var(--ink); }
+  .note.alarm { border-left-color: var(--bad); }
+  footer {
+    font-family: var(--mono); font-size: var(--step--1); color: var(--faint);
+    border-top: 1px solid var(--rule); padding-top: 1rem;
+  }
+  footer a { color: var(--accent); }
+</style>
+
+<div class="sheet">
+
+<header>
+  <div class="kicker">OpenDUNE · сетевой матч · аудит слоя команд</div>
+  <h1>Что игрок может сделать</h1>
+  <p class="standfirst">Полный список действий, доступных человеку внутри матча, прочёсанный по коду: таблица обработчиков виджетов, клавиатурный блок игрового цикла и все ветки клика по вьюпорту. По каждому — <strong>меняет ли оно мир или только эту машину</strong>, и если меняет, то какой командой едет. Красным — то, что мир меняет, а в провод не уходит.</p>
+  <div class="tally">
+    <div><b>41</b><span>действие</span></div>
+    <div><b>23</b><span>меняют мир</span></div>
+    <div><b class="is-good">23</b><span>едут командой</span></div>
+    <div><b class="is-bad">0</b><span>не обработаны</span></div>
+    <div><b>2</b><span>под подозрением</span></div>
+  </div>
+</header>
+
+<section>
+  <p class="note"><b>Как читать.</b> «Мир» значит: меняет состояние, попадающее в контрольную сумму, <em>или</em> состояние вне её, от которого зависит поведение симуляции — очередь производства и точка сбора не сохраняются, но решают, что построит завод и куда поедет юнит. «Клиент» — камера, выделение, звук, подсветка кнопки: у второго игрока своё, и так и должно быть. Проверено на коммите <code>fb1b864e</code>.</p>
+</section>
+
+<section>
+  <h2>1 · Приказы юнитам<small>панель действий, её горячие клавиши, клик по карте</small></h2>
+  <p>Здесь была развилка, которая укусила дважды: у группы одна дорога, у <strong>одного</strong> выделенного юнита — другая. Кнопка и клик по цели — это <em>два разных шага одного жеста</em>, и разводить их надо было оба.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>действие</th><th>чем вызывается</th><th>что трогает</th><th>команда</th><th>заметка</th></tr></thead>
+    <tbody>
+      <tr><td class="n">Правый клик по карте<em>выделены юниты</em></td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">UNIT_DEFAULT_ORDER</td><td class="d">Каждый юнит сам выбирает действие по цели.</td></tr>
+      <tr><td class="n">Кнопка панели — группа<em>Move / Attack / Guard / …</em></td><td class="w">мышь, буква</td><td class="dot world">мир</td><td class="c cmd">UNIT_ACTION</td><td class="d">Ненацеленное действие применяется сразу.</td></tr>
+      <tr><td class="n">Кнопка панели — один юнит</td><td class="w">мышь, буква</td><td class="dot world">мир</td><td class="c cmd">UNIT_ACTION</td><td class="d"><b>Была не разведена.</b> Меняла юнита на месте; <code>Unit_SetAction()</code> грузит байткод, и клиенты начинали крутить разные скрипты.</td></tr>
+      <tr><td class="n">Клик по цели — группа</td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">UNIT_ORDER</td><td class="d">Получатели захвачены в момент нажатия кнопки, а не в момент клика.</td></tr>
+      <tr><td class="n">Клик по цели — один юнит</td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">UNIT_ORDER</td><td class="d"><b>Была не разведена.</b> Именно её игрок задевает первой — ткнуть одним юнитом в клетку самое обычное, что он делает.</td></tr>
+      <tr><td class="n">Hunt<em>клавиша T</em></td><td class="w">клавиатура</td><td class="dot world">мир</td><td class="c cmd">UNIT_HUNT</td><td class="d">Ручная охота для всего выделения.</td></tr>
+      <tr><td class="n">Air Transit<em>клавиша Y, затем клик</em></td><td class="w">клавиатура + мышь</td><td class="dot world">мир</td><td class="c cmd">UNIT_AIR_TRANSIT</td><td class="d">Заказ подъёма на указанную клетку.</td></tr>
+      <tr><td class="n">Сброс девиации<em>приказ девиированному юниту</em></td><td class="w">мышь, буква</td><td class="dot world">мир</td><td class="c cmd">UNIT_ACTION</td><td class="d">Оригинал стряхивал девиацию прямо в клике. Переехало в исполнитель: это изменение юнита.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>2 · Здания<small>боковая панель, экран строительства, размещение</small></h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>действие</th><th>чем вызывается</th><th>что трогает</th><th>команда</th><th>заметка</th></tr></thead>
+    <tbody>
+      <tr><td class="n">Открыть список постройки<em>клик по картинке здания</em></td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d"><b>Было не так.</b> Открытие списка останавливало ремонт и писало <code>objectType</code>. Теперь взгляд на список не стоит ничего; выбор приедет своей командой.</td></tr>
+      <tr><td class="n">Выбрать в списке<em>Build it</em></td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_BUILD</td><td class="d">Начать, сменить или отменить то, что делает завод.</td></tr>
+      <tr><td class="n">Поставить готовое здание</td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_PLACE</td><td class="d">Законность места решается на клике и используется только для отклика — команда исполнится позже.</td></tr>
+      <tr><td class="n">Ремонт / апгрейд</td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_REPAIR</td><td class="d">Переключатель, а не состояние: у обоих одинаковые флаги, значит и итог один.</td></tr>
+      <tr><td class="n">Пауза / продолжить производство<em>On Hold · D&nbsp;Done</em></td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_HOLD</td><td class="d">—</td></tr>
+      <tr><td class="n">Очередь производства<em>лево добавить, право снять</em></td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_QUEUE</td><td class="d"><b>Была не разведена.</b> Очередь не сохраняется — и всё равно решает, что завод сделает следующим.</td></tr>
+      <tr><td class="n">Точка сбора<em>правый клик при выделенном заводе</em></td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_RALLY</td><td class="d"><b>Была не разведена.</b> Тоже не сохраняется, и тоже меняет поведение: новому юниту отдаётся приказ ехать туда.</td></tr>
+      <tr><td class="n">Дворец: спецоружие<em>Launch · Fremen · Saboteur</em></td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_SPECIAL</td><td class="d"><b>Была не разведена.</b> Создаёт юнитов и тянет случайные числа.</td></tr>
+      <tr><td class="n">Наведение «Руки смерти»</td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">HOUSE_MISSILE</td><td class="d"><b>Была не разведена.</b> Прицел даётся только владельцу — исполнение у второго не должно трогать его выделение.</td></tr>
+      <tr><td class="n">Заказ в Starport</td><td class="w">мышь</td><td class="dot world">мир</td><td class="c cmd">STRUCTURE_STARPORT</td><td class="d"><b>Была не разведена, и одной команды мало.</b> Цены сеются от дома смотрящего, поэтому заказ везёт сумму, которую платит покупатель.</td></tr>
+      <tr><td class="n">Starport: + и −</td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Больше не трогают казну: корзина вычитается локально, деньги двигаются вместе с заказом.</td></tr>
+      <tr><td class="n">Starport: выйти без покупки</td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Возвращать нечего — ничего и не брали.</td></tr>
+      <tr><td class="n">Отмена размещения<em>Cancel</em></td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Здание остаётся у стройплощадки до самой команды, поэтому отмене нечего класть обратно.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>3 · Выделение, камера, интерфейс<small>всё, что принадлежит одному креслу</small></h2>
+  <p>Ничто из этого не должно ехать в провод — и именно поэтому каждое из них однажды оказывалось причиной расхождения: приказа нет, а мир меняется.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>действие</th><th>чем вызывается</th><th>что трогает</th><th>команда</th><th>заметка</th></tr></thead>
+    <tbody>
+      <tr><td class="n">Выделить юнита или здание</td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Перерисовка юнита больше не ведёт учёт «кто кого видел»: это сохраняемое поле.</td></tr>
+      <tr><td class="n">Рамка выделения</td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Координаты в тайлах, чтобы прокрутка не меняла набор.</td></tr>
+      <tr><td class="n">Двойной клик<em>все того же типа на экране</em></td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Ограничено видимой областью намеренно.</td></tr>
+      <tr><td class="n">Назначить группу<em>Ctrl/Alt + цифра</em></td><td class="w">клавиатура</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">—</td></tr>
+      <tr><td class="n">Вызвать группу<em>цифра</em></td><td class="w">клавиатура</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">—</td></tr>
+      <tr><td class="n">Прокрутка карты<em>край экрана, нумпад, миникарта</em></td><td class="w">мышь, клавиатура</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Камера была утечкой: <code>Map_FindLocationTile()</code> читала её положение.</td></tr>
+      <tr><td class="n">Центрировать на выделении<em>клик по имени</em></td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">—</td></tr>
+      <tr><td class="n">Скорость игры<em>[ и ]</em></td><td class="w">клавиатура</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Множитель тиков. Оба клиента всё равно проходят одни и те же ходы; кто быстрее, тот ждёт на границе хода.</td></tr>
+      <tr><td class="n">Ментат</td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">Модальный экран. Мир под ним продолжает идти — насос стоит в простое таймера.</td></tr>
+      <tr><td class="n">Меню Options</td><td class="w">мышь</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">См. предупреждение ниже.</td></tr>
+      <tr><td class="n">Подсказки и затемнения</td><td class="w">—</td><td class="dot local">клиент</td><td class="c">—</td><td class="d">В матче выключены совсем: подсказка — заметка о человеке, а не о мире, и она хранилась в сейве.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>4 · Не действия игрока, но их последствия<small>места, где отрисовка лезла в мир</small></h2>
+  <p>Ни одно из этого игрок не «делает» — всё это происходит <em>потому что</em> он что-то нажал. Три из них были найдены дампом состояния уже после того, как слой команд считался полным.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>что</th><th>когда срабатывает</th><th>что трогало</th><th>сейчас</th><th>заметка</th></tr></thead>
+    <tbody>
+      <tr><td class="n">Перерисовка интерфейса<em>GUI_DrawInterfaceAndRadar</em></td><td class="w">смена выделения, выход из экрана</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">Перезапускала анимацию каждого здания. Слот берётся первый свободный, а <code>Animation_Tick()</code> тянет случайное число на каждую паузу — поток случайных расходился. Анимации не в контрольной сумме, поэтому всплыло только на походке пехотинца.</td></tr>
+      <tr><td class="n">Бюджет опкодов скрипта</td><td class="w">каждый тик</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">52 опкода на экране, 3 за экраном. Два экрана — две скорости мышления у одного юнита.</td></tr>
+      <tr><td class="n">Часы анимаций<em>g_timerGUI</em></td><td class="w">каждый кадр</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">Взрывы и анимации шли по настенным часам, а они бьют воронки в тайлах.</td></tr>
+      <tr><td class="n">Тряска экрана<em>внутри шага симуляции</em></td><td class="w">взрыв</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">Спала восемь раз через <code>sleepIdle()</code>, а там живёт насос — шаг входил сам в себя.</td></tr>
+      <tr><td class="n">Пересев генератора в Starport</td><td class="w">открытие окна</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">Сеял <em>игровой</em> генератор от дома смотрящего. Один открыл окно — сдвинул все случайные числа второго.</td></tr>
+      <tr><td class="n">Состояние радара на клике</td><td class="w">размещение здания</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">Ставил сохраняемый флаг на несколько ходов раньше команды. Расхождение, которое само заживает, — хуже стойкого: оно отчитывается и прячется.</td></tr>
+      <tr><td class="n">Сортировка юнитов при отрисовке</td><td class="w">каждый кадр</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">Переставляла массив симуляции раз в нарисованный кадр.</td></tr>
+      <tr><td class="n">Возврат игровых часов на стену</td><td class="w">выход с любого экрана</td><td class="dot world">мир</td><td class="c cmd">исправлено</td><td class="d">Полдюжины мест включали таймер обратно. Тик расхождения стоит матча.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h2>5 · Под подозрением<small>не пойманы за руку, но стоят там же</small></h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>что</th><th>когда</th><th>чем опасно</th><th>вердикт</th></tr></thead>
+    <tbody>
+      <tr class="flag"><td class="n">Загрузка сейва из Options</td><td class="w">во время матча</td><td class="d">Заменяет мир целиком у одного игрока. Мгновенное и полное расхождение, никакой командой не лечится.</td><td class="c none">закрыть<br>в матче</td></tr>
+      <tr class="flag"><td class="n">Проба пула в окне Starport<em>Unit_Allocate в цикле</em></td><td class="w">открытие окна</td><td class="d">Занимает и освобождает слоты юнитов, чтобы узнать, что доступно. Баланс сходится, но порядок в пуле мог сместиться — а пул это симуляция.</td><td class="c part">проверить</td></tr>
+      <tr><td class="n"><code>o.available</code> в таблицах</td><td class="w">открытие любого окна</td><td class="d">Окно пишет в статические таблицы юнитов и зданий. Похоже, читается только интерфейсом, но это глобальное состояние, которое меняет один игрок.</td><td class="c part">проверить</td></tr>
+      <tr><td class="n"><code>Structure_Recount</code> / <code>Unit_Recount</code></td><td class="w">выход из Options</td><td class="d">Пересчёт из существующего состояния: если оба согласны, ничего не меняется. Если разошлись — тихо чинит одного, что маскирует симптом.</td><td class="c part">безвредно,<br>но маскирует</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note alarm"><b>Загрузка сейва — единственное красное, что осталось.</b> Остальное из этого списка либо безвредно, либо не доказано. Меню Options в матче стоит либо урезать до «выйти», либо оставить как есть и знать, что загрузка ломает матч.</p>
+</section>
+
+<section>
+  <h2>6 · Как этот список получен<small>чтобы его можно было пересобрать, а не поверить</small></h2>
+  <p>Точки входа игрового ввода в этом движке ровно три, и все три перечислимы:</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>источник</th><th>где</th><th>как перечислить</th></tr></thead>
+    <tbody>
+      <tr><td class="n">Обработчики виджетов</td><td class="c">src/table/widgetinfo.c</td><td class="d"><code>grep clickProc</code> по таблице — 18 различных функций, все определены в <code>src/gui/widget_click.c</code>, <code>viewport.c</code> и <code>mentat.c</code>.</td></tr>
+      <tr><td class="n">Клавиатура</td><td class="c">src/opendune.c</td><td class="d">Блок в игровом цикле: буквенные горячие клавиши отдаются виджетам первыми, остальное разбирается там же по скан-кодам.</td></tr>
+      <tr><td class="n">Клик по вьюпорту</td><td class="c">src/gui/viewport.c</td><td class="d">Одна функция, ветвящаяся по типу выделения: UNIT, STRUCTURE, TARGET, PLACE.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note"><b>Проверка, которую можно повторить.</b> Один <code>grep</code> по всем функциям, меняющим симуляцию, в границах <code>src/gui/</code> — и все оставшиеся попадания должны быть либо чтением, либо вызовом, который сам отправляет команду. Сегодня их четыре, и все четыре объяснимы. Это и есть то, что заменяет хождение наощупь.</p>
+</section>
+
+<footer>
+  OpenDUNE · ветка multiplayer · коммит fb1b864e · подробности в mp.md, раздел 6
+</footer>
+
+</div>

@@ -282,6 +282,9 @@ leaving it running.
   gates and goals, and what had to be fixed before any of them could be trusted
 * [telemetry.md](telemetry.md) — recording one match: the CSV format, the report
   generator, and how to add a metric
+* [mp-actions.html](mp-actions.html) — every action a player can take inside a
+  networked match, whether it changes the world or only this machine, and which
+  command carries it. The audit that replaced hunting desyncs one at a time
 * [instruments.html](instruments.html) — every measuring surface in one page: the
   suite, all 58 CSV columns, the overlay, the one-off reporters and the search
   outputs, each with what it counts

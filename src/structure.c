@@ -1753,7 +1753,12 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 
 	if (!si->o.flags.factory) return false;
 
-	Structure_SetRepairingState(s, 0, NULL);
+	/* Choosing something to build stops the repair, and that is a real change to
+	 * the building -- but merely *opening* the list is one player looking at
+	 * their own screen, and 0xFFFF is what the click that opens it passes.  In a
+	 * match the look costs nothing; the choice arrives later as its own command
+	 * and stops the repair on both clients at once. */
+	if (!MpTurn_IsActive() || objectType != 0xFFFF) Structure_SetRepairingState(s, 0, NULL);
 
 	if (objectType == 0xFFFD) {
 		Structure_SetUpgradingState(s, 1, NULL);
@@ -1774,7 +1779,8 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 		buildable = Structure_GetBuildable(s);
 
 		if (buildable == 0) {
-			s->objectType = 0;
+			/* Same reason: opening an empty list must not write the structure. */
+			if (!MpTurn_IsActive() || objectType != 0xFFFF) s->objectType = 0;
 			return false;
 		}
 
