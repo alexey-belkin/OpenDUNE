@@ -13,6 +13,7 @@
 #include "gui.h"
 #include "widget.h"
 #include "../mpcommand.h"
+#include "../mpturn.h"
 #include "../os/error.h"
 #include "../audio/driver.h"
 #include "../audio/sound.h"
@@ -1209,7 +1210,11 @@ bool GUI_Production_ResumeGame_Click(Widget *w)
 		House *h = g_playerHouse;
 		while (g_factoryWindowOrdered != 0) {
 			if (g_factoryWindowItems[i].amount != 0) {
-				h->credits += g_factoryWindowItems[i].amount * g_factoryWindowItems[i].credits;
+				/* Nothing was taken in a match, so there is nothing to give
+				 * back -- only the basket to empty. */
+				if (!MpTurn_IsActive()) {
+					h->credits += g_factoryWindowItems[i].amount * g_factoryWindowItems[i].credits;
+				}
 				g_factoryWindowOrdered -= g_factoryWindowItems[i].amount;
 				g_factoryWindowItems[i].amount = 0;
 			}
@@ -1509,6 +1514,29 @@ bool GUI_Production_BuildThis_Click(Widget *w)
 }
 
 /**
+ * What the buyer may still spend.
+ *
+ * Outside a match the treasury drops as the basket fills, so what is left is
+ * simply the treasury.  In a match the money does not move until the order
+ * does, so the basket has to be subtracted here instead -- otherwise a player
+ * could fill it past what they can pay and have the order refused at the far
+ * end, which is a desync dressed up as a purchase.
+ */
+static uint16 GUI_Purchase_CreditsLeft(const House *h)
+{
+	uint16 basket = 0;
+	uint16 i;
+
+	if (!MpTurn_IsActive()) return h->credits;
+
+	for (i = 0; i < g_factoryWindowTotal && i < 25; i++) {
+		basket += g_factoryWindowItems[i].amount * g_factoryWindowItems[i].credits;
+	}
+
+	return (h->credits > basket) ? (uint16)(h->credits - basket) : 0;
+}
+
+/**
  * Handles Click event for the "+" button in starport window.
  *
  * @return True, always.
@@ -1527,14 +1555,18 @@ bool GUI_Purchase_Plus_Click(Widget *w)
 		if (g_starPortEnforceUnitLimit && h->unitCount >= h->unitCountMax) canCreateMore = false;
 	}
 
-	if (item->amount < oi->available && item->credits <= h->credits && canCreateMore) {
+	if (item->amount < oi->available && item->credits <= GUI_Purchase_CreditsLeft(h) && canCreateMore) {
 		item->amount++;
 
 		GUI_FactoryWindow_UpdateDetails(item);
 
 		g_factoryWindowOrdered++;
 
-		h->credits -= item->credits;
+		/* In a match the money moves when the order does.  Taking it here would
+		 * be one player's treasury dropping while a window nobody else can see
+		 * is open, and putting it back on cancel would be a second such move --
+		 * two chances to disagree, over a decision not yet made. */
+		if (!MpTurn_IsActive()) h->credits -= item->credits;
 
 		GUI_FactoryWindow_DrawCaption(NULL);
 	}
@@ -1563,7 +1595,7 @@ bool GUI_Purchase_Minus_Click(Widget *w)
 
 		g_factoryWindowOrdered--;
 
-		h->credits += item->credits;
+		if (!MpTurn_IsActive()) h->credits += item->credits;
 
 		GUI_FactoryWindow_DrawCaption(NULL);
 	}

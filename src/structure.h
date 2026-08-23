@@ -160,6 +160,7 @@ extern uint16 Structure_FindFreePosition(Structure *s, bool checkForSpice);
 extern void Structure_SetRallyPoint(Structure *s, uint16 packed);
 extern uint16 Structure_GetRallyPoint(const Structure *s);
 extern void Structure_Remove(Structure *s);
+extern void Structure_StarportOrder(Structure *s, const uint16 *items, uint16 count, uint16 credits);
 extern bool Structure_BuildObject(Structure *s, uint16 objectType);
 extern bool Structure_Queue_CanOrder(const Structure *s);
 extern uint16 Structure_Queue_GetOrderCount(const Structure *s);

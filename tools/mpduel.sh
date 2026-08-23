@@ -15,6 +15,9 @@
 #   tools/mpduel.sh --units=0       no starting squad
 #   tools/mpduel.sh --seed=1234     a named map, to replay the same one
 #   tools/mpduel.sh --room=foo      a named room, if two are running at once
+#   tools/mpduel.sh --purity=1      also clamp drawing and input (costs ~40% of
+#                                   the tick budget; only when hunting)
+#   tools/mpduel.sh --dump=0        do not keep the rolling state snapshots
 #
 set -u
 
@@ -25,6 +28,8 @@ UNITS=4
 SPEED=2
 HOUSES=ordos,harkonnen
 SAMPLE=500
+DUMP=1
+PURITY=0
 EXTRA=""
 
 for arg in "$@"; do
@@ -36,6 +41,8 @@ for arg in "$@"; do
 		--speed=*)  SPEED=${arg#*=} ;;
 		--houses=*) HOUSES=${arg#*=} ;;
 		--sample=*) SAMPLE=${arg#*=} ;;
+		--dump=*)   DUMP=${arg#*=} ;;
+		--purity=*) PURITY=${arg#*=} ;;
 		-h|--help)  sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*)          EXTRA="$EXTRA $arg" ;;
 	esac
@@ -57,6 +64,15 @@ fi
 
 LOGDIR=$(mktemp -d /tmp/mpduel.XXXXXX)
 
+FLAGS=""
+[ "$DUMP" = 1 ]   && FLAGS="$FLAGS --mp-desync-dump"
+[ "$PURITY" = 1 ] && FLAGS="$FLAGS --sim-purity"
+
+# The snapshots land beside the binary's working directory; sweep them into the
+# log directory at the end so one run's evidence cannot be mistaken for the
+# next one's.
+rm -f mpdesync-s*-turn*.bin
+
 echo "relay $RELAY   room $ROOM   seed $SEED   speed x$SPEED   units $UNITS"
 echo "logs  $LOGDIR"
 echo
@@ -64,7 +80,7 @@ echo
 for slot in 1 2; do
 	"$GAME" --skirmish="$HOUSES" --human=1,2 \
 		--speed="$SPEED" --mp-units="$UNITS" --mp-seed="$SEED" --mp-sample="$SAMPLE" \
-		--mp-relay="$RELAY,$ROOM,$slot" $EXTRA \
+		--mp-relay="$RELAY,$ROOM,$slot" $FLAGS $EXTRA \
 		> "$LOGDIR/p$slot.log" 2>&1 &
 	eval "PID$slot=$!"
 	# The relay pairs the first two clients in a room; give slot 1 the head
@@ -79,6 +95,7 @@ wait $PID2 2>/dev/null
 kill -9 $PID1 $PID2 2>/dev/null
 
 echo
+mv -f mpdesync-s*-turn*.bin "$LOGDIR/" 2>/dev/null
 a=$(grep -c '^mp-checksum' "$LOGDIR/p1.log" 2>/dev/null || echo 0)
 b=$(grep -c '^mp-checksum' "$LOGDIR/p2.log" 2>/dev/null || echo 0)
 echo "$a checksums from player 1, $b from player 2"
@@ -93,5 +110,7 @@ if [ "$a" -gt 0 ] && [ "$b" -gt 0 ]; then
 		echo "the two players stopped agreeing at $first -- logs in $LOGDIR"
 	fi
 fi
-grep -h 'mp-live: desync' "$LOGDIR"/p1.log "$LOGDIR"/p2.log 2>/dev/null | head -4
+grep -h 'DESYNC' "$LOGDIR"/p1.log "$LOGDIR"/p2.log 2>/dev/null | head -2
+ls "$LOGDIR"/mpdesync-*.bin >/dev/null 2>&1 && \
+	echo "state snapshots kept: $(ls "$LOGDIR"/mpdesync-*.bin | wc -l | tr -d ' ') files"
 echo "$LOGDIR"

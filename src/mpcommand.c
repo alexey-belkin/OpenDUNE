@@ -197,6 +197,14 @@ void MpCommand_Execute(const MpCommand *cmd)
 			Structure_SetUpgradingState(s, -1, NULL);
 			break;
 
+		case MP_CMD_STRUCTURE_STARPORT:
+			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
+			s = Structure_Get_ByIndex(cmd->object);
+			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
+			Structure_StarportOrder(s, cmd->unit, cmd->count, cmd->value);
+			break;
+
 		case MP_CMD_STRUCTURE_HOLD:
 			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
 			s = Structure_Get_ByIndex(cmd->object);

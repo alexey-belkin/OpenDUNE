@@ -1319,6 +1319,35 @@ static void MpGame_Step(void)
 }
 
 /**
+ * Whether the two players still agree, in words, for the corner of the screen.
+ *
+ * A desync used to announce itself by the units behaving differently, which is
+ * both late and ambiguous -- the player cannot tell a divergence from an
+ * opponent playing badly.  Every turn already carries a checksum per chunk and
+ * every client already compares them, so the answer exists; it only needed
+ * somewhere to be shown.  Returns NULL outside a match.
+ */
+const char *MpGame_GetSyncLine(uint8 *colour)
+{
+	static char line[64];
+	uint32 turn = 0;
+
+	if (!MpTurn_IsActive()) return NULL;
+
+	if (MpTurn_HasDesynced(&turn)) {
+		/* Red, and it stays: from here the two games are different games, and
+		 * nothing that happens afterwards puts that right. */
+		if (colour != NULL) *colour = 8;
+		snprintf(line, sizeof(line), "DESYNC t%u: %s", (unsigned)turn, MpTurn_GetDesyncChunks());
+		return line;
+	}
+
+	if (colour != NULL) *colour = 4;
+	snprintf(line, sizeof(line), "sync %u", (unsigned)MpTurn_GetTurn());
+	return line;
+}
+
+/**
  * Put a starting squad on the map for both players.
  *
  * A match that opens with one construction yard each is a fine game and a poor

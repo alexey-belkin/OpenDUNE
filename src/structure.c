@@ -1665,6 +1665,77 @@ static void Structure_CancelBuild(Structure *s)
  * @param objectType The type of the object to build or a special value (0xFFFD, 0xFFFE, 0xFFFF).
  * @return ??.
  */
+/**
+ * Run a Starport order that has crossed the wire.
+ *
+ * The price travels with the order rather than being recomputed here, and it
+ * has to: Starport prices are drawn from a generator seeded with the *viewer's*
+ * own house, so the two clients would charge the buyer two different amounts.
+ * The buyer says what it is paying and both clients take that off the same
+ * house.  A client could of course name a price of its choosing -- so could it
+ * fabricate any other command, which is the standing bargain of lockstep
+ * between two people who chose to play each other.
+ *
+ * @param s The Starport.
+ * @param items (objectType << 8 | amount) per line of the order.
+ * @param count Lines in items.
+ * @param credits What the buyer says the whole order costs.
+ */
+void Structure_StarportOrder(Structure *s, const uint16 *items, uint16 count, uint16 credits)
+{
+	House *h;
+	uint16 line;
+
+	if (s == NULL || s->o.type != STRUCTURE_STARPORT) return;
+
+	h = House_Get_ByIndex(s->o.houseID);
+	if (h == NULL) return;
+
+	/* Both clients hold the same credits, so both reach the same verdict. */
+	if (h->credits < credits) return;
+	h->credits -= credits;
+
+	for (line = 0; line < count; line++) {
+		uint16 objectType = items[line] >> 8;
+		uint16 amount     = items[line] & 0xFF;
+
+		if (objectType >= UNIT_MAX) continue;
+
+		while (amount-- != 0) {
+			Unit *u;
+
+			g_validateStrictIfZero++;
+			{
+				tile32 tile;
+				tile.x = 0xFFFF;
+				tile.y = 0xFFFF;
+				u = Unit_Create(UNIT_INDEX_INVALID, (uint8)objectType, s->o.houseID, tile, 0);
+			}
+			g_validateStrictIfZero--;
+
+			/* The original's refund when the pool is full, quirk and all: it
+			 * hands back a Carryall's price whatever was being bought. */
+			if (u == NULL) {
+				h->credits += g_table_unitInfo[UNIT_CARRYALL].o.buildCredits;
+				if (s->o.houseID == g_playerHouseID) {
+					GUI_DisplayText(String_Get_ByIndex(STR_UNABLE_TO_CREATE_MORE), 2);
+				}
+				continue;
+			}
+
+			g_structureIndex = s->o.index;
+
+			if (h->starportTimeLeft == 0) h->starportTimeLeft = g_table_houseInfo[h->index].starportDeliveryTime;
+
+			u->o.linkedID = h->starportLinkedID & 0xFF;
+			h->starportLinkedID = u->o.index;
+
+			g_starportAvailable[objectType]--;
+			if (g_starportAvailable[objectType] <= 0) g_starportAvailable[objectType] = -1;
+		}
+	}
+}
+
 bool Structure_BuildObject(Structure *s, uint16 objectType)
 {
 	const StructureInfo *si;
@@ -1821,6 +1892,33 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 					MpCommand_Submit(&cmd);
 					break;
 				}
+
+				return false;
+			}
+
+			/* The Starport buys a list rather than a single thing, and it is the
+			 * one window whose prices differ between the two clients, so the
+			 * order carries both: a line per item, and the total the buyer is
+			 * paying.  The +/- buttons took nothing while it was open. */
+			if (MpTurn_IsActive() && res == FACTORY_BUY) {
+				MpCommand cmd;
+				uint16 total = 0;
+				uint8 i;
+
+				MpCommand_Init(&cmd, MP_CMD_STRUCTURE_STARPORT, s->o.houseID);
+				cmd.object = s->o.index;
+
+				for (i = 0; i < 25 && cmd.count < MP_COMMAND_UNITS_MAX; i++) {
+					if (g_factoryWindowItems[i].amount == 0) continue;
+
+					cmd.unit[cmd.count++] = (uint16)((g_factoryWindowItems[i].objectType << 8) |
+					                                 (g_factoryWindowItems[i].amount & 0xFF));
+					total += g_factoryWindowItems[i].amount * g_factoryWindowItems[i].credits;
+				}
+
+				cmd.value = total;
+
+				if (cmd.count != 0) MpCommand_Submit(&cmd);
 
 				return false;
 			}

@@ -26,7 +26,8 @@ typedef enum MpCommandType {
 	MP_CMD_STRUCTURE_BUILD,                                 /*!< Start, change or cancel what a factory is making. */
 	MP_CMD_STRUCTURE_PLACE,                                 /*!< Put a finished structure on the map. */
 	MP_CMD_STRUCTURE_HOLD,                                  /*!< Hold or resume production; value 1 holds, 0 resumes. */
-	MP_CMD_STRUCTURE_REPAIR                                 /*!< The repair/upgrade button: a toggle, resolved where it runs. */
+	MP_CMD_STRUCTURE_REPAIR,                                /*!< The repair/upgrade button: a toggle, resolved where it runs. */
+	MP_CMD_STRUCTURE_STARPORT                               /*!< A Starport order: what, how many, and what it cost. */
 } MpCommandType;
 
 /**
@@ -41,7 +42,7 @@ typedef struct MpCommand {
 	uint16 packed;                                          /*!< Target tile, where the type uses one. */
 	uint16 object;                                          /*!< Structure index, where the type uses one. */
 	uint16 value;                                           /*!< Payload: the object type a factory should build, or a flag. */
-	uint16 unit[MP_COMMAND_UNITS_MAX];                      /*!< Recipient unit indices. */
+	uint16 unit[MP_COMMAND_UNITS_MAX];                      /*!< Recipient unit indices, or a Starport order's (type << 8 | amount) entries. */
 } MpCommand;
 
 extern void MpCommand_Init(MpCommand *cmd, MpCommandType type, uint8 houseID);

@@ -1407,6 +1407,15 @@ simulation's random generator so that its prices hold still while you look at
 them — in a match, one player opening a window moved every random the other
 player's game was about to draw. Both now use the interface generator.
 
+### Saying so on the screen
+
+Under the speed multiplier in the top right corner of the tactical view: `sync`
+and the turn number in green while the two players agree, and `DESYNC t585: unit
+map rng` in red, permanently, once they do not. A divergence used to announce
+itself by the units behaving oddly, which is both late and ambiguous -- from the
+player's chair a desync and an opponent playing badly look the same. The answer
+already existed every turn; it only needed somewhere to be shown.
+
 ### The desync detector
 
 Every turn packet carries a checksum of the state as of turn N, chunk by chunk,
@@ -1437,8 +1446,24 @@ it named the sleep.
 
 * **The interface.** A lobby, a room code the player can type, a build handshake
   (same binary, same `opendune.ini`) — see §5's list, all still true.
-* **Everything the player can do that is not yet a command.** Starport orders,
-  the Palace, rally points, the production queue.
+* **Everything the player can do that is not yet a command.** The Palace, rally
+  points, the production queue.
+
+  The Starport now travels, and it needed one thing the others did not: a price.
+  Its prices come from a generator seeded with the *viewer's* own house, so the
+  two clients disagree what the buyer is being charged and no amount of routing
+  fixes that by itself. The order carries the total it is paying, and both
+  clients take that off the same house; the +/- buttons take nothing while the
+  window is open, so a basket that is never bought costs nothing and cannot
+  disagree. A client could of course name a price of its choosing -- so could it
+  fabricate any other command, which is the standing bargain of lockstep between
+  two people who chose to play each other.
+
+* **`Map_FindLocationTile()`** is fixed. Case 5, "Visible", read the camera, and
+  cases 4 to 7 applied their validity check only to the viewer's own house --
+  so the search loop went round a different number of times on the two clients
+  and every turn of it draws randoms. In a match "visible" means the owner's own
+  base, and everybody is held to the same validity standard.
 
   The action panel deserves a note. Its buttons and their keyboard shortcuts run
   through `GUI_Widget_TextButton_Click()`, which had two roads out: a group went

@@ -942,6 +942,21 @@ void Map_Bloom_ExplodeSpecial(uint16 packed, uint8 houseID)
  * @param houseID The HouseID looking for a tile (to get an idea of Enemy Base).
  * @return The tile requested.
  */
+/**
+ * Whether a candidate tile has to pass Map_IsValidPosition() before it is used.
+ *
+ * The original asks this only for the player's own house, so a location picked
+ * for anybody else may land off the playable area.  That is a quirk one can
+ * live with alone and cannot live with in a match: the answer decides how many
+ * times the search loop goes round, each turn of it draws randoms, and the two
+ * clients would answer it differently for the same house.  In a match everybody
+ * is held to the same standard.
+ */
+static bool MapLocation_MustBeValid(uint8 houseID)
+{
+	return Match_IsActive() || houseID == g_playerHouseID;
+}
+
 uint16 Map_FindLocationTile(uint16 locationID, uint8 houseID)
 {
 	static const int16 mapBase[3] = {1, -2, -2};
@@ -992,12 +1007,23 @@ uint16 Map_FindLocationTile(uint16 locationID, uint8 houseID)
 
 			case 4: /* Air */
 				ret = Tile_PackXY(mapInfo->minX + Tools_RandomLCG_Range(0, mapInfo->sizeX), mapInfo->minY + Tools_RandomLCG_Range(0, mapInfo->sizeY));
-				if (houseID == g_playerHouseID && !Map_IsValidPosition(ret)) ret = 0;
+				if (MapLocation_MustBeValid(houseID) && !Map_IsValidPosition(ret)) ret = 0;
 				break;
 
 			case 5: /* Visible */
+				/* "Visible" means visible to the player, and in a match there
+				 * are two of those looking at two different parts of the map.
+				 * Reading the camera here made the loop reject a different
+				 * number of tiles on each client, and every rejection costs two
+				 * randoms -- the whole stream slides.  With two players the
+				 * nearest honest meaning of "where the owner can see" is the
+				 * owner's own base, which is what case 7 answers. */
+				if (Match_IsActive()) {
+					locationID = 7;
+					continue;
+				}
 				ret = Tile_PackXY(Tile_GetPackedX(g_minimapPosition) + Tools_RandomLCG_Range(0, 14), Tile_GetPackedY(g_minimapPosition) + Tools_RandomLCG_Range(0, 9));
-				if (houseID == g_playerHouseID && !Map_IsValidPosition(ret)) ret = 0;
+				if (MapLocation_MustBeValid(houseID) && !Map_IsValidPosition(ret)) ret = 0;
 				break;
 
 			case 6: /* Enemy Base */
@@ -1031,7 +1057,7 @@ uint16 Map_FindLocationTile(uint16 locationID, uint8 houseID)
 					}
 				}
 
-				if (houseID == g_playerHouseID && !Map_IsValidPosition(ret)) ret = 0;
+				if (MapLocation_MustBeValid(houseID)) ret = Map_IsValidPosition(ret) ? ret : 0;
 				break;
 			}
 

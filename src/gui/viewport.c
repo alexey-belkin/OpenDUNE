@@ -242,6 +242,20 @@ static void GUI_Widget_Viewport_DrawSpeed(void)
 	GUI_DrawText_Wrapper(text, 237, 42, 0xFF, 0, 0x222);
 }
 
+/* Whether the two players still agree, under the speed in the top right corner.
+ * Green and a turn number while they do, red and permanent once they do not:
+ * the player should learn it from the screen, not from the units. */
+static void GUI_Widget_Viewport_DrawSync(void)
+{
+	const char *line;
+	uint8 colour = 4;
+
+	line = MpGame_GetSyncLine(&colour);
+	if (line == NULL) return;
+
+	GUI_DrawText_Wrapper("%s", 237, 50, colour, 0, 0x222, line);
+}
+
 /** Scroll the tactical map while the pointer rests on a game-screen edge. */
 void GUI_Widget_Viewport_HandleEdgeScroll(void)
 {
@@ -932,6 +946,7 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 	if (g_gameConfig.debugLines) GUI_Widget_Viewport_DrawDebugLines();
 	GUI_Widget_Viewport_DrawSpeed();
+	GUI_Widget_Viewport_DrawSync();
 	Skirmish_DrawStatusOverlay();
 	GUI_Widget_Viewport_DrawRallyPoint(true);
 

@@ -46,6 +46,7 @@ extern void *g_readBuffer;
 extern uint32 g_readBufferSize;
 
 extern uint16 GameLoop_GetSpeedFactor(void);
+extern const char *MpGame_GetSyncLine(uint8 *colour);
 extern void Game_Prepare(void);
 extern void Game_Init(void);
 extern void Game_LoadScenario(uint8 houseID, uint16 scenarioID);
