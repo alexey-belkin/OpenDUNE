@@ -241,9 +241,11 @@ player a starting squad, `--mp-seed=N` names the map.
 Every turn packet carries a checksum per savegame chunk, so a live match reports
 its own desync — `mp-live: DESYNC at turn 6 (tick 48), about: map rng`. Add
 `--mp-desync-dump` and both clients keep the last few turns on disk, so the turn
-the mismatch names can be diffed byte for byte (`mpdesync-s*-turnN.bin`). That
-pair — the chunk name and the two dumps — is how the desyncs in stage 6 of
-mp.md were found, one run each.
+the mismatch names can be diffed byte for byte (`mpdesync-s*-turnN.bin`).
+`python3 tools/mpdesync_diff.py <logdir>` reads that pair and says what the two
+clients disagreed about in words — which tile, which animation slot — rather
+than which byte. That pair — the chunk name and the two dumps — is how the
+desyncs in stage 6 of mp.md were found, one run each.
 
 → [mp.md](mp.md), [tools/relay/README.md](tools/relay/README.md).
 The same dummy-driver invocation without a flag is a useful smoke test that data
