@@ -53,6 +53,26 @@ volatile uint32 g_timerGame = 0;                                     /*!< Tick c
  * they happened at two different game ticks.  Outside a match it advances with
  * g_timerGUI and nothing changes; in a match the simulation stepper owns it. */
 volatile uint32 g_timerAnim = 0;
+
+/**
+ * Whether the animation clock belongs to the match rather than to the wall.
+ *
+ * MpTurn_IsActive() is not enough on its own: it only becomes true once the
+ * turn loop begins, and a match is set up first -- the map, the houses, the
+ * starting squad, the tick-zero dump.  That setup takes as long as the machine
+ * takes, and the 60 Hz ticker keeps counting through it, so the two clients
+ * reached their first turn with animation clocks tens of ticks apart.  A
+ * constant offset mostly cancels, because everything animations schedule is
+ * relative to this clock -- which is exactly why it went unnoticed, and why a
+ * checksum over the animation slots would otherwise report a disagreement in
+ * every match.  Claimed before the match is built and released when it ends.
+ */
+static bool s_animClockClaimed = false;
+
+void Timer_ClaimAnimClock(bool claimed)
+{
+	s_animClockClaimed = claimed;
+}
 volatile uint32 g_timerInput = 0;                                    /*!< Tick counter. Increases with 1 every tick. Used for input timing. */
 volatile uint32 g_timerSleep = 0;                                    /*!< Tick counter. Increases with 1 every tick. Used for sleeping. */
 volatile uint32 g_timerTimeout = 0;                                  /*!< Tick counter. Decreases with 1 every tick when non-zero. Used to timeout. */
@@ -400,7 +420,7 @@ void Timer_Tick(void)
 	if ((s_timersActive & TIMER_GUI)  != 0) {
 		g_timerGUI++;
 		/* In a match this one comes from the stepper instead. */
-		if (!MpTurn_IsActive()) g_timerAnim++;
+		if (!MpTurn_IsActive() && !s_animClockClaimed) g_timerAnim++;
 	}
 	if ((s_timersActive & TIMER_GAME) != 0) g_timerGame++;
 	g_timerInput++;

@@ -3,6 +3,8 @@
 #ifndef ANIMATE_H
 #define ANIMATE_H
 
+#include <stdio.h>
+
 /**
  * The valid types for command in AnimationCommandStruct.
  */
@@ -36,5 +38,6 @@ extern void Animation_Init(void);
 extern void Animation_Start(const AnimationCommandStruct *commands, tile32 tile, uint16 tileLayout, uint8 houseID, uint8 iconGroup);
 extern void Animation_Stop_ByTile(uint16 packed);
 extern void Animation_Tick(void);
+extern bool Animation_Save(FILE *fp);
 
 #endif /* ANIMATE_H */

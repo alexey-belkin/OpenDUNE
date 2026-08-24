@@ -8,6 +8,7 @@
 #include "animation.h"
 
 #include "audio/sound.h"
+#include "file.h"
 #include "map.h"
 #include "sprites.h"
 #include "structure.h"
@@ -310,4 +311,64 @@ void Animation_Tick(void)
 
 		if (animation->tickNext < s_animationTimer) s_animationTimer = animation->tickNext;
 	}
+}
+
+/**
+ * Name an animation's command list by table and row rather than by address.
+ *
+ * The slot holds a pointer into one of the five static tables, and the two
+ * clients' copies live at different addresses, so the pointer itself says
+ * nothing.  What has to match is which script the slot is running.
+ */
+static uint16 Animation_CommandsID(const AnimationCommandStruct *commands)
+{
+	uint16 i;
+
+	if (commands == NULL) return 0;
+
+	for (i = 0; i < 8;  i++) if (commands == g_table_animation_unitMove[i])    return 1  + i;
+	for (i = 0; i < 4;  i++) if (commands == g_table_animation_unitScript1[i]) return 9  + i;
+	for (i = 0; i < 4;  i++) if (commands == g_table_animation_unitScript2[i]) return 13 + i;
+	for (i = 0; i < 16; i++) if (commands == g_table_animation_map[i])         return 17 + i;
+	for (i = 0; i < 29; i++) if (commands == g_table_animation_structure[i])   return 33 + i;
+
+	return 0xFFFF;
+}
+
+/**
+ * Write the animation table for the desync checksum.
+ *
+ * Animations are not part of the savegame, yet they write ground tiles, which
+ * are -- so a slot that gets out of step surfaces as a map difference several
+ * turns later, pointing at the tile rather than at the cause.  Checksumming
+ * them makes the report say "anim" at the turn it happens.
+ *
+ * The slot index is part of what is written: Animation_Start() takes the first
+ * free slot and Animation_Tick() walks the slots in order, so two clients
+ * holding the same set of animations in a different order is already a
+ * divergence.
+ */
+bool Animation_Save(FILE *fp)
+{
+	uint16 i;
+
+	if (!fwrite_le_uint32(s_animationTimer, fp)) return false;
+	if (!fwrite_le_uint32(g_timerAnim, fp)) return false;
+
+	for (i = 0; i < ANIMATION_MAX; i++) {
+		const Animation *a = &g_animations[i];
+
+		if (a->commands == NULL) continue;
+
+		if (!fwrite_le_uint16(i, fp)) return false;
+		if (!fwrite_le_uint32(a->tickNext, fp)) return false;
+		if (!fwrite_le_uint16(a->tileLayout, fp)) return false;
+		if (!fwrite_le_uint16(Animation_CommandsID(a->commands), fp)) return false;
+		if (!fwrite_le_uint16((uint16)((a->houseID << 8) | a->current), fp)) return false;
+		if (!fwrite_le_uint16(a->iconGroup, fp)) return false;
+		if (!fwrite_le_uint16(a->tile.x, fp)) return false;
+		if (!fwrite_le_uint16(a->tile.y, fp)) return false;
+	}
+
+	return true;
 }

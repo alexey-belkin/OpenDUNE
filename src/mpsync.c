@@ -15,6 +15,7 @@
 #include "structure.h"
 #include "pool/unit.h"
 #include "pool/structure.h"
+#include "animation.h"
 #include "team.h"
 #include "tools.h"
 
@@ -208,9 +209,10 @@ static bool MpSync_InfoSave(FILE *fp)
  */
 bool MpSync_Dump(const char *path)
 {
-	static const char *names[] = { "info", "house", "unit", "structure", "map", "team", "unitnew" };
+	static const char *names[] = { "info", "house", "unit", "structure", "map", "team", "unitnew", "anim" };
 	static bool (* const savers[])(FILE *fp) = {
-		&MpSync_InfoSave, &House_Save, &MpSync_UnitSave, &MpSync_StructureSave, &Map_Save, &Team_Save, &UnitNew_Save
+		&MpSync_InfoSave, &House_Save, &MpSync_UnitSave, &MpSync_StructureSave, &Map_Save, &Team_Save, &UnitNew_Save,
+		&Animation_Save
 	};
 	uint8 buffer[4096];
 	FILE *out;
@@ -219,7 +221,7 @@ bool MpSync_Dump(const char *path)
 	out = fopen(path, "wb");
 	if (out == NULL) return false;
 
-	for (i = 0; i < 7; i++) {
+	for (i = 0; i < 8; i++) {
 		FILE *fp = tmpfile();
 		size_t got;
 		char header[64];
@@ -487,7 +489,7 @@ static void MpSync_PutU32(uint8 *dst, uint32 value)
  */
 bool MpSync_Take(MpSyncChecksum *checksum)
 {
-	uint8 packed[8 * 4];
+	uint8 packed[9 * 4];
 	bool ok = true;
 
 	memset(checksum, 0, sizeof(*checksum));
@@ -499,6 +501,7 @@ bool MpSync_Take(MpSyncChecksum *checksum)
 	checksum->map       = MpSync_ChunkCrc(&Map_Save,       &ok);
 	checksum->team      = MpSync_ChunkCrc(&Team_Save,      &ok);
 	checksum->unitNew   = MpSync_ChunkCrc(&UnitNew_Save,   &ok);
+	checksum->anim      = MpSync_ChunkCrc(&Animation_Save, &ok);
 
 	/* Neither generator is part of the savegame, and the random stream is
 	 * exactly what a desync travels through, so it gets its own component. */
@@ -513,7 +516,8 @@ bool MpSync_Take(MpSyncChecksum *checksum)
 	MpSync_PutU32(packed + 16, checksum->map);
 	MpSync_PutU32(packed + 20, checksum->team);
 	MpSync_PutU32(packed + 24, checksum->unitNew);
-	MpSync_PutU32(packed + 28, checksum->rng);
+	MpSync_PutU32(packed + 28, checksum->anim);
+	MpSync_PutU32(packed + 32, checksum->rng);
 	checksum->total = MpSync_Crc32(0, packed, sizeof(packed));
 
 	return ok;
@@ -526,11 +530,12 @@ bool MpSync_Take(MpSyncChecksum *checksum)
 void MpSync_Format(char *dst, uint16 size, uint32 tick, const MpSyncChecksum *checksum)
 {
 	snprintf(dst, size,
-	         "mp-checksum t%-7u total %08x  unit %08x str %08x house %08x map %08x team %08x new %08x info %08x rng %08x",
+	         "mp-checksum t%-7u total %08x  unit %08x str %08x house %08x map %08x team %08x new %08x anim %08x info %08x rng %08x",
 	         (unsigned)tick,
 	         (unsigned)checksum->total,
 	         (unsigned)checksum->unit, (unsigned)checksum->structure,
 	         (unsigned)checksum->house, (unsigned)checksum->map,
 	         (unsigned)checksum->team, (unsigned)checksum->unitNew,
+	         (unsigned)checksum->anim,
 	         (unsigned)checksum->info, (unsigned)checksum->rng);
 }

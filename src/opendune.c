@@ -1111,6 +1111,13 @@ static bool MpHarness_StartMatch(uint32 seed)
 	Timer_ResetGame();
 	Timer_ResetGUI();
 
+	/* The animation clock stops following the wall here rather than at
+	 * MpTurn_Begin(), which is several hundred milliseconds of setup later.
+	 * Those milliseconds are how long *this* machine took, so leaving them in
+	 * gave the two clients different clocks before the first turn -- see the
+	 * note on s_animClockClaimed in timer.c. */
+	Timer_ClaimAnimClock(true);
+
 	return Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], seed, &planA, &planB);
 }
 
@@ -1226,6 +1233,7 @@ static void MpGame_Step(void)
 				         MpNet_IsConnected() ? "the other player left" : MpNet_GetError());
 				PrintToConsole(line);
 				MpTurn_End();
+				Timer_ClaimAnimClock(false);
 				MpNet_Disconnect();
 				inside = false;
 				return;
@@ -2271,6 +2279,7 @@ static void GameLoop_Main(void)
 		}
 
 		MpTurn_End();
+		Timer_ClaimAnimClock(false);
 		if (s_mpRelayHost[0] != '\0') MpNet_Disconnect();
 		return;
 	}
@@ -3250,6 +3259,7 @@ int main(int argc, char **argv)
 	GameLoop_Main();
 
 	if (MpTurn_IsActive()) MpTurn_End();
+	Timer_ClaimAnimClock(false);
 	if (MpGame_IsLive()) MpNet_Disconnect();
 
 	PrintToConsole(String_Get_ByIndex(STR_THANK_YOU_FOR_PLAYING_DUNE_II));

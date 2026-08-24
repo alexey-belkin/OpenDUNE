@@ -15,6 +15,7 @@ typedef struct MpSyncChecksum {
 	uint32 map;                                             /*!< The 64x64 tile map. */
 	uint32 team;                                            /*!< The Team pool. */
 	uint32 unitNew;                                         /*!< Unit fields this fork added. */
+	uint32 anim;                                            /*!< The animation slots -- not saved, but they write the map. */
 	uint32 rng;                                             /*!< Both random generators. */
 	uint32 total;                                           /*!< All of the above, combined. */
 } MpSyncChecksum;

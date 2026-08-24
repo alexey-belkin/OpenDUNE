@@ -151,14 +151,14 @@ bool MpTurn_IsDue(void)
  *
  * "The two players disagreed" is not a lead; "they disagreed about the unit
  * pool and the random stream" is.  Every desync hunt in this fork has started
- * by knowing which chunk moved first, so the wire carries all nine numbers and
+ * by knowing which chunk moved first, so the wire carries all ten numbers and
  * not just the combined one.
  */
 static void MpTurn_NameDifferences(char *dst, uint16 size, const MpSyncChecksum *a, const MpSyncChecksum *b)
 {
-	const char *names[8];
-	uint32 x[8];
-	uint32 y[8];
+	const char *names[9];
+	uint32 x[9];
+	uint32 y[9];
 	uint16 used = 0;
 	uint16 i;
 
@@ -169,17 +169,18 @@ static void MpTurn_NameDifferences(char *dst, uint16 size, const MpSyncChecksum 
 	names[4] = "map";       x[4] = a->map;       y[4] = b->map;
 	names[5] = "team";      x[5] = a->team;      y[5] = b->team;
 	names[6] = "unitNew";   x[6] = a->unitNew;   y[6] = b->unitNew;
-	names[7] = "rng";       x[7] = a->rng;       y[7] = b->rng;
+	names[7] = "anim";      x[7] = a->anim;      y[7] = b->anim;
+	names[8] = "rng";       x[8] = a->rng;       y[8] = b->rng;
 
 	dst[0] = '\0';
 
-	for (i = 0; i < 8; i++) {
+	for (i = 0; i < 9; i++) {
 		if (x[i] == y[i]) continue;
 		if (used + 1 >= size) break;
 		used += (uint16)snprintf(dst + used, size - used, "%s%s", (used == 0) ? "" : " ", names[i]);
 	}
 
-	/* All nine matched and the totals still differ: the combined number is the
+	/* All ten matched and the totals still differ: the combined number is the
 	 * only thing left that could have, which means the checksum is broken, not
 	 * the game.  Say so rather than printing an empty list. */
 	if (dst[0] == '\0') snprintf(dst, size, "(totals only)");
@@ -295,12 +296,13 @@ uint16 MpPacket_Format(char *dst, uint16 size, const MpPacket *packet)
 	uint16 used;
 	uint16 i;
 
-	used = (uint16)snprintf(dst, size, "turn %u check %u %08x %08x %08x %08x %08x %08x %08x %08x %08x count %u\n",
+	used = (uint16)snprintf(dst, size, "turn %u check %u %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x count %u\n",
 	                        (unsigned)packet->turn, (unsigned)packet->checkTurn,
 	                        (unsigned)packet->check.info, (unsigned)packet->check.house,
 	                        (unsigned)packet->check.unit, (unsigned)packet->check.structure,
 	                        (unsigned)packet->check.map, (unsigned)packet->check.team,
-	                        (unsigned)packet->check.unitNew, (unsigned)packet->check.rng,
+	                        (unsigned)packet->check.unitNew, (unsigned)packet->check.anim,
+	                        (unsigned)packet->check.rng,
 	                        (unsigned)packet->check.total, (unsigned)packet->count);
 
 	for (i = 0; i < packet->count && i < MP_TURN_COMMANDS_MAX; i++) {
@@ -327,16 +329,16 @@ uint16 MpPacket_Format(char *dst, uint16 size, const MpPacket *packet)
 bool MpPacket_Parse(const char *src, MpPacket *packet)
 {
 	unsigned turn, checkTurn, count;
-	unsigned c[9];
+	unsigned c[10];
 	const char *p = src;
 	int consumed = 0;
 	uint16 i;
 
 	memset(packet, 0, sizeof(*packet));
 
-	if (sscanf(p, "turn %u check %u %x %x %x %x %x %x %x %x %x count %u%n",
-	           &turn, &checkTurn, &c[0], &c[1], &c[2], &c[3], &c[4], &c[5], &c[6], &c[7], &c[8],
-	           &count, &consumed) != 12) return false;
+	if (sscanf(p, "turn %u check %u %x %x %x %x %x %x %x %x %x %x count %u%n",
+	           &turn, &checkTurn, &c[0], &c[1], &c[2], &c[3], &c[4], &c[5], &c[6], &c[7], &c[8], &c[9],
+	           &count, &consumed) != 13) return false;
 	if (count > MP_TURN_COMMANDS_MAX) return false;
 
 	packet->turn            = (uint32)turn;
@@ -348,8 +350,9 @@ bool MpPacket_Parse(const char *src, MpPacket *packet)
 	packet->check.map       = (uint32)c[4];
 	packet->check.team      = (uint32)c[5];
 	packet->check.unitNew   = (uint32)c[6];
-	packet->check.rng       = (uint32)c[7];
-	packet->check.total     = (uint32)c[8];
+	packet->check.anim      = (uint32)c[7];
+	packet->check.rng       = (uint32)c[8];
+	packet->check.total     = (uint32)c[9];
 	packet->count           = (uint16)count;
 
 	p += consumed;
