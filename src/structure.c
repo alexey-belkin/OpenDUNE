@@ -2144,9 +2144,8 @@ bool Structure_SetRepairingState(Structure *s, int8 state, Widget *w)
 /**
  * Update the map with the right data for this structure.
  * @param s The structure to update on the map.
- * @param animate Also (re)start the structure's animation.
  */
-static void Structure_UpdateMapEx(Structure *s, bool animate)
+void Structure_UpdateMap(Structure *s)
 {
 	const StructureInfo *si;
 	uint16 layoutSize;
@@ -2185,28 +2184,49 @@ static void Structure_UpdateMapEx(Structure *s, bool animate)
 
 	s->o.flags.s.isDirty = true;
 
-	if (animate) Structure_StartAnimation(s);
-}
-
-void Structure_UpdateMap(Structure *s)
-{
-	Structure_UpdateMapEx(s, true);
+	Structure_StartAnimation(s);
 }
 
 /**
- * Restamp a structure's tiles without touching its animation.
+ * Mark a structure's tiles for redrawing, without writing them.
  *
- * The redraw after a full-screen interface repaint wants the tiles back and
- * nothing else.  Restarting the animation there is a simulation act performed
- * for a presentation reason: Animation_Start() takes the first free slot, and
- * Animation_Tick() walks the slots in order drawing a random for every pause,
- * so re-slotting every structure on one client puts the two clients' random
- * streams out of step.  Animations are not in the checksum, so it is invisible
- * until it surfaces somewhere that is -- a walk cycle, a build frame.
+ * A full-screen interface repaint ends by asking every structure to put itself
+ * back on the map, and that is one client's screen deciding to write the world:
+ * the tiles it stamps are the structure's *idle* frame, so a building whose
+ * animation had reached the next frame is dragged back a step -- on the client
+ * that repainted and not on the other.  The animation slots stay in agreement,
+ * which is what made it hard to see: the checksum reported the map, and the
+ * cause was a window closing.
+ *
+ * Nothing needs writing.  The tiles in g_map are already what the simulation
+ * says they are -- the repaint lost the screen, not the map -- so the redraw
+ * only has to say which tiles to paint again.  An earlier attempt at this kept
+ * the tile stamping and dropped only the animation restart, which fixed the
+ * random stream and left this behind.
  */
 void Structure_RedrawMap(Structure *s)
 {
-	Structure_UpdateMapEx(s, false);
+	const StructureInfo *si;
+	uint16 layoutSize;
+	const uint16 *layout;
+	uint16 packed;
+	int i;
+
+	if (s == NULL) return;
+	if (!s->o.flags.s.used) return;
+	if (s->o.flags.s.isNotOnMap) return;
+
+	si = &g_table_structureInfo[s->o.type];
+
+	layout = g_table_structure_layoutTiles[si->layout];
+	layoutSize = g_table_structure_layoutTileCount[si->layout];
+	packed = Tile_PackTile(s->o.position);
+
+	for (i = 0; i < layoutSize; i++) {
+		Map_Update(packed + layout[i], 0, false);
+	}
+
+	s->o.flags.s.isDirty = true;
 }
 
 void Structure_StartAnimation(Structure *s)

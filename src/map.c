@@ -129,8 +129,13 @@ void Map_SetSelection(uint16 packed)
 			/* Restamping the structure's tiles because somebody clicked it is a
 			 * click writing into the map, which is saved -- and only one of two
 			 * players clicked.  The tiles are already what the simulation says
-			 * they are; this is a leftover refresh. */
-			if (!MpTurn_IsActive()) Structure_UpdateMap(s);
+			 * they are, so in a match the click asks for a repaint and nothing
+			 * more. */
+			if (MpTurn_IsActive()) {
+				Structure_RedrawMap(s);
+			} else {
+				Structure_UpdateMap(s);
+			}
 		} else {
 			Map_SetSelectionSize(STRUCTURE_LAYOUT_1x1);
 		}
