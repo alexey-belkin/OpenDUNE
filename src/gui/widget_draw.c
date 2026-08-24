@@ -465,7 +465,6 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 	static uint16 displayedUpgradeTime      = 0xFFFF;
 	static uint16 displayedStarportTime     = 0xFFFF;
 	static char displayedUnitState[20] = "";
-	static char displayedUnitDetail[20] = "";
 
 	uint16 actionType = 0;
 	Structure *s = NULL;
@@ -495,13 +494,15 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 			u = g_unitSelected;
 			Unit_GetStatusText(u, unitState, unitDetail, sizeof(unitState));
 
+			/* Only the state is on the panel, so only the state can make it
+			 * stale -- the detail changes every time a harvester's cargo ticks
+			 * up, and repainting for it was work nobody could see. */
 			if (forceDraw
 				|| u->o.index     != displayedIndex
 				|| u->o.hitpoints != displayedHitpoints
 				|| u->o.houseID   != displayedHouseID
 				|| u->actionID    != displayedActiveAction
-				|| strcmp(unitState, displayedUnitState) != 0
-				|| strcmp(unitDetail, displayedUnitDetail) != 0) {
+				|| strcmp(unitState, displayedUnitState) != 0) {
 					actionType = 2; /* Unit */
 			}
 		}
@@ -551,7 +552,10 @@ static uint16 GUI_Widget_ActionPanel_GetActionType(bool forceDraw)
 			displayedActiveAction     = u->actionID;
 			displayedMissileCountdown = 0xFFFF;
 			displayedHouseID          = u->o.houseID;
-			Unit_GetStatusText(u, displayedUnitState, displayedUnitDetail, sizeof(displayedUnitState));
+			{
+				char scratch[20];
+				Unit_GetStatusText(u, displayedUnitState, scratch, sizeof(displayedUnitState));
+			}
 			break;
 
 		case 3: /* Structure */
@@ -850,16 +854,16 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 							GUI_Widget_MakeNormal(buttons[i], false);
 						}
 					}
-					/* Individual units retain their portrait and health bar.  The free
-					 * space below the four commands carries the live state and its
-					 * most useful context (post, destination or harvester cargo). */
+					/* Individual units retain their portrait and health bar, and
+					 * one row below the four commands says what the unit is
+					 * actually doing.  One row is the whole budget: the panel
+					 * ends where the radar begins, at y=136. */
 					{
 						char state[20];
 						char detail[20];
 
 						Unit_GetStatusText(u, state, detail, sizeof(state));
 						GUI_DrawText_Wrapper(state, 258, 123, 29, 0, 0x11);
-						GUI_DrawText_Wrapper(detail, 258, 131, 29, 0, 0x11);
 					}
 				} break;
 

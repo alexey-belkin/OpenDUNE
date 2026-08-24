@@ -645,12 +645,32 @@ static void GUI_Window_Create(WindowDesc *desc)
 	GFX_Screen_SetActive(SCREEN_0);
 }
 
+/**
+ * Somewhere to keep the screen while a window sits on top of it.
+ *
+ * SCREEN_2 is where Sprites_LoadTiles() parks UNIT.EMC, so stashing pixels
+ * there overwrites the script every unit is executing.  The original could
+ * afford it: a window stopped the world, and nothing read the script until the
+ * window closed and the tiles were reloaded.  In a match the world keeps
+ * running underneath -- the turn loop is pumped from sleepIdle(), which is what
+ * the window's own event loop calls -- so the units go on executing a buffer
+ * that now holds a picture of the sidebar.  It crashes as "[SCRIPT] Unknown
+ * opcode" a few frames after the menu opens.
+ *
+ * SCREEN_3 is only ever touched by the intro and the credits, neither of which
+ * can be on screen during a game, and it is the larger of the two.
+ */
+static Screen GUI_Window_ScratchScreen(void)
+{
+	return MpTurn_IsActive() ? SCREEN_3 : SCREEN_2;
+}
+
 static void GUI_Window_BackupScreen(WindowDesc *desc)
 {
 	Widget_SetCurrentWidget(desc->index);
 
 	GUI_Mouse_Hide_Safe();
-	GFX_CopyToBuffer(g_curWidgetXBase * 8, g_curWidgetYBase, g_curWidgetWidth * 8, g_curWidgetHeight, GFX_Screen_Get_ByIndex(SCREEN_2));
+	GFX_CopyToBuffer(g_curWidgetXBase * 8, g_curWidgetYBase, g_curWidgetWidth * 8, g_curWidgetHeight, GFX_Screen_Get_ByIndex(GUI_Window_ScratchScreen()));
 	GUI_Mouse_Show_Safe();
 }
 
@@ -659,7 +679,7 @@ static void GUI_Window_RestoreScreen(WindowDesc *desc)
 	Widget_SetCurrentWidget(desc->index);
 
 	GUI_Mouse_Hide_Safe();
-	GFX_CopyFromBuffer(g_curWidgetXBase * 8, g_curWidgetYBase, g_curWidgetWidth * 8, g_curWidgetHeight, GFX_Screen_Get_ByIndex(SCREEN_2));
+	GFX_CopyFromBuffer(g_curWidgetXBase * 8, g_curWidgetYBase, g_curWidgetWidth * 8, g_curWidgetHeight, GFX_Screen_Get_ByIndex(GUI_Window_ScratchScreen()));
 	GUI_Mouse_Show_Safe();
 }
 

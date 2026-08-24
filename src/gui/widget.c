@@ -37,8 +37,10 @@ WidgetProperties g_widgetProperties[23] = {
 	{32, 136,  8,  64,  15,  12,  0}, /*  3 */
 	{32,  44,  8,   9,  29, 116,  0}, /*  4 */
 	{32,   4,  8,   9,  29, 116,  0}, /*  5 */
-	/* The action panel includes two 6px status rows below unit commands. */
-	{32,  42,  8, 110,  15,  20,  0}, /*  6 */
+	/* The action panel runs from the name row down to the radar and no
+	 * further: widget 3 below starts at y=136, and a taller panel simply
+	 * painted its background over the top of the minimap. */
+	{32,  42,  8,  94,  15,  20,  0}, /*  6 */
 	{ 1,  21, 38,  14,  12, 116,  0}, /*  7 */
 	{16,  48, 23, 112,  15, 233,  0}, /*  8 */
 	{ 2, 176, 36,  11,  15,  20,  0}, /*  9 */
