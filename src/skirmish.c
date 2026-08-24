@@ -1709,11 +1709,11 @@ bool Skirmish_AI_StarportOrder(House *h, Structure *s)
 
 	if (g_starportAvailable[type] == 0) return false;
 
-	/* GUI_FactoryWindow_CalculateStarportPrice() in the same words; it is static
-	 * in the GUI layer and this is not a GUI. */
-	price = (g_table_unitInfo[type].o.buildCredits / 10) * 4 +
-	        (g_table_unitInfo[type].o.buildCredits / 10) * (Tools_RandomLCG_Range(0, 6) + Tools_RandomLCG_Range(0, 6));
-	if (price > 999) price = 999;
+	/* The same shop as the window's, priced by the same function; the dice come
+	 * from the game generator because this is the simulation buying, not a
+	 * player looking. */
+	price = Starport_Price((uint8)h->index, g_table_unitInfo[type].o.buildCredits,
+	                       Tools_RandomLCG_Range(0, 6) + Tools_RandomLCG_Range(0, 6));
 
 	if (h->credits < price) return false;
 
@@ -1735,7 +1735,7 @@ bool Skirmish_AI_StarportOrder(House *h, Structure *s)
 	h->starportLinkedID = u->o.index;
 	g_structureIndex = s->o.index;
 
-	if (h->starportTimeLeft == 0) h->starportTimeLeft = g_table_houseInfo[h->index].starportDeliveryTime;
+	if (h->starportTimeLeft == 0) h->starportTimeLeft = Starport_DeliveryTime((uint8)h->index);
 
 	g_starportAvailable[type]--;
 	if (g_starportAvailable[type] <= 0) g_starportAvailable[type] = -1;
@@ -2131,11 +2131,6 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
 	}
 }
 
-/** How many of each unit type a match's Starport holds to begin with. */
-enum {
-	SKIRMISH_STARPORT_STOCK = 5
-};
-
 /**
  * Stock the Starport for a match.
  *
@@ -2148,6 +2143,8 @@ enum {
  * The stock is the whole roster, because the stock is what the CHOAM freighter
  * happens to be carrying and not what any one house may buy.  Who may buy what
  * is decided per house where the list is built, in Structure_BuildObject().
+ * How many of each it carries is Starport_InitialStock()'s answer: what a fixed
+ * sum buys of that type, so the hold opens with ten Raider Trikes and one MCV.
  *
  * A build price of zero is what separates a unit from the rest of the pool.
  * The projectiles, the sandworm and the frigate all sit in the same table and
@@ -2168,7 +2165,7 @@ static void Skirmish_StockStarport(void)
 	for (i = 0; i < UNIT_MAX; i++) {
 		if (g_table_unitInfo[i].o.buildCredits == 0) continue;
 
-		g_starportAvailable[i] = SKIRMISH_STARPORT_STOCK;
+		g_starportAvailable[i] = Starport_InitialStock(g_table_unitInfo[i].o.buildCredits);
 	}
 }
 

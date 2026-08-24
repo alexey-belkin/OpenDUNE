@@ -1406,6 +1406,8 @@ bool GUI_Production_Up_Click(Widget *w)
 	return true;
 }
 
+static bool GUI_Purchase_CanAfford(void);
+
 static void GUI_Purchase_ShowInvoice(void)
 {
 	Widget *w = g_widgetInvoiceTail;
@@ -1459,9 +1461,14 @@ static void GUI_Purchase_ShowInvoice(void)
 
 	x = 311 - (short)strlen(textBuffer) * 6;
 
-	/* "Total Cost :" */
-	GUI_DrawText_Wrapper(GUI_String_Get_ByIndex(STR_TOTAL_COST_), x - 3, 152, 11, 0, 0x211);
-	GUI_DrawText_Monospace(textBuffer, x, 152, 11, 0, 6);
+	/* "Total Cost :" -- in red once the basket has outrun the treasury, which
+	 * is the same moment the order button stops being offered. */
+	{
+		uint8 colour = GUI_Purchase_CanAfford() ? 11 : 6;
+
+		GUI_DrawText_Wrapper(GUI_String_Get_ByIndex(STR_TOTAL_COST_), x - 3, 152, colour, 0, 0x211);
+		GUI_DrawText_Monospace(textBuffer, x, 152, colour, 0, 6);
+	}
 
 	GUI_Mouse_Hide_Safe();
 	GUI_Screen_Copy(16, 48, 16, 48, 23, 112, SCREEN_1, SCREEN_0);
@@ -1508,14 +1515,90 @@ bool GUI_Purchase_Invoice_Click(Widget *w)
 }
 
 /**
+ * Offer the order button only while the order can be paid for.
+ *
+ * Called from the window's own loop, because the treasury moves underneath a
+ * window that is simply sitting there.  Taking the button away is the whole of
+ * the block: an invisible widget takes neither the click nor its shortcut.
+ */
+void GUI_Purchase_UpdateOrderButton(void)
+{
+	Widget *w;
+
+	if (!g_factoryWindowStarport) return;
+
+	w = GUI_Widget_Get_ByIndex(g_widgetInvoiceTail, 58);
+	if (w == NULL) return;
+
+	if (g_factoryWindowOrdered != 0 && !GUI_Purchase_CanAfford()) {
+		if (!w->flags.invisible) GUI_Widget_MakeInvisible(w);
+	} else {
+		if (w->flags.invisible) GUI_Widget_MakeVisible(w);
+	}
+}
+
+/**
  * Handles Click event for the "Build this" button in production window.
  *
  * @return True, always.
  */
+/** What the basket on the counter comes to. */
+static uint16 GUI_Purchase_BasketTotal(void)
+{
+	uint16 total = 0;
+	uint16 i;
+
+	for (i = 0; i < g_factoryWindowTotal && i < 25; i++) {
+		total += g_factoryWindowItems[i].amount * g_factoryWindowItems[i].credits;
+	}
+
+	return total;
+}
+
+/**
+ * What the buyer may still spend.
+ *
+ * Outside a match the treasury drops as the basket fills, so what is left is
+ * simply the treasury.  In a match the money does not move until the order
+ * does, so the basket has to be subtracted here instead -- otherwise a player
+ * could fill it past what they can pay and have the order refused at the far
+ * end, which is a desync dressed up as a purchase.
+ */
+static uint16 GUI_Purchase_CreditsLeft(const House *h)
+{
+	uint16 basket;
+
+	if (!MpTurn_IsActive()) return h->credits;
+
+	basket = GUI_Purchase_BasketTotal();
+
+	return (h->credits > basket) ? (uint16)(h->credits - basket) : 0;
+}
+
+/**
+ * Whether the order on the counter can still be paid for.
+ *
+ * The "+" button refuses to add what the buyer cannot afford, which is enough
+ * only while the treasury holds still.  It does not: in a match the money is
+ * not taken until the order is sent, and the world keeps running while the
+ * window is open, so power maintenance or a factory finishing can take the
+ * treasury below a basket that was affordable when it was filled.  Ordering it
+ * then would be refused at the far end and the click would simply vanish.
+ */
+static bool GUI_Purchase_CanAfford(void)
+{
+	const House *h = g_playerHouse;
+
+	if (h == NULL) return false;
+	if (!MpTurn_IsActive()) return true;
+
+	return GUI_Purchase_BasketTotal() <= h->credits;
+}
+
 bool GUI_Production_BuildThis_Click(Widget *w)
 {
 	if (g_factoryWindowStarport) {
-		if (g_factoryWindowOrdered == 0) {
+		if (g_factoryWindowOrdered == 0 || !GUI_Purchase_CanAfford()) {
 			GUI_Widget_MakeInvisible(w);
 			GUI_Purchase_ShowInvoice();
 			GUI_Widget_MakeVisible(w);
@@ -1538,29 +1621,6 @@ bool GUI_Production_BuildThis_Click(Widget *w)
 	if (w != NULL) GUI_Widget_MakeNormal(w, false);
 
 	return true;
-}
-
-/**
- * What the buyer may still spend.
- *
- * Outside a match the treasury drops as the basket fills, so what is left is
- * simply the treasury.  In a match the money does not move until the order
- * does, so the basket has to be subtracted here instead -- otherwise a player
- * could fill it past what they can pay and have the order refused at the far
- * end, which is a desync dressed up as a purchase.
- */
-static uint16 GUI_Purchase_CreditsLeft(const House *h)
-{
-	uint16 basket = 0;
-	uint16 i;
-
-	if (!MpTurn_IsActive()) return h->credits;
-
-	for (i = 0; i < g_factoryWindowTotal && i < 25; i++) {
-		basket += g_factoryWindowItems[i].amount * g_factoryWindowItems[i].credits;
-	}
-
-	return (h->credits > basket) ? (uint16)(h->credits - basket) : 0;
 }
 
 /**

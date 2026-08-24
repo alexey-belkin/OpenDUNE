@@ -261,6 +261,7 @@ extern bool GUI_Production_Down_Click(Widget *w);
 extern bool GUI_Production_Up_Click(Widget *w);
 extern bool GUI_Purchase_Invoice_Click(Widget *w);
 extern bool GUI_Production_BuildThis_Click(Widget *w);
+extern void GUI_Purchase_UpdateOrderButton(void);
 extern bool GUI_Purchase_Plus_Click(Widget *w);
 extern bool GUI_Purchase_Minus_Click(Widget *w);
 

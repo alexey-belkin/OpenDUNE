@@ -1729,7 +1729,7 @@ void Structure_StarportOrder(Structure *s, const uint16 *items, uint16 count, ui
 
 			g_structureIndex = s->o.index;
 
-			if (h->starportTimeLeft == 0) h->starportTimeLeft = g_table_houseInfo[h->index].starportDeliveryTime;
+			if (h->starportTimeLeft == 0) h->starportTimeLeft = Starport_DeliveryTime((uint8)h->index);
 
 			u->o.linkedID = h->starportLinkedID & 0xFF;
 			h->starportLinkedID = u->o.index;
@@ -2010,7 +2010,7 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 
 					g_structureIndex = s->o.index;
 
-					if (h->starportTimeLeft == 0) h->starportTimeLeft = g_table_houseInfo[h->index].starportDeliveryTime;
+					if (h->starportTimeLeft == 0) h->starportTimeLeft = Starport_DeliveryTime((uint8)h->index);
 
 					u->o.linkedID = h->starportLinkedID & 0xFF;
 					h->starportLinkedID = u->o.index;

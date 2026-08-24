@@ -13,6 +13,7 @@
 #include "audio/driver.h"
 #include "audio/sound.h"
 #include "gfx.h"
+#include "inifile.h"
 #include "gui/gui.h"
 #include "gui/widget.h"
 #include "map.h"
@@ -32,6 +33,146 @@
 #include "unit.h"
 #include "wsa.h"
 
+
+/* -----------------------------------------------------------------------------
+ * The Starport as a shop.
+ *
+ * The original stocks it per scenario, prices it around the factory price and
+ * delivers almost at once, which is close enough to free that a Starport is
+ * simply a better factory.  This fork treats it as a trader: the goods come
+ * from off-world, so they cost more and take time to arrive, and how much of
+ * either is tuning rather than code.  Every default here is also a key under
+ * the [opendune] heading of opendune.ini -- keep bin/opendune.ini.sample and
+ * README.txt in step with the initialiser below.
+ * -------------------------------------------------------------------------- */
+
+typedef struct StarportConfig {
+	uint16 restockTicks;                                    /*!< Game ticks between one freighter top-up and the next. */
+	uint16 markup;                                          /*!< Mean price, as a percentage of the factory price. */
+	uint16 markupOrdos;                                     /*!< The same for Ordos, who are the traders. */
+	uint16 delivery;                                        /*!< Delivery time, as a percentage of the house table's. */
+	uint16 deliveryOrdos;                                   /*!< The same for Ordos. */
+	uint16 stockCredits;                                    /*!< A type's opening stock is what this buys of it. */
+	uint16 stockCeiling;                                    /*!< Restock limit, as a percentage of the opening stock. */
+} StarportConfig;
+
+static StarportConfig s_starport = {
+	1800,
+	130,
+	100,
+	300,
+	150,
+	1500,
+	200
+};
+
+static uint16 Starport_ReadPercent(const char *key, uint16 defaultValue, uint16 low)
+{
+	int value = IniFile_GetInteger(key, defaultValue);
+
+	if (value < (int)low) return low;
+	if (value > 10000) return 10000;
+	return (uint16)value;
+}
+
+void Starport_Init(void)
+{
+	int ticks = IniFile_GetInteger("starport_restock_ticks", s_starport.restockTicks);
+
+	/* A period of zero would top the shelves up sixty times a second, which is
+	 * not a fast shop but an infinite one. */
+	if (ticks < 1) ticks = 1;
+	if (ticks > 0xFFFF) ticks = 0xFFFF;
+	s_starport.restockTicks = (uint16)ticks;
+
+	/* The price is the factory price times (base + two dice of 0..6) / 10, so
+	 * the mean is (base + 6) / 10 and the floor of the markup is 60%: below
+	 * that the base would have to go negative and the spread would fold over
+	 * itself. */
+	s_starport.markup        = Starport_ReadPercent("starport_markup", s_starport.markup, 60);
+	s_starport.markupOrdos   = Starport_ReadPercent("starport_markup_ordos", s_starport.markupOrdos, 60);
+	s_starport.delivery      = Starport_ReadPercent("starport_delivery", s_starport.delivery, 0);
+	s_starport.deliveryOrdos = Starport_ReadPercent("starport_delivery_ordos", s_starport.deliveryOrdos, 0);
+	s_starport.stockCeiling  = Starport_ReadPercent("starport_stock_ceiling", s_starport.stockCeiling, 100);
+
+	ticks = IniFile_GetInteger("starport_stock_credits", s_starport.stockCredits);
+	if (ticks < 0) ticks = 0;
+	if (ticks > 0xFFFF) ticks = 0xFFFF;
+	s_starport.stockCredits = (uint16)ticks;
+}
+
+uint16 Starport_RestockTicks(void)
+{
+	return s_starport.restockTicks;
+}
+
+/**
+ * What the freighter is asking for one unit.
+ *
+ * @param houseID The buying house; Ordos deal at their own rate.
+ * @param buildCredits The factory price.
+ * @param roll Two dice of 0..6, drawn by the caller -- the interface generator
+ *   when a window is asking, the game generator when the simulation is.  Which
+ *   stream is used is the caller's business and it matters: a price the player
+ *   is merely looking at must not move the world.
+ * @return The price.  Uncapped: an off-world Devastator is allowed to cost
+ *   what it costs.
+ */
+uint16 Starport_Price(uint8 houseID, uint16 buildCredits, uint16 roll)
+{
+	uint16 markup = (houseID == HOUSE_ORDOS) ? s_starport.markupOrdos : s_starport.markup;
+	uint16 base   = (uint16)(markup / 10);
+	uint16 tenth  = (uint16)(buildCredits / 10);
+
+	base = (base > 6) ? (uint16)(base - 6) : 0;
+
+	return (uint16)(tenth * (base + roll));
+}
+
+/**
+ * How many of a type the freighter carries to begin with: what one fixed sum
+ * buys of it at the factory price.  A cheap unit therefore arrives by the
+ * dozen and an MCV one at a time, which is the shape of a cargo hold rather
+ * than of a shopping list.  Never zero, or the type would be missing from the
+ * window and could never restock into it.
+ */
+int16 Starport_InitialStock(uint16 buildCredits)
+{
+	uint16 stock;
+
+	if (buildCredits == 0) return 0;
+
+	stock = (uint16)(s_starport.stockCredits / buildCredits);
+
+	return (int16)((stock < 1) ? 1 : min(stock, 127));
+}
+
+/** How far restocking may refill a type: a multiple of what it opened with. */
+int16 Starport_StockCeiling(uint16 buildCredits)
+{
+	int16 opening = Starport_InitialStock(buildCredits);
+	uint32 ceiling;
+
+	if (opening <= 0) return 0;
+
+	ceiling = ((uint32)opening * s_starport.stockCeiling) / 100;
+	if (ceiling < (uint32)opening) ceiling = (uint32)opening;
+
+	return (int16)min(ceiling, 127);
+}
+
+/** How long the freighter takes, in Starport ticks. */
+uint16 Starport_DeliveryTime(uint8 houseID)
+{
+	uint16 percent = (houseID == HOUSE_ORDOS) ? s_starport.deliveryOrdos : s_starport.delivery;
+	uint32 time;
+
+	if (houseID >= HOUSE_MAX) return 0;
+
+	time = ((uint32)g_table_houseInfo[houseID].starportDeliveryTime * percent) / 100;
+
+	return (uint16)min(time, 0xFFFF);
+}
 
 House *g_playerHouse = NULL;
 HouseType g_playerHouseID = HOUSE_INVALID;
@@ -91,7 +232,7 @@ void GameLoop_House(void)
 
 	if (s_tickHouseStarportAvailability <= g_timerGame) {
 		tickStarportAvailability = true;
-		s_tickHouseStarportAvailability = g_timerGame + 1800;
+		s_tickHouseStarportAvailability = g_timerGame + Starport_RestockTicks();
 	}
 
 	if (tickMissileCountdown && g_houseMissileCountdown != 0) {
@@ -107,8 +248,15 @@ void GameLoop_House(void)
 		/* Pick a random unit to increase starport availability */
 		type = Tools_RandomLCG_Range(0, UNIT_MAX - 1);
 
-		/* Increase how many of this unit is available via starport by one */
-		if (g_starportAvailable[type] != 0 && g_starportAvailable[type] < 10) {
+		/* Increase how many of this unit is available via starport by one.
+		 *
+		 * Zero means "the freighter does not carry this at all" and stays zero;
+		 * selling out writes -1 instead, so a type that has been cleared out
+		 * comes back on the next delivery rather than being gone for good.  The
+		 * ceiling is per type now: a hold that opens with a dozen Trikes and one
+		 * MCV should not refill to the same number of each. */
+		if (g_starportAvailable[type] != 0 &&
+		    g_starportAvailable[type] < Starport_StockCeiling(g_table_unitInfo[type].o.buildCredits)) {
 			if (g_starportAvailable[type] == -1) {
 				g_starportAvailable[type] = 1;
 			} else {

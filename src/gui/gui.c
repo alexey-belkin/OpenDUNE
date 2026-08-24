@@ -2749,13 +2749,15 @@ static uint32 GUI_FactoryWindow_LoadGraymapTbl(void)
 
 static uint16 GUI_FactoryWindow_CalculateStarportPrice(uint16 credits)
 {
+	uint16 roll;
+
 	if (Match_IsActive()) {
-		credits = (credits / 10) * 4 + (credits / 10) * (Tools_RandomUI_Range(0, 6) + Tools_RandomUI_Range(0, 6));
+		roll = Tools_RandomUI_Range(0, 6) + Tools_RandomUI_Range(0, 6);
 	} else {
-		credits = (credits / 10) * 4 + (credits / 10) * (Tools_RandomLCG_Range(0, 6) + Tools_RandomLCG_Range(0, 6));
+		roll = Tools_RandomLCG_Range(0, 6) + Tools_RandomLCG_Range(0, 6);
 	}
 
-	return min(credits, 999);
+	return Starport_Price((uint8)g_playerHouseID, credits, roll);
 }
 
 static int GUI_FactoryWindow_Sorter(const void *a, const void *b)
@@ -2939,6 +2941,7 @@ FactoryResult GUI_DisplayFactoryWindow(bool isConstructionYard, bool isStarPort,
 		GUI_DrawCredits(g_playerHouseID, 0);
 
 		GUI_FactoryWindow_UpdateSelection(false);
+		GUI_Purchase_UpdateOrderButton();
 
 		event = GUI_Widget_HandleEvents(g_widgetInvoiceTail);
 
@@ -3649,7 +3652,15 @@ void GUI_FactoryWindow_DrawCaption(const char *caption)
 
 		GUI_DrawText_Wrapper(String_Get_ByIndex(oi->stringID_full), 128, 23, 12, 0, 0x12);
 
-		width = Font_GetStringWidth(String_Get_ByIndex(STR_COST_999));
+		/* Measured from the price actually on offer rather than from the
+		 * three-digit sample string: without the cap a price can run to four
+		 * digits, and a fixed width would push the last one off the panel. */
+		{
+			char cost[16];
+
+			snprintf(cost, sizeof(cost), String_Get_ByIndex(STR_COST_3D), item->credits);
+			width = Font_GetStringWidth(cost);
+		}
 		GUI_DrawText_Wrapper(String_Get_ByIndex(STR_COST_3D), 310 - width, 23, 12, 0, 0x12, item->credits);
 
 		if (g_factoryWindowStarport) {

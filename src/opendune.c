@@ -1952,6 +1952,7 @@ static void GameLoop_Main(void)
 
 	ReadProfileIni("PROFILE.INI");
 	Unit_CombatBalance_Init();
+	Starport_Init();
 
 	free(g_readBuffer); g_readBuffer = NULL;
 

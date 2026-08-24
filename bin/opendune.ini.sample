@@ -63,6 +63,38 @@ class_damage_tt_vs_tt=100
 class_bonus_atreides_p=120
 class_bonus_harkonnen_rp=110
 class_bonus_ordos_trike=110
+; --- Starport ---------------------------------------------------------------
+; The Starport is a trader, not a second factory: the goods come from off-world,
+; so they cost more than the factory charges and take longer to arrive.
+;
+; A price is the factory price times (markup/10 - 6 + two dice of 0..6) / 10, so
+; starport_markup is the *mean* price as a percentage of the factory price and
+; the spread around it is the same either way.  There is no upper cap on a
+; price.  60 is the floor: below it the spread would fold over itself.
+starport_markup=130
+; Ordos are the traders and deal at cost.
+starport_markup_ordos=100
+
+; Delivery time, as a percentage of the house table's (10 starport ticks, and a
+; starport tick is 3 seconds).  300 makes a delivery take a minute and a half;
+; Ordos again get half of that.
+starport_delivery=300
+starport_delivery_ordos=150
+
+; What the freighter carries.  A type's opening stock is however many of it
+; starport_stock_credits buys at the factory price, rounded down and never less
+; than one -- 1500 opens the hold with ten Raider Trikes, five Harvesters and a
+; single MCV.  Restocking refills a type up to starport_stock_ceiling percent of
+; what it opened with.
+starport_stock_credits=1500
+starport_stock_ceiling=200
+
+; Game ticks between one top-up and the next, at 60 ticks per second.  Each
+; top-up adds one to a single randomly chosen type, so lowering this is how you
+; make the shelves refill faster.  A type that has sold out comes back; a type
+; the freighter never carried stays at zero.
+starport_restock_ticks=1800
+
 ; DEBUG options :
 ;debug_game=1
 ;debug_scenario=1

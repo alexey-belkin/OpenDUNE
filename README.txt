@@ -146,6 +146,37 @@ applies to Trike and Raider Trike, not Quad. House bonuses multiply the base
 shot before the class matrix and also affect damage to structures. Deviator
 still deals zero HP damage and uses its normal area-deviation effect.
 
+Starport
+--------
+The Starport is a trader rather than a second factory: the goods come from
+off-world, so they cost more than the factory charges and take longer to
+arrive. Its settings live under the same [opendune] heading.
+
+A price is the factory price times (starport_markup/10 - 6 + two dice of 0..6)
+divided by 10, so starport_markup=130 is a mean price 30% above the factory
+price, with the same spread around it that the original had. There is no upper
+cap on a price. 60 is the lowest markup accepted; below it the spread would fold
+over itself. Ordos are the traders of the Imperium and deal at cost:
+starport_markup_ordos=100.
+
+starport_delivery=300 is the delivery time as a percentage of the house table's
+ten starport ticks, a starport tick being three seconds -- so a minute and a
+half. starport_delivery_ordos=150 gives Ordos half of that.
+
+A type's opening stock is however many of it starport_stock_credits=1500 buys
+at the factory price, rounded down and never less than one: ten Raider Trikes,
+five Harvesters, one MCV. starport_stock_ceiling=200 is how far restocking may
+refill a type, as a percentage of what it opened with.
+
+starport_restock_ticks=1800 is the interval between top-ups, at 60 ticks per
+second. Each top-up adds one of a single randomly chosen type, so lowering this
+is what makes the shelves refill faster. A type that has sold out comes back; a
+type the freighter never carried stays at zero.
+
+A generated skirmish map has no scenario to stock the Starport from, so a match
+between people stocks it as described above. An AI-only skirmish deliberately
+leaves it empty.
+
 
 Ingame
 ------

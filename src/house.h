@@ -181,6 +181,13 @@ extern uint16 g_playerCredits;
 extern uint32 g_tickHousePowerMaintenance;
 
 extern void GameLoop_House(void);
+extern void Starport_Init(void);
+extern uint16 Starport_RestockTicks(void);
+extern uint16 Starport_Price(uint8 houseID, uint16 buildCredits, uint16 roll);
+extern int16 Starport_InitialStock(uint16 buildCredits);
+extern int16 Starport_StockCeiling(uint16 buildCredits);
+extern uint16 Starport_DeliveryTime(uint8 houseID);
+
 extern uint8 House_StringToType(const char *name);
 extern bool House_AreAllied(uint8 houseID1, uint8 houseID2);
 extern void House_ResetTicks(void);
