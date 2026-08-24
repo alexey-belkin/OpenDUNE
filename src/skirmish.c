@@ -2131,6 +2131,47 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
 	}
 }
 
+/** How many of each unit type a match's Starport holds to begin with. */
+enum {
+	SKIRMISH_STARPORT_STOCK = 5
+};
+
+/**
+ * Stock the Starport for a match.
+ *
+ * A scenario stocks it from its CHOAM section; a generated map has no scenario,
+ * so every entry stays zero -- and House_Tick()'s restock only tops up entries
+ * that are already non-zero, which makes zero permanent.  An empty Starport is
+ * not merely an empty list either: GUI_FactoryWindow_InitItems() ends one with
+ * exit(0), so a player who built a Starport and clicked it lost the match.
+ *
+ * The stock is the whole roster, because the stock is what the CHOAM freighter
+ * happens to be carrying and not what any one house may buy.  Who may buy what
+ * is decided per house where the list is built, in Structure_BuildObject().
+ *
+ * A build price of zero is what separates a unit from the rest of the pool.
+ * The projectiles, the sandworm and the frigate all sit in the same table and
+ * cost nothing, and so does the Death Hand, which is a Palace weapon and not
+ * merchandise.  It doubles as the safety check the window needs: everything
+ * priced has a .wsa for the preview, and the window loads that without asking
+ * whether it exists.
+ *
+ * An AI-only skirmish is deliberately left empty.  The doctrine metrics measure
+ * an AI that has never had a Starport to spend through, and stocking one there
+ * would move every number in the suite for a reason that has nothing to do with
+ * the change being measured.
+ */
+static void Skirmish_StockStarport(void)
+{
+	uint16 i;
+
+	for (i = 0; i < UNIT_MAX; i++) {
+		if (g_table_unitInfo[i].o.buildCredits == 0) continue;
+
+		g_starportAvailable[i] = SKIRMISH_STARPORT_STOCK;
+	}
+}
+
 /**
  * Start a skirmish: generate the map, place both bases and hand control to the
  * game loop.  The caller is responsible for the surrounding mode switching.
@@ -2275,6 +2316,9 @@ static bool Skirmish_StartInternal(uint8 houseID1, uint8 houseID2, uint32 seed, 
 	if (s_economyMode) {
 		g_starportAvailable[UNIT_HARVESTER] = 5;
 		g_starportAvailable[UNIT_CARRYALL]  = 5;
+	} else if (Match_IsHumanControlled(houseID1) ||
+	           (houseID2 != HOUSE_INVALID && Match_IsHumanControlled(houseID2))) {
+		Skirmish_StockStarport();
 	}
 
 	/* Whose screen this is.  Last, because it has to name a house that exists:

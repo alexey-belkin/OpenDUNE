@@ -1815,6 +1815,17 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 					for (i = 0; i < UNIT_MAX; i++) {
 						int16 unitsAtStarport = g_starportAvailable[i];
 
+						/* The freighter carries the whole roster, but a house
+						 * may only take delivery of what it is allowed to
+						 * field: the Ordos Deviator is not for sale to
+						 * Harkonnen merely because a Starport is standing
+						 * there.  Asked of the creator rather than the current
+						 * owner, which is how the factories decide it too. */
+						if ((g_table_unitInfo[i].o.availableHouse & (1 << s->creatorHouseID)) == 0) {
+							g_table_unitInfo[i].o.available = 0;
+							continue;
+						}
+
 						if (unitsAtStarport == 0) {
 							g_table_unitInfo[i].o.available = 0;
 						} else if (unitsAtStarport < 0) {
@@ -1839,6 +1850,26 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 					u = Unit_Get_ByIndex(linkedID);
 					linkedID = u->o.linkedID;
 					Unit_Free(u);
+				}
+
+				/* An empty Starport has to close the click, not the process.
+				 * Structure_GetBuildable() answers -1 for a Starport, so the
+				 * "buildable == 0" bail above can never fire for one, and the
+				 * window it opens instead ends an empty list with exit(0).  A
+				 * generated map has no CHOAM section to stock from, which put
+				 * that exit one click away from any player who built one. */
+				{
+					uint8 i;
+					bool anyStock = false;
+
+					for (i = 0; i < UNIT_MAX; i++) {
+						if (g_table_unitInfo[i].o.available != 0) {
+							anyStock = true;
+							break;
+						}
+					}
+
+					if (!anyStock) return false;
 				}
 			} else {
 				uint8 i;
