@@ -1511,6 +1511,34 @@ it named the sleep.
   uninitialised reads, anything that depends on struct padding. Worth a `-fwrapv`
   and a UBSan pass over the simulation before blaming the network.
 
+## Release checklist
+
+Everything that requires removal or a decision before shipping to players.
+
+**`--mp-lag` flag.** Useful only during development to emulate bad network
+conditions. Safe to leave in the binary (it does nothing without the flag), but
+consider removing the argument parser entry so it does not appear in `--help`
+output and confuse players.
+
+**`--mp-units=N` starting squad.** Currently off by default with a comment "Off
+by default until the squad stops desyncing." Decide before release: promote to a
+lobby option (both players agree on a count) or remove the flag entirely.
+
+**`debug_*` ini keys.** Upstream-inherited (`debug_game`, `debug_scenario`,
+`debug_skip_dialogs`, `debug_log_game`). Present in the original OpenDUNE;
+leaving them is fine. `debug_game` (control AI units) is the one most likely to
+confuse players in a multiplayer lobby — it is purely local and the other client
+will not see the resulting commands.
+
+**`--sim-purity`.** A 40% overhead cross-check that checksums world state around
+every drawing and input call. Keep in the binary for debugging, do not expose in
+any player-facing interface.
+
+**Savegame load from Options during a match.** The only action in
+[mp-actions.html](mp-actions.html) marked red. Loading a savegame mid-match
+replaces one client's world entirely. The Options buttons for Save and Load should
+be disabled (`w->state = WIDGET_STATE_DISABLED`) while `MpTurn_IsActive()`.
+
 ## Rejected
 
 * **Authoritative server with state snapshots** — a delta protocol over EMC script
