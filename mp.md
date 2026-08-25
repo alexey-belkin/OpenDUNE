@@ -1607,9 +1607,20 @@ Same code, same houses, same binary, different rooms. Each waited out its
 timeout for a player who was in the other one, reported "the other player never
 joined" to a console nobody was reading, and — see below — went round again.
 
-`Lobby_HashObject()` now folds the three spans around the two pointers.
-Everything else in a static table is the same bytes in every run of the same
-binary, padding included, so nothing else had to be enumerated.
+Reaching round the two pointers fixed that, and left the deeper mistake
+standing. The bytes *between* the fields belong to the compiler, not to the
+game, and an arm64 build and an x86_64 build of the same commit still disagreed
+— `74d90780` against `f2019082`, with the branch decoration already taken out of
+the picture. So the digest is not taken over memory at all any more:
+`Lobby_Fold()` folds each field as four little-endian bytes in an order this
+file chooses, and only the values are the same on both machines.
+
+One more thing was in there that should not have been. `g_opendune_revision` is
+`g<sha>[M][-<branch>]`, and the branch is where the build happened rather than
+what it is — the Intel package is built in a worktree, which is detached and has
+no branch at all, so the two packages of one commit could not meet each other.
+`Lobby_RevisionSpan()` cuts at the first dash. The `M` stays: a modified tree
+really may be different code.
 
 The self-test had a line about this and the line was the bug:
 
@@ -1623,8 +1634,12 @@ entry's `name` at a copy of the same string and demand the digest not budge.
 Restoring the raw hash now fails the test on that line.
 
 The general lesson, since this fork will hash more things: **a digest that has to
-agree between two processes cannot be taken over memory that contains addresses,
-and a test that compares one process with itself cannot see that it does.**
+agree between two machines cannot be taken over memory at all** — not over
+addresses, and not over the padding and layout the compiler chose for the target
+it was building for. Fold the values. And **a test that compares one process
+with itself cannot see either mistake**: the pointer half was caught by moving a
+pointer, the architecture half only by building both and comparing the two room
+strings, which is now the last step of the Intel packaging procedure.
 
 ### Two more ways it did not fail gracefully
 

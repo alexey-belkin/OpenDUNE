@@ -106,6 +106,21 @@ A worktree rather than the main tree because `./configure` overwrites
 result runs on any Intel Mac from High Sierra onwards and, through Rosetta, on
 this machine — which is how `package.sh` verifies it.
 
+**Then check that the two packages can play each other**, because nothing else
+does. Build both from the same commit with both trees equally clean, and compare
+the room name each one derives:
+
+```bash
+cd <repo>/bin      && ./opendune --lobby-play=127.0.0.1:1,x,0,1 2>&1 | grep 'mp-live: room'
+cd /tmp/x86tree/bin && ./opendune --lobby-play=127.0.0.1:1,x,0,1 2>&1 | grep 'mp-live: room'
+```
+
+The digest in the two strings must be identical. It is a hash of the balance
+tables and the revision — see "The lobby" — and if it differs, an Intel player
+and an Apple Silicon player are put in different rooms and simply never find
+each other. That has already happened twice for two different reasons, and both
+times only this comparison could see it.
+
 ## Game data
 
 Original Dune II files (`*.PAK`, ~13 MB) live in `bin/data/`, gitignored. They
@@ -579,14 +594,24 @@ without knowing that it does.
 * The relay defaults to `mp_relay` from `opendune.ini`, then to the project's own
   relay. Nobody should have to type an address twice.
 
-**The digest must not be hashed raw, and the first version was.** `ObjectInfo`
-carries `const char *name` and `const char *wsa`; a CRC over the table bytes
-therefore includes two addresses, and the loader puts the image somewhere else
-on every launch. The digest came out different every time, so two copies of one
-build asked the relay for different rooms and each waited out its timeout for
-somebody who was in the other one. `Lobby_HashObject()` takes the three spans
-around those pointers instead — everything else in a static table is the same
-bytes in every run of the same binary, padding included.
+**The digest is folded from field values, and it may never be taken over
+memory.** It was, and it was wrong twice for it. First it was a CRC over the
+table bytes — which include `ObjectInfo`'s `name` and `wsa`, two addresses that
+a position-independent binary puts somewhere different on every launch. Two
+copies of one build asked for different rooms and each waited out its timeout
+for somebody who was in the other one. Reaching round the pointers fixed that
+and left the deeper mistake standing: the bytes *between* the fields belong to
+the compiler, and an arm64 build and an x86_64 build of the same commit still
+disagreed (measured: `74d90780` against `f2019082`, branch decoration already
+removed). `Lobby_Fold()` now folds each field as four little-endian bytes, in an
+order this file chooses; only the values are the same on both.
+
+**The branch name is not part of the agreement either.** `g_opendune_revision`
+is `g<sha>[M][-<branch>]`, and the branch is where the build happened rather
+than what it is — the Intel package is built in a worktree, which is detached
+and therefore has no branch at all. `Lobby_RevisionSpan()` cuts at the first
+dash. The `M` stays: a modified tree really may be different code, so two dirty
+trees agree only by being equally dirty, which is as much as anything can tell.
 
 `--lobby-self-test` is the guard, and it tests the rule rather than the drawing:
 same choices → identical room string, any difference → a different one, the seed
@@ -607,6 +632,14 @@ sitting at.
 ./opendune --lobby-play=127.0.0.1:31337,dune42,0,1 &
 ./opendune --lobby-play=127.0.0.1:31337,dune42,0,2 &
 ```
+
+It also prints the room name, which is the **only way to check the one claim no
+single-process test can reach**: that two builds of the same commit for two
+architectures agree. Run it against each binary and compare the string — both
+must print the same `code.pair.digest`, or an Intel player and an Apple Silicon
+player cannot meet. Do this every time both packages are made; it is the last
+step of the Intel procedure above for that reason. Both trees must be at the
+same commit and equally clean, since the `M` flag is inside the digest.
 
 Two traps in the menu itself. `mainMenuStrings` is a **seven**-column table now,
 one row per savegame/Hall-of-Fame combination, and every row has to carry the

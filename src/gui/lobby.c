@@ -15,7 +15,6 @@
  * handshake, and the relay enforces it without knowing that it does.
  */
 
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,28 +69,128 @@ static char s_label[5][64];
 static char s_entryTitle[64] = "";
 
 /**
- * Fold one table entry's common half into the digest, without its pointers.
+ * Fold one number into the digest, as four bytes and always the same four.
  *
- * ObjectInfo carries `name` and `wsa`, which are addresses in *this* process
- * and have nothing to do with the balance.  Hashing them raw made the digest
- * different on every launch -- the loader puts the image somewhere else each
- * time -- so two copies of one build asked the relay for different rooms and
- * never met each other.  The bug could not be seen from inside one process,
- * which is exactly what the first version of the self-test compared.
- *
- * Everything else in a static table is the same bytes in every run of the same
- * binary, padding included, so the three spans around the pointers can be taken
- * as they lie.
+ * The digest is compared between two machines, so it may not be taken over
+ * memory.  It has been wrong twice for that reason.  First it hashed the tables
+ * raw and picked up ObjectInfo's `name` and `wsa` -- addresses, different on
+ * every launch of a position-independent binary, so two copies of one build
+ * asked for different rooms.  Reaching round the pointers fixed that and left
+ * the deeper mistake in place: the bytes between the fields are the compiler's
+ * business, and an x86_64 build and an arm64 build of the same commit still
+ * disagreed.  Only the values are the same on both, so only the values are
+ * hashed, one at a time, in an order this file chooses.
  */
-static uint32 Lobby_HashObject(uint32 crc, const ObjectInfo *o)
+static uint32 Lobby_Fold(uint32 crc, uint32 value)
 {
-	const uint8 *base = (const uint8 *)o;
+	uint8 bytes[4];
 
-	crc = MpSync_Crc32(crc, base, (uint32)offsetof(ObjectInfo, name));
-	crc = MpSync_Crc32(crc, base + offsetof(ObjectInfo, stringID_full),
-	                   (uint32)(offsetof(ObjectInfo, wsa) - offsetof(ObjectInfo, stringID_full)));
-	crc = MpSync_Crc32(crc, base + offsetof(ObjectInfo, flags),
-	                   (uint32)(sizeof(ObjectInfo) - offsetof(ObjectInfo, flags)));
+	bytes[0] = (uint8)(value & 0xFF);
+	bytes[1] = (uint8)((value >> 8) & 0xFF);
+	bytes[2] = (uint8)((value >> 16) & 0xFF);
+	bytes[3] = (uint8)((value >> 24) & 0xFF);
+
+	return MpSync_Crc32(crc, bytes, 4);
+}
+
+/** The half of a table entry that Units and Structures share. */
+static uint32 Lobby_FoldObject(uint32 crc, const ObjectInfo *o)
+{
+	uint32 flags = 0;
+	uint16 i;
+
+	flags |= (uint32)o->flags.hasShadow           << 0;
+	flags |= (uint32)o->flags.factory             << 1;
+	flags |= (uint32)o->flags.notOnConcrete       << 2;
+	flags |= (uint32)o->flags.busyStateIsIncoming << 3;
+	flags |= (uint32)o->flags.blurTile            << 4;
+	flags |= (uint32)o->flags.hasTurret           << 5;
+	flags |= (uint32)o->flags.conquerable         << 6;
+	flags |= (uint32)o->flags.canBePickedUp       << 7;
+	flags |= (uint32)o->flags.noMessageOnDeath    << 8;
+	flags |= (uint32)o->flags.tabSelectable       << 9;
+	flags |= (uint32)o->flags.scriptNoSlowdown    << 10;
+	flags |= (uint32)o->flags.targetAir           << 11;
+	flags |= (uint32)o->flags.priority            << 12;
+
+	crc = Lobby_Fold(crc, o->stringID_abbrev);
+	crc = Lobby_Fold(crc, o->stringID_full);
+	crc = Lobby_Fold(crc, flags);
+	crc = Lobby_Fold(crc, o->spawnChance);
+	crc = Lobby_Fold(crc, o->hitpoints);
+	crc = Lobby_Fold(crc, o->fogUncoverRadius);
+	crc = Lobby_Fold(crc, o->spriteID);
+	crc = Lobby_Fold(crc, o->buildCredits);
+	crc = Lobby_Fold(crc, o->buildTime);
+	crc = Lobby_Fold(crc, o->availableCampaign);
+	crc = Lobby_Fold(crc, o->structuresRequired);
+	crc = Lobby_Fold(crc, o->sortPriority);
+	crc = Lobby_Fold(crc, o->upgradeLevelRequired);
+	for (i = 0; i < 4; i++) crc = Lobby_Fold(crc, o->actionsPlayer[i]);
+	crc = Lobby_Fold(crc, (uint32)(int32)o->available);
+	crc = Lobby_Fold(crc, o->hintStringID);
+	crc = Lobby_Fold(crc, o->priorityBuild);
+	crc = Lobby_Fold(crc, o->priorityTarget);
+	crc = Lobby_Fold(crc, o->availableHouse);
+
+	return crc;
+}
+
+static uint32 Lobby_FoldUnit(uint32 crc, const UnitInfo *u)
+{
+	uint32 flags = 0;
+
+	flags |= (uint32)u->flags.isBullet         << 0;
+	flags |= (uint32)u->flags.explodeOnDeath   << 1;
+	flags |= (uint32)u->flags.sonicProtection  << 2;
+	flags |= (uint32)u->flags.canWobble        << 3;
+	flags |= (uint32)u->flags.isTracked        << 4;
+	flags |= (uint32)u->flags.isGroundUnit     << 5;
+	flags |= (uint32)u->flags.mustStayInMap    << 6;
+	flags |= (uint32)u->flags.firesTwice       << 7;
+	flags |= (uint32)u->flags.impactOnSand     << 8;
+	flags |= (uint32)u->flags.isNotDeviatable  << 9;
+	flags |= (uint32)u->flags.hasAnimationSet  << 10;
+	flags |= (uint32)u->flags.notAccurate      << 11;
+	flags |= (uint32)u->flags.isNormalUnit     << 12;
+
+	crc = Lobby_FoldObject(crc, &u->o);
+	crc = Lobby_Fold(crc, u->indexStart);
+	crc = Lobby_Fold(crc, u->indexEnd);
+	crc = Lobby_Fold(crc, flags);
+	crc = Lobby_Fold(crc, u->dimension);
+	crc = Lobby_Fold(crc, u->movementType);
+	crc = Lobby_Fold(crc, u->animationSpeed);
+	crc = Lobby_Fold(crc, u->movingSpeedFactor);
+	crc = Lobby_Fold(crc, u->turningSpeed);
+	crc = Lobby_Fold(crc, u->groundSpriteID);
+	crc = Lobby_Fold(crc, u->turretSpriteID);
+	crc = Lobby_Fold(crc, u->actionAI);
+	crc = Lobby_Fold(crc, u->displayMode);
+	crc = Lobby_Fold(crc, u->destroyedSpriteID);
+	crc = Lobby_Fold(crc, u->fireDelay);
+	crc = Lobby_Fold(crc, u->fireDistance);
+	crc = Lobby_Fold(crc, u->damage);
+	crc = Lobby_Fold(crc, u->explosionType);
+	crc = Lobby_Fold(crc, u->bulletType);
+	crc = Lobby_Fold(crc, u->bulletSound);
+
+	return crc;
+}
+
+static uint32 Lobby_FoldStructure(uint32 crc, const StructureInfo *si)
+{
+	uint16 i;
+
+	crc = Lobby_FoldObject(crc, &si->o);
+	crc = Lobby_Fold(crc, si->enterFilter);
+	crc = Lobby_Fold(crc, si->creditsStorage);
+	crc = Lobby_Fold(crc, (uint32)(int32)si->powerUsage);
+	crc = Lobby_Fold(crc, si->layout);
+	crc = Lobby_Fold(crc, si->iconGroup);
+	for (i = 0; i < 3; i++) crc = Lobby_Fold(crc, si->animationIndex[i]);
+	for (i = 0; i < 8; i++) crc = Lobby_Fold(crc, si->buildableUnits[i]);
+	for (i = 0; i < 3; i++) crc = Lobby_Fold(crc, si->upgradeCampaign[i]);
 
 	return crc;
 }
@@ -106,28 +205,32 @@ static uint32 Lobby_HashObject(uint32 crc, const ObjectInfo *o)
  * written out at its default value.  The revision is in there because two
  * different builds of the same tables can still differ anywhere else.
  */
+/**
+ * How much of the revision string says what the code is.
+ *
+ * g_opendune_revision is "g<sha>[M][-<branch>]", and the branch is where the
+ * build happened rather than what it is.  Two trees at one commit -- which is
+ * exactly how the arm64 and the Intel package are made, one of them in a
+ * worktree -- carry different branch names, and hashing those meant an Intel
+ * player and an Apple Silicon player of the same commit never met.  The M
+ * stays: a modified tree really may be different code.
+ */
+static uint32 Lobby_RevisionSpan(const char *rev)
+{
+	const char *dash = strchr(rev, '-');
+
+	return (dash != NULL) ? (uint32)(dash - rev) : (uint32)strlen(rev);
+}
+
 static uint32 Lobby_ConfigHash(void)
 {
 	uint32 crc;
 	uint16 i;
 
-	crc = MpSync_Crc32(0, g_opendune_revision, (uint32)strlen(g_opendune_revision));
+	crc = MpSync_Crc32(0, g_opendune_revision, Lobby_RevisionSpan(g_opendune_revision));
 
-	for (i = 0; i < UNIT_MAX; i++) {
-		const uint8 *entry = (const uint8 *)&g_table_unitInfo[i];
-
-		crc = Lobby_HashObject(crc, &g_table_unitInfo[i].o);
-		crc = MpSync_Crc32(crc, entry + offsetof(UnitInfo, indexStart),
-		                   (uint32)(sizeof(UnitInfo) - offsetof(UnitInfo, indexStart)));
-	}
-
-	for (i = 0; i < STRUCTURE_MAX; i++) {
-		const uint8 *entry = (const uint8 *)&g_table_structureInfo[i];
-
-		crc = Lobby_HashObject(crc, &g_table_structureInfo[i].o);
-		crc = MpSync_Crc32(crc, entry + offsetof(StructureInfo, enterFilter),
-		                   (uint32)(sizeof(StructureInfo) - offsetof(StructureInfo, enterFilter)));
-	}
+	for (i = 0; i < UNIT_MAX; i++) crc = Lobby_FoldUnit(crc, &g_table_unitInfo[i]);
+	for (i = 0; i < STRUCTURE_MAX; i++) crc = Lobby_FoldStructure(crc, &g_table_structureInfo[i]);
 
 	return crc;
 }
@@ -336,6 +439,12 @@ int GUI_Lobby_RunSelfTest(void)
 
 		if (after != before) return 0;
 	}
+
+	/* The branch is not part of what the two players have to agree on. */
+	if (Lobby_RevisionSpan("gbc729211") != 9) return 0;
+	if (Lobby_RevisionSpan("gbc729211M") != 10) return 0;
+	if (Lobby_RevisionSpan("gbc729211M-multiplayer") != 10) return 0;
+	if (Lobby_RevisionSpan("gbc729211-master") != 9) return 0;
 
 	/* The other half of the same claim: a real balance difference must always
 	 * change it, or the digest protects nobody. */
