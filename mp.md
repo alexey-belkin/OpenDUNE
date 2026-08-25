@@ -1633,6 +1633,14 @@ that can be tested inside one process by moving something: repoint a table
 entry's `name` at a copy of the same string and demand the digest not budge.
 Restoring the raw hash now fails the test on that line.
 
+Once they could meet, they turned out to agree about everything else. An arm64
+package and an x86_64 package of `gb8778443`, played against each other through
+the relay: identical per-chunk checksums at every sample to tick 1800, no
+desync. That is the first evidence in this fork that the simulation is
+deterministic **across architectures** and not merely across two runs of one
+binary — a single observation on one map, not a proof, but the thing everybody
+worries about first.
+
 The general lesson, since this fork will hash more things: **a digest that has to
 agree between two machines cannot be taken over memory at all** — not over
 addresses, and not over the padding and layout the compiler chose for the target
