@@ -181,6 +181,7 @@ extern uint16 Script_Unit_SetDestinationDirect(ScriptEngine *script);
 extern uint16 Script_Unit_GetInfo(ScriptEngine *script);
 extern uint16 Script_Unit_CalculateRoute(ScriptEngine *script);
 extern bool Script_Unit_HasRoute(struct Unit *unit, uint16 packedSrc, uint16 packedDst, uint32 *travelTicks);
+extern uint16 Script_Unit_LegacyRoute(struct Unit *unit, uint16 packedSrc, uint16 packedDst, uint8 *buffer, uint16 bufferSize);
 extern uint16 Script_Unit_MoveToStructure(ScriptEngine *script);
 extern uint16 Script_Unit_GetAmount(ScriptEngine *script);
 extern uint16 Script_Unit_IsInTransport(ScriptEngine *script);

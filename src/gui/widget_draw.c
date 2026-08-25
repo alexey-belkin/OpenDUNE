@@ -16,6 +16,7 @@
 #include "../pool/unit.h"
 #include "../sprites.h"
 #include "../string.h"
+#include "../match.h"
 #include "../mpturn.h"
 #include "../structure.h"
 #include "../table/strings.h"
@@ -648,8 +649,15 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 			 * by construction -- two players select different things -- so the
 			 * offer is simply not made there.  Upgrading is not routed through
 			 * a command yet either (mp.md, "Not yet routed"), so nothing is
-			 * lost that was available. */
-			if (!MpTurn_IsActive() && s->upgradeTimeLeft == 0 && Structure_IsUpgradable(s)) s->upgradeTimeLeft = 100;
+			 * lost that was available.
+			 *
+			 * Match_IsActive() rather than MpTurn_IsActive(): the world is
+			 * shared from the moment the match is built, and the turn loop only
+			 * begins several hundred milliseconds later -- a window in which the
+			 * first repaint of the action panel would arm an upgrade on one
+			 * client alone.  --mp-modal, which has no turn loop at all, is what
+			 * found it. */
+			if (!Match_IsActive() && s->upgradeTimeLeft == 0 && Structure_IsUpgradable(s)) s->upgradeTimeLeft = 100;
 			GUI_UpdateProductionStringID();
 		} break;
 

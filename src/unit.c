@@ -25,6 +25,7 @@
 #include "match.h"
 #include "mpcommand.h"
 #include "opendune.h"
+#include "pathfinder.h"
 #include "pool/pool.h"
 #include "pool/house.h"
 #include "pool/structure.h"
@@ -72,15 +73,17 @@ typedef enum CombatClass {
 	COMBAT_CLASS_RP,
 	COMBAT_CLASS_LT,
 	COMBAT_CLASS_TT,
+	COMBAT_CLASS_AR,
 	COMBAT_CLASS_MAX,
 	COMBAT_CLASS_NONE = 0xFF
 } CombatClass;
 
 typedef struct CombatBalanceConfig {
 	bool enabled;
-	bool sharedInfantryProduction;
+	bool infantryAllHouses;
 	uint16 damage[COMBAT_CLASS_MAX][COMBAT_CLASS_MAX];
 	uint16 pRangeBonus;
+	uint16 pSpeedOverRp;
 	uint16 atreidesInfantry;
 	uint16 harkonnenRocketInfantry;
 	uint16 ordosTrike;
@@ -90,18 +93,124 @@ static CombatBalanceConfig s_combatBalance = {
 	true,
 	true,
 	{
-		{ 100, 250,  75,  60 },
-		{  30, 100, 125, 130 },
-		{ 125, 135, 100,  70 },
-		{  85,  90, 130, 100 }
+		{ 100, 250,  75,  60, 100 },
+		{  30, 100, 125, 130, 100 },
+		{ 125, 135, 100,  70, 250 },
+		{  85,  90, 130, 100, 100 },
+		{ 100, 100, 100, 100, 100 }
 	},
 	1,
+	120,
 	120,
 	110,
 	110
 };
 
 static uint16 s_combatBalancePBaseRange[2];
+static uint16 s_combatBalancePBaseSpeed[2];
+/* fireDelay as the table shipped it, kept so the self-test can prove the rate
+ * keys actually moved something. */
+static uint16 s_combatBalanceBaseFireDelay[UNIT_MAX];
+
+/**
+ * Per-unit tuning, as percentages of the table value.
+ *
+ * The class matrix can only say "this class hits that class harder".  Some
+ * balance decisions do not follow the class lines at all -- raising the Siege
+ * Tank and the Devastator while leaving the Tank alone, or speeding up the
+ * Raider Trike alone -- so those live here instead, one entry per unit, and
+ * every unit is reachable from the ini whether or not it has an entry.
+ *
+ * damage scales ObjectInfo.damage, which is the shot before the House bonus and
+ * the class matrix, so it reaches structures as well as units.  rate scales the
+ * rate of fire, which is the inverse of fireDelay -- 120 means a fifth more
+ * shots a minute, not a fifth longer between them.
+ */
+typedef struct UnitTuning {
+	uint16 type;
+	uint16 damage;
+	uint16 rate;
+} UnitTuning;
+
+static const UnitTuning s_unitTuning[] = {
+	/* The artillery loses every matchup it has: it is expensive, it is thin,
+	 * and class_damage_lt_vs_ar hands light vehicles x2.50 on top.
+	 *
+	 * The Launcher takes its half again on the rate of fire rather than on the
+	 * shot, because damage is a step function here: a shot deals a fixed amount
+	 * and the excess is lost, so raising 75 to 113 bought nothing at all against
+	 * anything that already died to one shot -- Soldier, Trooper, Infantry -- or
+	 * that still needed two, like the Quad.  Rate has no such threshold and pays
+	 * against every target.
+	 *
+	 * The Sonic Tank keeps its buff on damage, where the same objection does not
+	 * apply: its beam deals hitpoints/4 + 1 per tile, so 60 to 90 moves every
+	 * tile from 16 to 23 without any threshold to cross. */
+	{ UNIT_LAUNCHER,     100, 150 },
+	{ UNIT_SONIC_TANK,   150, 100 },
+	/* The two heavy tracked units, not the Tank -- the Tank is already the best
+	 * value in the game per credit and does not need the help. */
+	{ UNIT_SIEGE_TANK,   115, 100 },
+	{ UNIT_DEVASTATOR,   115, 100 },
+	/* The Ordos raider trades hitpoints for speed and had nothing to show for
+	 * it; the rate of fire is where that trade becomes visible. */
+	{ UNIT_RAIDER_TRIKE, 100, 120 }
+};
+
+/**
+ * The ini key suffix for a unit: its table name, lowercased, with every run of
+ * non-alphanumerics turned into one underscore.  "Raider Trike" becomes
+ * raider_trike and "'Thopter" becomes thopter.
+ * @param name The unit's table name.
+ * @param dest Where to write the slug.
+ * @param destLen Size of dest.
+ */
+static void Unit_CombatBalance_KeySlug(const char *name, char *dest, uint16 destLen)
+{
+	uint16 out = 0;
+	uint16 i;
+
+	for (i = 0; name[i] != '\0' && out + 1 < destLen; i++) {
+		char c = name[i];
+
+		if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+		if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			dest[out++] = c;
+		} else if (out != 0 && dest[out - 1] != '_') {
+			dest[out++] = '_';
+		}
+	}
+	while (out != 0 && dest[out - 1] == '_') out--;
+	dest[out] = '\0';
+}
+
+/**
+ * Rewrite fireDelay so the unit fires at the given percentage of its rate.
+ *
+ * A firesTwice unit's cycle is not 2*fireDelay but 2*fireDelay plus the short
+ * gap inside the doublet (script/unit.c), so scaling fireDelay alone would miss
+ * the target by that gap.  Solving on the whole cycle keeps 120 meaning 120 for
+ * both kinds of unit.
+ * @param ui The unit to retime.
+ * @param percent The rate of fire as a percentage of the table value.
+ */
+static void Unit_CombatBalance_SetRate(UnitInfo *ui, uint16 percent)
+{
+	uint32 cycle;
+	uint32 gap;
+
+	if (percent == 0 || percent == 100 || ui->fireDelay == 0) return;
+
+	/* The engine's 0-or-1 random term averages a half tick per shot. */
+	gap = ui->flags.firesTwice ? 6 : 1;
+	cycle = (uint32)ui->fireDelay * 2 + gap;
+	cycle = (cycle * 100 + percent / 2) / percent;
+	if (cycle <= gap) {
+		ui->fireDelay = 1;
+		return;
+	}
+	ui->fireDelay = (uint16)max((cycle - gap + 1) / 2, 1);
+}
 
 static uint16 Unit_CombatBalance_ReadPercent(const char *key, uint16 defaultValue)
 {
@@ -121,6 +230,29 @@ static uint16 Unit_CombatBalance_ScaleDamage(uint16 damage, uint16 percent)
 	return (uint16)min(scaled, 0xFFFF);
 }
 
+/**
+ * The speed factor light infantry gets, expressed as a percentage of what the
+ * matching rocket infantry has: Soldier is derived from Trooper and Infantry
+ * from Troopers, single against single and squad against squad.  Stating the
+ * rule instead of two literals keeps the relation true if the rocket infantry
+ * is ever retuned -- light infantry is the fast half by definition here, not by
+ * coincidence of two numbers.
+ * @param heavyType The rocket infantry type to derive from.
+ * @return The factor to store, or 0 when the rule is switched off.
+ */
+static uint16 Unit_CombatBalance_LightInfantrySpeed(uint16 heavyType)
+{
+	uint32 scaled;
+
+	if (s_combatBalance.pSpeedOverRp == 0) return 0;
+
+	scaled = ((uint32)g_table_unitInfo[heavyType].movingSpeedFactor * s_combatBalance.pSpeedOverRp + 50) / 100;
+
+	/* Unit_SetSpeed() multiplies this by a terrain rate below 256 and stores the
+	 * result in a byte, so anything past 255 buys nothing. */
+	return (uint16)min(max(scaled, 1), 255);
+}
+
 static CombatClass Unit_CombatBalance_GetClass(UnitType type)
 {
 	switch (type) {
@@ -134,25 +266,87 @@ static CombatClass Unit_CombatBalance_GetClass(UnitType type)
 		case UNIT_TANK:
 		case UNIT_SIEGE_TANK:
 		case UNIT_DEVASTATOR:   return COMBAT_CLASS_TT;
+		/* The artillery, by the definition Doctrine_RoleOf() already uses: the
+		 * only two units that outrange a Rocket Turret's eight tiles, and they
+		 * pay for it in hitpoints.  The Saboteur stands in for them for Ordos
+		 * but is not one of them -- it is a ten-hitpoint foot unit, and a class
+		 * multiplier against it would decide nothing. */
+		case UNIT_LAUNCHER:
+		case UNIT_SONIC_TANK:   return COMBAT_CLASS_AR;
 		default:                return COMBAT_CLASS_NONE;
 	}
+}
+
+/**
+ * Whether a one-octant turn taken in motion costs nothing.
+ *
+ * Arriving on a tile, a unit reads the next direction off its route and, if it
+ * differs from where it is pointing, stops and turns
+ * (Script_Unit_MoveToTarget()).  On a diagonal route that happens every other
+ * tile, for 45 degrees each time, and it is what makes a column of tanks move
+ * in jerks.
+ *
+ * With this on, a 45 degree turn that arises *while moving* is applied at once
+ * and the unit drives on in the same tick.  Turns from a standstill and turns
+ * of 90 degrees or more are untouched -- a tank still has to come about.  The
+ * unit has to have arrived under power for this to apply, which is what
+ * Unit_Move() records in rollingTurn.
+ */
+static bool s_rollingTurn = true;
+
+void Unit_MoveRules_Init(void)
+{
+	s_rollingTurn = (IniFile_GetInteger("move_rolling_turn", 1) != 0);
+}
+
+/** Both settings of the rule, for the self-test that has to see it refuse. */
+void Unit_MoveRules_SetRollingTurn(bool allowed)
+{
+	s_rollingTurn = allowed;
+}
+
+/**
+ * @param unit The unit about to turn.
+ * @param target Where its route wants it to point.
+ * @return True when the turn may be taken without stopping.  Consumes the
+ *  one-shot either way: a unit that has already been asked once is standing.
+ */
+bool Unit_MoveRules_RollingTurn(Unit *unit, int8 target)
+{
+	bool arrivedMoving;
+
+	if (unit == NULL) return false;
+
+	arrivedMoving = (unit->rollingTurn != 0);
+	unit->rollingTurn = 0;
+
+	if (!s_rollingTurn || !arrivedMoving) return false;
+
+	/* Exactly one octant, either way.  int8 arithmetic wraps, which is what
+	 * makes north-west to north come out as 32 rather than 224. */
+	return (abs((int)(int8)(target - unit->orientation[0].current)) == 32);
 }
 
 /** Load the optional class-balance module and expose both infantry classes. */
 void Unit_CombatBalance_Init(void)
 {
 	static const char *matrixKeys[COMBAT_CLASS_MAX][COMBAT_CLASS_MAX] = {
-		{ "class_damage_p_vs_p",  "class_damage_p_vs_rp",  "class_damage_p_vs_lt",  "class_damage_p_vs_tt" },
-		{ "class_damage_rp_vs_p", "class_damage_rp_vs_rp", "class_damage_rp_vs_lt", "class_damage_rp_vs_tt" },
-		{ "class_damage_lt_vs_p", "class_damage_lt_vs_rp", "class_damage_lt_vs_lt", "class_damage_lt_vs_tt" },
-		{ "class_damage_tt_vs_p", "class_damage_tt_vs_rp", "class_damage_tt_vs_lt", "class_damage_tt_vs_tt" }
+		{ "class_damage_p_vs_p",  "class_damage_p_vs_rp",  "class_damage_p_vs_lt",  "class_damage_p_vs_tt",  "class_damage_p_vs_ar" },
+		{ "class_damage_rp_vs_p", "class_damage_rp_vs_rp", "class_damage_rp_vs_lt", "class_damage_rp_vs_tt", "class_damage_rp_vs_ar" },
+		{ "class_damage_lt_vs_p", "class_damage_lt_vs_rp", "class_damage_lt_vs_lt", "class_damage_lt_vs_tt", "class_damage_lt_vs_ar" },
+		{ "class_damage_tt_vs_p", "class_damage_tt_vs_rp", "class_damage_tt_vs_lt", "class_damage_tt_vs_tt", "class_damage_tt_vs_ar" },
+		{ "class_damage_ar_vs_p", "class_damage_ar_vs_rp", "class_damage_ar_vs_lt", "class_damage_ar_vs_tt", "class_damage_ar_vs_ar" }
 	};
 	uint16 attacker;
 	uint16 target;
 	bool onWave;
 
 	s_combatBalance.enabled = IniFile_GetInteger("class_balance_enabled", 1) != 0;
-	s_combatBalance.sharedInfantryProduction = IniFile_GetInteger("class_balance_shared_infantry", 1) != 0;
+	/* class_balance_shared_infantry is the key this used to be called, back when
+	 * it merged both rosters into the Barracks.  It still answers, so an ini
+	 * written for that build keeps switching the same feature off. */
+	s_combatBalance.infantryAllHouses = IniFile_GetInteger("class_balance_infantry_all_houses",
+			IniFile_GetInteger("class_balance_shared_infantry", 1)) != 0;
 	for (attacker = 0; attacker < COMBAT_CLASS_MAX; attacker++) {
 		for (target = 0; target < COMBAT_CLASS_MAX; target++) {
 			s_combatBalance.damage[attacker][target] = Unit_CombatBalance_ReadPercent(matrixKeys[attacker][target], s_combatBalance.damage[attacker][target]);
@@ -162,6 +356,7 @@ void Unit_CombatBalance_Init(void)
 	s_combatBalance.harkonnenRocketInfantry = Unit_CombatBalance_ReadPercent("class_bonus_harkonnen_rp", 110);
 	s_combatBalance.ordosTrike = Unit_CombatBalance_ReadPercent("class_bonus_ordos_trike", 110);
 	s_combatBalance.pRangeBonus = (uint16)min(max(IniFile_GetInteger("class_range_p_bonus", 1), 0), 32);
+	s_combatBalance.pSpeedOverRp = Unit_CombatBalance_ReadPercent("class_speed_p_over_rp", 120);
 
 	if (!s_combatBalance.enabled) return;
 
@@ -172,15 +367,71 @@ void Unit_CombatBalance_Init(void)
 	g_table_unitInfo[UNIT_SOLDIER].fireDistance = (uint16)min(s_combatBalancePBaseRange[0] + s_combatBalance.pRangeBonus, 127);
 	g_table_unitInfo[UNIT_INFANTRY].fireDistance = (uint16)min(s_combatBalancePBaseRange[1] + s_combatBalance.pRangeBonus, 127);
 
-	if (!s_combatBalance.sharedInfantryProduction) return;
+	/* Light infantry walks off the rocket infantry's pace.  At the default 120
+	 * that puts Soldier and Infantry between the Devastator and the Siege Tank,
+	 * which is a different unit from the one the AI's role table was written
+	 * against -- see the note in Doctrine_RoleOf(). */
+	s_combatBalancePBaseSpeed[0] = g_table_unitInfo[UNIT_SOLDIER].movingSpeedFactor;
+	s_combatBalancePBaseSpeed[1] = g_table_unitInfo[UNIT_INFANTRY].movingSpeedFactor;
+	if (s_combatBalance.pSpeedOverRp != 0) {
+		g_table_unitInfo[UNIT_SOLDIER].movingSpeedFactor  = Unit_CombatBalance_LightInfantrySpeed(UNIT_TROOPER);
+		g_table_unitInfo[UNIT_INFANTRY].movingSpeedFactor = Unit_CombatBalance_LightInfantrySpeed(UNIT_TROOPERS);
+	}
 
-	/* Barracks becomes the common infantry factory. WOR remains available as
-	 * a specialised legacy factory so existing campaigns and saves still work. */
+	/* Per-unit tuning.  Every unit is readable from the ini; the table above
+	 * only supplies the defaults that are not 100. */
+	{
+		uint16 type;
+
+		for (type = 0; type < UNIT_MAX; type++) {
+			UnitInfo *ui = &g_table_unitInfo[type];
+			char slug[32];
+			char key[64];
+			uint16 damagePercent = 100;
+			uint16 ratePercent = 100;
+			uint16 i;
+
+			for (i = 0; i < lengthof(s_unitTuning); i++) {
+				if (s_unitTuning[i].type != type) continue;
+				damagePercent = s_unitTuning[i].damage;
+				ratePercent = s_unitTuning[i].rate;
+				break;
+			}
+
+			s_combatBalanceBaseFireDelay[type] = ui->fireDelay;
+
+			Unit_CombatBalance_KeySlug(ui->o.name, slug, sizeof(slug));
+			if (slug[0] == '\0') continue;
+
+			sprintf(key, "unit_damage_%s", slug);
+			damagePercent = Unit_CombatBalance_ReadPercent(key, damagePercent);
+			sprintf(key, "unit_rate_%s", slug);
+			ratePercent = Unit_CombatBalance_ReadPercent(key, ratePercent);
+
+			if (damagePercent != 100) {
+				ui->damage = Unit_CombatBalance_ScaleDamage(ui->damage, damagePercent);
+			}
+			Unit_CombatBalance_SetRate(ui, ratePercent);
+		}
+	}
+
+	if (!s_combatBalance.infantryAllHouses) return;
+
+	/* Both infantry factories open to every House, each keeping its original
+	 * roster: the Barracks trains light infantry, WOR trains rocket infantry.
+	 * Rocket infantry therefore costs a second building rather than an extra
+	 * icon in the first -- the point is that the choice is universal, not that
+	 * it is free.  WOR still lists the Barracks in structuresRequired, so the
+	 * order stays Barracks then WOR for everyone except Harkonnen, whose waiver
+	 * in Structure_GetAvailable() is left alone as House identity. */
 	g_table_structureInfo[STRUCTURE_BARRACKS].o.availableHouse = FLAG_HOUSE_ALL;
 	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[0] = UNIT_SOLDIER;
 	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[1] = UNIT_INFANTRY;
-	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[2] = UNIT_TROOPER;
-	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[3] = UNIT_TROOPERS;
+	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[2] = UNIT_INVALID;
+	g_table_structureInfo[STRUCTURE_BARRACKS].buildableUnits[3] = UNIT_INVALID;
+	g_table_structureInfo[STRUCTURE_WOR_TROOPER].o.availableHouse = FLAG_HOUSE_ALL;
+	g_table_structureInfo[STRUCTURE_WOR_TROOPER].buildableUnits[0] = UNIT_TROOPER;
+	g_table_structureInfo[STRUCTURE_WOR_TROOPER].buildableUnits[1] = UNIT_TROOPERS;
 	g_table_unitInfo[UNIT_SOLDIER].o.availableHouse = FLAG_HOUSE_ALL;
 	g_table_unitInfo[UNIT_INFANTRY].o.availableHouse = FLAG_HOUSE_ALL;
 	g_table_unitInfo[UNIT_TROOPER].o.availableHouse = FLAG_HOUSE_ALL;
@@ -218,10 +469,10 @@ uint16 Unit_CombatBalance_ApplyClassDamage(const Unit *attacker, const Unit *tar
 	return Unit_CombatBalance_ScaleDamage(damage, s_combatBalance.damage[attackerClass][targetClass]);
 }
 
-/** Verify the configured matrix, neutral classes, House bonuses and shared Barracks. */
+/** Verify the configured matrix, neutral classes, House bonuses and infantry factories. */
 int Unit_CombatBalance_RunRegressionTest(void)
 {
-	static const UnitType representatives[COMBAT_CLASS_MAX] = { UNIT_SOLDIER, UNIT_TROOPER, UNIT_TRIKE, UNIT_TANK };
+	static const UnitType representatives[COMBAT_CLASS_MAX] = { UNIT_SOLDIER, UNIT_TROOPER, UNIT_TRIKE, UNIT_TANK, UNIT_LAUNCHER };
 	Unit attacker;
 	Unit target;
 	uint16 a;
@@ -230,6 +481,18 @@ int Unit_CombatBalance_RunRegressionTest(void)
 	if (!s_combatBalance.enabled) return -1;
 	if (g_table_unitInfo[UNIT_SOLDIER].fireDistance != min(s_combatBalancePBaseRange[0] + s_combatBalance.pRangeBonus, 127)) return 0;
 	if (g_table_unitInfo[UNIT_INFANTRY].fireDistance != min(s_combatBalancePBaseRange[1] + s_combatBalance.pRangeBonus, 127)) return 0;
+	if (s_combatBalance.pSpeedOverRp == 0) {
+		if (g_table_unitInfo[UNIT_SOLDIER].movingSpeedFactor != s_combatBalancePBaseSpeed[0]) return 0;
+		if (g_table_unitInfo[UNIT_INFANTRY].movingSpeedFactor != s_combatBalancePBaseSpeed[1]) return 0;
+	} else {
+		if (g_table_unitInfo[UNIT_SOLDIER].movingSpeedFactor != Unit_CombatBalance_LightInfantrySpeed(UNIT_TROOPER)) return 0;
+		if (g_table_unitInfo[UNIT_INFANTRY].movingSpeedFactor != Unit_CombatBalance_LightInfantrySpeed(UNIT_TROOPERS)) return 0;
+		/* Above 100 the whole point is that the light half is the fast half. */
+		if (s_combatBalance.pSpeedOverRp > 100) {
+			if (g_table_unitInfo[UNIT_SOLDIER].movingSpeedFactor <= g_table_unitInfo[UNIT_TROOPER].movingSpeedFactor) return 0;
+			if (g_table_unitInfo[UNIT_INFANTRY].movingSpeedFactor <= g_table_unitInfo[UNIT_TROOPERS].movingSpeedFactor) return 0;
+		}
+	}
 	memset(&attacker, 0, sizeof(attacker));
 	memset(&target, 0, sizeof(target));
 	for (a = 0; a < COMBAT_CLASS_MAX; a++) {
@@ -240,12 +503,21 @@ int Unit_CombatBalance_RunRegressionTest(void)
 		}
 	}
 
-	attacker.o.type = UNIT_LAUNCHER;
+	attacker.o.type = UNIT_DEVIATOR;
 	target.o.type = UNIT_TROOPER;
 	if (Unit_CombatBalance_ApplyClassDamage(&attacker, &target, 100) != 100) return 0;
 	attacker.o.type = UNIT_TROOPER;
-	target.o.type = UNIT_SONIC_TANK;
+	target.o.type = UNIT_HARVESTER;
 	if (Unit_CombatBalance_ApplyClassDamage(&attacker, &target, 100) != 100) return 0;
+
+	/* The Sonic Tank shares the artillery class with the Launcher, which the
+	 * representatives loop above only covers through the Launcher. */
+	attacker.o.type = UNIT_TRIKE;
+	target.o.type = UNIT_SONIC_TANK;
+	if (Unit_CombatBalance_ApplyClassDamage(&attacker, &target, 100) != s_combatBalance.damage[COMBAT_CLASS_LT][COMBAT_CLASS_AR]) return 0;
+	attacker.o.type = UNIT_RAIDER_TRIKE;
+	target.o.type = UNIT_LAUNCHER;
+	if (Unit_CombatBalance_ApplyClassDamage(&attacker, &target, 100) != s_combatBalance.damage[COMBAT_CLASS_LT][COMBAT_CLASS_AR]) return 0;
 
 	attacker.o.type = UNIT_INFANTRY;
 	attacker.o.houseID = HOUSE_ATREIDES;
@@ -259,12 +531,38 @@ int Unit_CombatBalance_RunRegressionTest(void)
 	attacker.o.type = UNIT_QUAD;
 	if (Unit_CombatBalance_ApplyHouseDamage(&attacker, 100) != 100) return 0;
 
-	if (s_combatBalance.sharedInfantryProduction) {
-		const StructureInfo *si = &g_table_structureInfo[STRUCTURE_BARRACKS];
+	if (s_combatBalance.infantryAllHouses) {
+		const StructureInfo *barracks = &g_table_structureInfo[STRUCTURE_BARRACKS];
+		const StructureInfo *wor = &g_table_structureInfo[STRUCTURE_WOR_TROOPER];
 
-		if (si->o.availableHouse != FLAG_HOUSE_ALL) return 0;
-		if (si->buildableUnits[0] != UNIT_SOLDIER || si->buildableUnits[1] != UNIT_INFANTRY ||
-				si->buildableUnits[2] != UNIT_TROOPER || si->buildableUnits[3] != UNIT_TROOPERS) return 0;
+		if (barracks->o.availableHouse != FLAG_HOUSE_ALL) return 0;
+		if (barracks->buildableUnits[0] != UNIT_SOLDIER || barracks->buildableUnits[1] != UNIT_INFANTRY ||
+				barracks->buildableUnits[2] != UNIT_INVALID || barracks->buildableUnits[3] != UNIT_INVALID) return 0;
+		if (wor->o.availableHouse != FLAG_HOUSE_ALL) return 0;
+		if (wor->buildableUnits[0] != UNIT_TROOPER || wor->buildableUnits[1] != UNIT_TROOPERS) return 0;
+		if (g_table_unitInfo[UNIT_SOLDIER].o.availableHouse != FLAG_HOUSE_ALL) return 0;
+		if (g_table_unitInfo[UNIT_INFANTRY].o.availableHouse != FLAG_HOUSE_ALL) return 0;
+		if (g_table_unitInfo[UNIT_TROOPER].o.availableHouse != FLAG_HOUSE_ALL) return 0;
+		if (g_table_unitInfo[UNIT_TROOPERS].o.availableHouse != FLAG_HOUSE_ALL) return 0;
+	}
+
+	/* Per-unit tuning: every entry in the table has to be visible in the live
+	 * UnitInfo, or the ini keys silently did nothing. */
+	{
+		uint16 i;
+
+		for (i = 0; i < lengthof(s_unitTuning); i++) {
+			uint16 type = s_unitTuning[i].type;
+			const UnitInfo *ui = &g_table_unitInfo[type];
+			uint16 base = s_combatBalanceBaseFireDelay[type];
+
+			if (s_unitTuning[i].damage > 100 && ui->damage == 0) return 0;
+			/* A rate above 100 has to have shortened the cycle, and one below it
+			 * lengthened it -- against the delay the table shipped, not against
+			 * the patched one, which would compare a value with itself. */
+			if (s_unitTuning[i].rate > 100 && base > 1 && ui->fireDelay >= base) return 0;
+			if (s_unitTuning[i].rate < 100 && base != 0 && ui->fireDelay <= base) return 0;
+		}
 	}
 
 	/* Integration path: a real explosion resolves its encoded source, applies
@@ -385,6 +683,39 @@ void Unit_BeginManualOrder(Unit *unit)
 static const int8 s_firingPositionDirectionX[16] = {4, 4, 3, 2, 0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4};
 static const int8 s_firingPositionDirectionY[16] = {0, -2, -3, -4, -4, -4, -3, -2, 0, 2, 3, 4, 4, 4, 3, 2};
 
+/**
+ * Travel time to every tile of a candidate set, in one search where there is
+ * one to be had.
+ *
+ * A tactical pass asks about a ring of up to forty-eight tiles round the target,
+ * and it does it for every unit that has one.  Asked one tile at a time that is
+ * forty-eight searches for an answer that a single search already contains: A*
+ * settles tiles in cost order, so running it against the whole set and reading
+ * each tile's score back gives exactly the same numbers.  Measured on
+ * --war-metrics the difference is most of the cost of the change.
+ *
+ * Unreachable, or not settled inside the search's budget, is 0xFFFFFFFF -- the
+ * same thing the per-tile probe reports by returning false.
+ */
+static void Unit_AttackPosition_RouteTicks(Unit *unit, uint16 packedSource, const uint16 *candidates, uint16 count, uint32 *ticks)
+{
+	uint16 i;
+
+	if (Pathfinder_IsEnabled()) {
+		bool any = Pathfinder_Run(unit, packedSource, candidates, count, false);
+
+		for (i = 0; i < count; i++) {
+			if (!any || !Pathfinder_GetTicks(candidates[i], &ticks[i])) ticks[i] = 0xFFFFFFFF;
+		}
+
+		return;
+	}
+
+	for (i = 0; i < count; i++) {
+		if (!Script_Unit_HasRoute(unit, packedSource, candidates[i], &ticks[i])) ticks[i] = 0xFFFFFFFF;
+	}
+}
+
 static bool Unit_AttackPosition_IsEligible(Unit *unit)
 {
 	const UnitInfo *ui;
@@ -493,6 +824,9 @@ static bool Unit_AttackPosition_EstimateTravel(Unit *unit, uint16 target, uint32
 	uint16 radius;
 	uint16 minRadius;
 	uint16 dir;
+	uint16 candidates[48];
+	uint32 candidateTicks[48];
+	uint16 count = 0;
 	uint32 best = 0xFFFFFFFF;
 	int16 left = 0;
 	int16 right = 0;
@@ -521,14 +855,18 @@ static bool Unit_AttackPosition_EstimateTravel(Unit *unit, uint16 target, uint32
 		bottom = top + size->height - 1;
 	}
 
+	/* Collect the ring first and ask about it once.  Every test here is about
+	 * the tile alone, so none of them needed a route to begin with -- the range
+	 * check simply used to sit on the far side of the probe. */
 	minRadius = ui->fireDistance > 2 ? ui->fireDistance - 2 : 1;
 	for (radius = ui->fireDistance; radius >= minRadius; radius--) {
 		for (dir = 0; dir < lengthof(s_firingPositionDirectionX); dir++) {
 			int16 x;
 			int16 y;
 			uint16 packed;
-			uint32 ticks;
 			Object candidate;
+
+			if (count >= lengthof(candidates)) break;
 
 			if (targetStructure == NULL) {
 				x = Tile_GetPackedX(packedTarget) + (radius * s_firingPositionDirectionX[dir] + 2) / 4;
@@ -546,14 +884,22 @@ static bool Unit_AttackPosition_EstimateTravel(Unit *unit, uint16 target, uint32
 			if (!Map_IsValidPosition(packed) || Object_GetByPackedTile(packed) != NULL) continue;
 			if (!Unit_AttackPosition_IsFiringTileAllowed(target, packed)) continue;
 			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
-			if (!Script_Unit_HasRoute(unit, packedSource, packed, &ticks)) continue;
 
 			candidate = unit->o;
 			candidate.position = Tile_UnpackTile(packed);
 			if (Object_GetDistanceToEncoded(&candidate, target) > (ui->fireDistance << 8)) continue;
-			if (ticks < best) best = ticks;
+
+			candidates[count++] = packed;
 		}
 		if (radius == minRadius) break;
+	}
+
+	if (count == 0) return false;
+
+	Unit_AttackPosition_RouteTicks(unit, packedSource, candidates, count, candidateTicks);
+
+	for (dir = 0; dir < count; dir++) {
+		if (candidateTicks[dir] < best) best = candidateTicks[dir];
 	}
 
 	if (best == 0xFFFFFFFF) return false;
@@ -646,6 +992,9 @@ static uint16 Unit_AttackPosition_FindStaging(Unit *unit, uint32 *travelTicks)
 	uint16 current;
 	uint16 radius;
 	uint16 dir;
+	uint16 candidates[48];
+	uint32 candidateTicks[48];
+	uint16 count = 0;
 
 	if (!Map_IsValidPosition(packedSource) || !Map_IsValidPosition(packedTarget)) return 0;
 
@@ -660,8 +1009,8 @@ static uint16 Unit_AttackPosition_FindStaging(Unit *unit, uint32 *travelTicks)
 			int16 x = Tile_GetPackedX(packedTarget) + (radius * s_firingPositionDirectionX[dir] + 2) / 4;
 			int16 y = Tile_GetPackedY(packedTarget) + (radius * s_firingPositionDirectionY[dir] + 2) / 4;
 			uint16 packed;
-			uint32 ticks;
 
+			if (count >= lengthof(candidates)) break;
 			if (x < 0 || x >= 64 || y < 0 || y >= 64) continue;
 			packed = Tile_PackXY(x, y);
 			/* Already waiting on a good tile: staying put beats shuffling. */
@@ -671,12 +1020,20 @@ static uint16 Unit_AttackPosition_FindStaging(Unit *unit, uint32 *travelTicks)
 			if (Tile_GetDistancePacked(packed, packedTarget) >= current) continue;
 			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
 			if (Unit_AttackPosition_GetReservationOwner(unit, packed, unit->targetAttack) >= 0) continue;
-			if (!Script_Unit_HasRoute(unit, packedSource, packed, &ticks)) continue;
-			if (ticks >= bestTicks) continue;
 
-			bestTicks = ticks;
-			best = packed;
+			candidates[count++] = packed;
 		}
+	}
+
+	if (count == 0) return 0;
+
+	Unit_AttackPosition_RouteTicks(unit, packedSource, candidates, count, candidateTicks);
+
+	for (dir = 0; dir < count; dir++) {
+		if (candidateTicks[dir] >= bestTicks) continue;
+
+		bestTicks = candidateTicks[dir];
+		best = candidates[dir];
 	}
 
 	if (best != 0 && travelTicks != NULL) *travelTicks = bestTicks;
@@ -697,6 +1054,9 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	uint32 bestETA = 0xFFFFFFFF;
 	uint32 oldETA = 0;
 	uint32 refreshedOldETA = 0;
+	uint16 candidates[48];
+	uint32 candidateTicks[48];
+	uint16 count = 0;
 	uint16 targetDistance;
 	uint16 radius;
 	uint16 minRadius;
@@ -751,16 +1111,18 @@ static void Unit_AttackPosition_Update(Unit *unit)
 	oldPacked = s_attackPositionTarget[unit->o.index] == unit->targetAttack ? s_attackPositionTile[unit->o.index] : 0;
 	minRadius = ui->fireDistance > 2 ? ui->fireDistance - 2 : 1;
 
+	/* Two passes over the same ring, in the same order: the first decides which
+	 * tiles are worth a route at all, the second ranks them.  Splitting it this
+	 * way is what lets the whole ring be routed in one search; the ordering
+	 * below is unchanged, because the candidate list is built ring by ring and
+	 * direction by direction exactly as before. */
 	for (radius = ui->fireDistance; radius >= minRadius; radius--) {
 		for (dir = 0; dir < lengthof(s_firingPositionDirectionX); dir++) {
 			int16 x;
 			int16 y;
 			uint16 packed;
-			uint32 travelTicks;
-			uint32 eta;
-			uint16 firingDistance;
-			int16 owner;
-			Object candidate;
+
+			if (count >= lengthof(candidates)) break;
 
 			if (targetStructure == NULL) {
 				x = Tile_GetPackedX(packedTarget) + (radius * s_firingPositionDirectionX[dir] + 2) / 4;
@@ -779,32 +1141,46 @@ static void Unit_AttackPosition_Update(Unit *unit)
 			if (Object_GetByPackedTile(packed) != NULL) continue;
 			if (!Unit_AttackPosition_IsFiringTileAllowed(unit->targetAttack, packed)) continue;
 			if (Unit_GetTileEnterScore(unit, packed, 0) > 255) continue;
-			if (!Script_Unit_HasRoute(unit, packedSource, packed, &travelTicks)) continue;
 
-			candidate = unit->o;
-			candidate.position = Tile_UnpackTile(packed);
-			firingDistance = Object_GetDistanceToEncoded(&candidate, unit->targetAttack);
-			if (firingDistance > (ui->fireDistance << 8)) continue;
-			eta = g_timerGame + travelTicks;
-
-			owner = Unit_AttackPosition_GetReservationOwner(unit, packed, unit->targetAttack);
-			/* A closer arrival may preempt this slot, but only with a wide
-			 * enough margin to prevent two units from trading it every check. */
-			if (owner >= 0 && s_attackPositionETA[owner] <= eta + 60) continue;
-
-			if (packed == oldPacked) refreshedOldETA = eta;
-
-			/* Arrival time is the primary ordering. At an exact tie, preserve
-			 * the outer ring preference of the original implementation. */
-			if (eta > bestETA) continue;
-			if (eta == bestETA && bestPacked != 0 && firingDistance <= bestDistance) continue;
-			bestETA = eta;
-			bestPacked = packed;
-			bestDistance = firingDistance;
-			bestOwner = owner;
+			candidates[count++] = packed;
 		}
 
 		if (radius == minRadius) break; /* avoid unsigned wrap */
+	}
+
+	if (count != 0) Unit_AttackPosition_RouteTicks(unit, packedSource, candidates, count, candidateTicks);
+
+	for (dir = 0; dir < count; dir++) {
+		uint16 packed = candidates[dir];
+		uint32 travelTicks = candidateTicks[dir];
+		uint32 eta;
+		uint16 firingDistance;
+		int16 owner;
+		Object candidate;
+
+		if (travelTicks == 0xFFFFFFFF) continue;
+
+		candidate = unit->o;
+		candidate.position = Tile_UnpackTile(packed);
+		firingDistance = Object_GetDistanceToEncoded(&candidate, unit->targetAttack);
+		if (firingDistance > (ui->fireDistance << 8)) continue;
+		eta = g_timerGame + travelTicks;
+
+		owner = Unit_AttackPosition_GetReservationOwner(unit, packed, unit->targetAttack);
+		/* A closer arrival may preempt this slot, but only with a wide
+		 * enough margin to prevent two units from trading it every check. */
+		if (owner >= 0 && s_attackPositionETA[owner] <= eta + 60) continue;
+
+		if (packed == oldPacked) refreshedOldETA = eta;
+
+		/* Arrival time is the primary ordering. At an exact tie, preserve
+		 * the outer ring preference of the original implementation. */
+		if (eta > bestETA) continue;
+		if (eta == bestETA && bestPacked != 0 && firingDistance <= bestDistance) continue;
+		bestETA = eta;
+		bestPacked = packed;
+		bestDistance = firingDistance;
+		bestOwner = owner;
 	}
 
 	/* Script_Unit_Pathfinder() answers from the tile the unit is standing on and
@@ -1487,6 +1863,7 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 {
 	uint16 candidates[24];
 	uint32 roughScores[24];
+	uint32 candidateTicks[24];
 	uint16 count = 0;
 	uint16 x;
 	uint16 y;
@@ -1516,6 +1893,8 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 		}
 	}
 
+	Unit_AttackPosition_RouteTicks(unit, Tile_PackTile(unit->o.position), candidates, count, candidateTicks);
+
 	for (i = 0; i < count; i++) {
 		uint32 ticks;
 		uint16 type;
@@ -1532,7 +1911,8 @@ static bool Unit_Harvester_FindSpice(Unit *unit, uint16 center, uint16 radius, u
 		if (Doctrine_GetForHouse(Unit_GetHouseID(unit)) != DOCTRINE_LEGACY
 			&& Doctrine_ThreatDistance(Unit_GetHouseID(unit), candidates[i]) < HARVESTER_SAFE_TILES) continue;
 
-		if (!Script_Unit_HasRoute(unit, Tile_PackTile(unit->o.position), candidates[i], &ticks)) continue;
+		ticks = candidateTicks[i];
+		if (ticks == 0xFFFFFFFF) continue;
 		type = Map_GetLandscapeType(candidates[i]);
 		score = ticks * 16 + (type == LST_THICK_SPICE ? 0 : 80);
 		if (score < bestScore) {
@@ -4533,6 +4913,12 @@ bool Unit_Move(Unit *unit, uint16 distance)
 
 				Unit_SetSpeed(unit, 0);
 
+				/* It got here under power, so the next 45 degree turn is a turn
+				 * taken in motion rather than from a standstill.  Consumed and
+				 * cleared by Script_Unit_MoveToTarget(); see
+				 * Unit_MoveRules_RollingTurn(). */
+				unit->rollingTurn = 1;
+
 				if (unit->targetMove == Tools_Index_Encode(packed, IT_TILE)) {
 					unit->targetMove = 0;
 				}
@@ -6805,9 +7191,19 @@ void Unit_HouseUnitCount_Add(Unit *unit, uint8 houseID)
 	 * end is the simulation, so "whoever is watching noticed" is not a fact two
 	 * clients can agree on.  Only the sound and the hint stay with the viewpoint,
 	 * and onScreen is what keeps a campaign identical -- there the house that
-	 * sees and the house that watches are the same one. */
-	if (houseID != HOUSE_INVALID && g_selectionType != SELECTIONTYPE_MENTAT) {
-		bool onScreen = (houseID == g_playerHouseID);
+	 * sees and the house that watches are the same one.
+	 *
+	 * SELECTIONTYPE_MENTAT used to gate the whole block, and that is what a
+	 * player opening the mentat or the build list sets.  So for as long as one
+	 * of them had a fullscreen screen up, that client alone skipped
+	 * timerUnitAttack, timerSandwormAttack and -- the one that decides
+	 * behaviour -- the team's script variable 4, which is what tells a team it
+	 * is under attack.  Two clients, two different scripts, from the next tick
+	 * on.  In the campaign this changes nothing observable: there the mentat
+	 * stops the world, so nothing reaches this line while it is open.  The
+	 * screen still silences the feedback, which is all it was ever for. */
+	if (houseID != HOUSE_INVALID) {
+		bool onScreen = (houseID == g_playerHouseID && g_selectionType != SELECTIONTYPE_MENTAT);
 
 		if (unit->o.type == UNIT_SANDWORM) {
 			if (h->timerSandwormAttack == 0) {

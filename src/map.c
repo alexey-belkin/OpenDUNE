@@ -131,7 +131,7 @@ void Map_SetSelection(uint16 packed)
 			 * players clicked.  The tiles are already what the simulation says
 			 * they are, so in a match the click asks for a repaint and nothing
 			 * more. */
-			if (MpTurn_IsActive()) {
+			if (Match_IsActive()) {
 				Structure_RedrawMap(s);
 			} else {
 				Structure_UpdateMap(s);

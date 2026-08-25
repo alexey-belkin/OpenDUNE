@@ -40,3 +40,7 @@ bin/telemetry/
 /tools/relay/relay-*
 mpdesync-*.bin
 mpdump-*.bin
+
+# Python bytecode from the tools/
+__pycache__/
+*.pyc

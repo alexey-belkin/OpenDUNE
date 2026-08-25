@@ -73,6 +73,11 @@ void Timer_ClaimAnimClock(bool claimed)
 {
 	s_animClockClaimed = claimed;
 }
+
+bool Timer_AnimClockIsClaimed(void)
+{
+	return s_animClockClaimed;
+}
 volatile uint32 g_timerInput = 0;                                    /*!< Tick counter. Increases with 1 every tick. Used for input timing. */
 volatile uint32 g_timerSleep = 0;                                    /*!< Tick counter. Increases with 1 every tick. Used for sleeping. */
 volatile uint32 g_timerTimeout = 0;                                  /*!< Tick counter. Decreases with 1 every tick when non-zero. Used to timeout. */

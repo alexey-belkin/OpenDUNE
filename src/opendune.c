@@ -33,6 +33,7 @@
 #include "os/sleep.h"
 
 #include "opendune.h"
+#include "pathfinder.h"
 
 #include "animation.h"
 #include "audio/driver.h"
@@ -48,6 +49,7 @@
 #include "gui/gui.h"
 #include "gui/mentat.h"
 #include "gui/security.h"
+#include "gui/lobby.h"
 #include "gui/widget.h"
 #include "house.h"
 #include "ini.h"
@@ -109,6 +111,15 @@ static bool  s_debugForceWin = false; /*!< When true, you immediately win the le
 static uint8 s_enableLog = 0; /*!< 0 = off, 1 = record game, 2 = playback game (stored in 'dune.log'). */
 static bool s_selectionSelfTest = false;
 static int s_selectionSelfTestResult = -1;
+static bool s_lobbySelfTest = false;
+static int s_lobbySelfTestResult = -1;
+static bool s_moveRulesSelfTest = false;
+static int s_moveRulesSelfTestResult = -1;
+static bool s_buildRulesSelfTest = false;
+static int s_buildRulesSelfTestResult = -1;
+static bool s_pathfinderSelfTest = false;
+static int s_pathfinderSelfTestResult = -1;
+static int s_pathfinderOverride = -1;
 static bool s_combatBalanceSelfTest = false;
 static int s_combatBalanceSelfTestResult = -1;
 /* Extra simulation passes per loop iteration, on top of whatever the Game
@@ -166,6 +177,10 @@ static char s_mpRecordFile[256] = "";
 static char s_mpPlayFile[256] = "";
 static uint16 s_mpReplayUnplayed = 0;
 static bool s_mpViewpoint = false;
+static bool s_mpModal = false;
+static uint32 s_mpModalEvery = 5000;
+static uint32 s_mpModalHold = 1200;
+static uint32 s_mpModalDumpTick = 0;
 static bool s_mpTurnLoop = false;
 static uint8 s_mpTurnSlot = 0;
 static uint16 s_mpTurnLength = MP_TURN_LENGTH_DEFAULT;
@@ -805,14 +820,31 @@ static void GameLoop_SkirmishParseHouses(const char *arg)
 /**
  * Intro menu.
  */
+/**
+ * Not a string table entry: the menu wants a row the original game never had.
+ *
+ * Picked well above every real STR_ id and below 0xFFFF, which the event loop
+ * uses for "nothing was clicked".  The row is terminated by STR_NULL like all
+ * the others, so the sizing loop still finds the end.
+ */
+#define STR_LOBBY_MENU 0x7000
+
+/* Defined with the rest of the match plumbing, further down. */
+static void MpGame_TakeLobbyChoice(const LobbyChoice *choice);
+
 static void GameLoop_GameIntroAnimationMenu(void)
 {
-	static const uint16 mainMenuStrings[][6] = {
-		{STR_PLAY_A_GAME, STR_REPLAY_INTRODUCTION, STR_EXIT_GAME, STR_NULL,         STR_NULL,         STR_NULL}, /* Neither HOF nor save. */
-		{STR_PLAY_A_GAME, STR_REPLAY_INTRODUCTION, STR_LOAD_GAME, STR_EXIT_GAME,    STR_NULL,         STR_NULL}, /* Has a save game. */
-		{STR_PLAY_A_GAME, STR_REPLAY_INTRODUCTION, STR_EXIT_GAME, STR_HALL_OF_FAME, STR_NULL,         STR_NULL}, /* Has a HOF. */
-		{STR_PLAY_A_GAME, STR_REPLAY_INTRODUCTION, STR_LOAD_GAME, STR_EXIT_GAME,    STR_HALL_OF_FAME, STR_NULL}  /* Has a HOF and a save game. */
+	/* Seven columns, not six.  The list is sized by its first STR_NULL, so a
+	 * row that fills every column has no terminator and the whole menu vanishes
+	 * -- which is what a sixth entry did to the profile that has both a savegame
+	 * and a Hall of Fame. */
+	static const uint16 mainMenuStrings[][7] = {
+		{STR_PLAY_A_GAME, STR_LOBBY_MENU, STR_REPLAY_INTRODUCTION, STR_EXIT_GAME, STR_NULL,         STR_NULL,         STR_NULL}, /* Neither HOF nor save. */
+		{STR_PLAY_A_GAME, STR_LOBBY_MENU, STR_REPLAY_INTRODUCTION, STR_LOAD_GAME, STR_EXIT_GAME,    STR_NULL,         STR_NULL}, /* Has a save game. */
+		{STR_PLAY_A_GAME, STR_LOBBY_MENU, STR_REPLAY_INTRODUCTION, STR_EXIT_GAME, STR_HALL_OF_FAME, STR_NULL,         STR_NULL}, /* Has a HOF. */
+		{STR_PLAY_A_GAME, STR_LOBBY_MENU, STR_REPLAY_INTRODUCTION, STR_LOAD_GAME, STR_EXIT_GAME,    STR_HALL_OF_FAME, STR_NULL}  /* Has a HOF and a save game. */
 	};
+	static char lobbyMenuLabel[] = "PLAY SOMEBODY";
 
 	bool loadGame = false;
 	static bool drawMenu = true;
@@ -820,8 +852,15 @@ static void GameLoop_GameIntroAnimationMenu(void)
 	uint16 maxWidth;
 	static bool hasSave = false;
 	static bool hasFame = false;
-	static const char *strings[6];
+	static const char *strings[7];
 	static uint16 index = 0xFFFF;
+
+	/* Back at the menu means no match is running, whatever the last one left
+	 * behind.  Without this, cancelling out of a networked game and then
+	 * starting a campaign would still find MpGame_IsLive() true.  The command
+	 * line never comes through here -- --mp-relay goes straight to GM_SKIRMISH
+	 * -- so it is not cleared out from under it. */
+	s_mpRelayHost[0] = '\0';
 
 	if (index == 0xFFFF) {
 		hasSave = File_Exists_Personal("_save000.dat");
@@ -882,6 +921,19 @@ static void GameLoop_GameIntroAnimationMenu(void)
 			drawMenu = true;
 			break;
 
+		case STR_LOBBY_MENU: {
+			LobbyChoice choice;
+
+			if (GUI_Lobby_Show(&choice)) {
+				MpGame_TakeLobbyChoice(&choice);
+				g_gameMode = GM_SKIRMISH;
+				return;
+			}
+
+			drawMenu = true;
+			break;
+		}
+
 		case STR_LOAD_GAME:
 			GUI_Mouse_Hide_Safe();
 			GUI_SetPaletteAnimated(g_palette2, 30);
@@ -910,7 +962,7 @@ static void GameLoop_GameIntroAnimationMenu(void)
 
 		g_widgetProperties[21].height = 0;
 
-		for (i = 0; i < 6; i++) {
+		for (i = 0; i < 7; i++) {
 			strings[i] = NULL;
 
 			if (mainMenuStrings[index][i] == 0) {
@@ -918,7 +970,9 @@ static void GameLoop_GameIntroAnimationMenu(void)
 				continue;
 			}
 
-			strings[i] = String_Get_ByIndex(mainMenuStrings[index][i]);
+			strings[i] = (mainMenuStrings[index][i] == STR_LOBBY_MENU)
+			           ? lobbyMenuLabel
+			           : String_Get_ByIndex(mainMenuStrings[index][i]);
 		}
 
 		GUI_DrawText_Wrapper(NULL, 0, 0, 0, 0, 0x22);
@@ -1161,6 +1215,30 @@ static void MpHarness_Step(void)
 static bool MpGame_IsLive(void)
 {
 	return (s_mpRelayHost[0] != '\0' && !s_mpTurnLoop);
+}
+
+/**
+ * Take what the lobby settled and put the match together from it.
+ *
+ * The same four statics --mp-relay fills in from the command line, so from here
+ * on the two roads are one road: GM_SKIRMISH reaches MpGame_Begin() either way.
+ * Both slots are people -- a lobby match is 1-v-1 by construction, and a house
+ * left on the AI would be an opponent neither player agreed to.
+ */
+static void MpGame_TakeLobbyChoice(const LobbyChoice *choice)
+{
+	snprintf(s_mpRelayHost, sizeof(s_mpRelayHost), "%s", choice->relayHost);
+	snprintf(s_mpRelayRoom, sizeof(s_mpRelayRoom), "%s", choice->room);
+	s_mpRelayPort = choice->relayPort;
+	s_mpTurnSlot  = choice->slot;
+	s_mpLiveSeed  = choice->seed;
+	s_mpTurnLoop  = false;
+
+	s_skirmishHouse[0] = choice->house[0];
+	s_skirmishHouse[1] = choice->house[1];
+
+	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
+	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
 }
 
 /**
@@ -1909,6 +1987,933 @@ static bool MpHarness_ReplayPass(bool scripted, MpSyncChecksum *out, uint16 *out
 	return true;
 }
 
+/**
+ * Stage 5 of mp.md: one pass of the modal-screen harness.
+ *
+ * Opening a fullscreen screen must not change the world.  That is a claim about
+ * the simulation, so it is tested against the simulation and not against the
+ * screen: the pass plays a match, and with `open` set it performs what a modal
+ * screen does to the world -- GUI_ModalScreen_Enter(), some ticks of the player
+ * reading, GUI_ModalScreen_Leave(), and the recount the options screen carries
+ * -- at a fixed cadence.  The event loops themselves are deliberately not here.
+ * They are the part that was already solved: they reach sleepIdle(), the match
+ * pump lives there, and the ticks they spend are the ticks this pass spends
+ * anyway.
+ *
+ * Two passes that agree at every sample mean a player may read the manual
+ * without ending the match for the other one.
+ */
+/**
+ * Stand in for the turn loop's ownership of the clock.
+ *
+ * Half of what a modal screen does on its way out ends in
+ * Timer_SetTimer(TIMER_GAME, true), and in a match that call is refused because
+ * the turn loop owns the clock (timer.c:499).  This pass owns it for the same
+ * reason and has to refuse it for itself -- left running, the 60 Hz ticker
+ * advances g_timerGame beside MpHarness_Step() and the two passes end up at
+ * different clocks, which is a property of how busy the machine was rather than
+ * of the screen.  Called after every step of the cycle, not once at the end,
+ * because a tick landing inside the gap would be just as invisible and just as
+ * wrong.
+ */
+static void MpHarness_HoldClock(void)
+{
+	Timer_SetTimer(TIMER_GAME, false);
+}
+
+/**
+ * One call of the modal cycle, with the purity clamp around it.
+ *
+ * The pass on its own answers "did anything move", which it can only do at the
+ * next sample -- often thousands of ticks after the call that did it.  With
+ * --sim-purity the same run also answers "which call, and which chunk", by
+ * checksumming the world either side of every one of them.  That is the
+ * difference between knowing there is a bug and knowing where it is.
+ */
+static void MpHarness_ModalCall(void (*fn)(void), const char *what, uint32 tick)
+{
+	MpPurity_Begin(0);
+	fn();
+	MpHarness_HoldClock();
+	MpPurity_End(0, what, tick);
+}
+
+static void MpHarness_SelectMentat(void)    { GUI_ChangeSelectionType(SELECTIONTYPE_MENTAT); }
+static void MpHarness_SelectStructure(void) { GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE); }
+
+static bool MpHarness_ModalPass(bool open, MpSyncChecksum *out, uint16 *outCount, bool print)
+{
+	char line[256];
+	uint16 samples = 0;
+	uint32 tick;
+	bool inside = false;
+
+	if (!MpHarness_StartMatch(s_mpReplaySeed)) return false;
+
+	for (tick = 0; ; tick++) {
+		if (open && s_mpModalEvery != 0) {
+			uint32 phase = tick % s_mpModalEvery;
+
+			/* Never on tick zero: the first sample is taken there, and a
+			 * screen opened before it would be testing the setup rather than
+			 * the match. */
+			if (tick != 0 && phase == 0) {
+				MpHarness_ModalCall(&GUI_ModalScreen_Enter, "modal-enter", tick);
+
+				/* The build list is the third modal surface and the one a player
+				 * opens most; it reaches the world through the selection type
+				 * rather than through the pair above (structure.c:1892). */
+				MpHarness_ModalCall(&MpHarness_SelectMentat, "selection-mentat", tick);
+
+				inside = true;
+			} else if (inside && phase == s_mpModalHold) {
+				MpHarness_ModalCall(&MpHarness_SelectStructure, "selection-structure", tick);
+				MpHarness_ModalCall(&GUI_ModalScreen_Leave, "modal-leave", tick);
+				MpHarness_ModalCall(&GUI_Options_Recount, "options-recount", tick);
+				inside = false;
+			}
+		}
+
+		if (((tick % s_mpReplayStep) == 0 || tick == s_mpReplayTicks) && samples < MP_REPLAY_SAMPLES_MAX) {
+			if (!MpSync_Take(&out[samples])) return false;
+
+			/* Both passes leave their copy of one sample on disk, so that when
+			 * they disagree the answer is a diff rather than a chunk name.  Same
+			 * pair of files --mp-desync-dump writes, and the same reader:
+			 * tools/mpdesync_diff.py. */
+			if (s_mpModalDumpTick != 0 && tick == s_mpModalDumpTick) {
+				MpSync_Dump(open ? "mpmodal-s2-turn0.bin" : "mpmodal-s1-turn0.bin");
+			}
+
+			if (print) {
+				MpSync_Format(line, sizeof(line), tick, &out[samples]);
+				PrintToConsole(line);
+			}
+			samples++;
+		}
+
+		if (tick == s_mpReplayTicks) break;
+
+		MpHarness_Step();
+	}
+
+	if (inside) {
+		GUI_ModalScreen_Leave();
+		MpHarness_HoldClock();
+	}
+
+	*outCount = samples;
+	return true;
+}
+
+/**
+ * What a modal screen changed, named per savegame chunk.
+ *
+ * Same shape as the viewpoint report, and for the same reason: a chunk name is
+ * a place to look, where "the game desynced" is not.
+ */
+static void MpHarness_ReportModal(const MpSyncChecksum *a, const MpSyncChecksum *b, uint16 count)
+{
+	static const char *s_names[] = { "info", "house", "unit", "str", "map", "team", "new", "rng" };
+	uint16 differing[8];
+	uint32 firstTick[8];
+	char line[256];
+	uint16 total = 0;
+	uint16 i;
+	uint8 c;
+
+	memset(differing, 0, sizeof(differing));
+	memset(firstTick, 0, sizeof(firstTick));
+
+	for (i = 0; i < count; i++) {
+		const uint32 va[8] = { a[i].info, a[i].house, a[i].unit, a[i].structure, a[i].map, a[i].team, a[i].unitNew, a[i].rng };
+		const uint32 vb[8] = { b[i].info, b[i].house, b[i].unit, b[i].structure, b[i].map, b[i].team, b[i].unitNew, b[i].rng };
+
+		if (memcmp(&a[i], &b[i], sizeof(a[i])) != 0) total++;
+
+		for (c = 0; c < 8; c++) {
+			if (va[c] == vb[c]) continue;
+			if (differing[c] == 0) firstTick[c] = (uint32)i * s_mpReplayStep;
+			differing[c]++;
+		}
+	}
+
+	snprintf(line, sizeof(line), "mp-modal: %u of %u samples differ once the screens are opened", (unsigned)total, (unsigned)count);
+	PrintToConsole(line);
+
+	for (c = 0; c < 8; c++) {
+		if (differing[c] == 0) continue;
+
+		snprintf(line, sizeof(line), "mp-modal:   %-6s %4u samples, first at t%u",
+		         s_names[c], (unsigned)differing[c], (unsigned)firstTick[c]);
+		PrintToConsole(line);
+	}
+
+	PrintToConsole((total == 0) ? "mp-modal: PASS (a modal screen changes nothing the match can see)"
+	                            : "mp-modal: FAIL (opening a screen moved the simulation)");
+}
+
+/**
+ * Does concrete go on sand, and is it worth going there?
+ *
+ * Two claims, and they are separate.  The first is a placement rule and is
+ * tested against a real map: a slab must be refusable and pourable on the same
+ * tile depending only on the ini key, a building must be refused on bare sand
+ * and accepted on the slab that was just poured there, and a wall must stay
+ * refused -- a wall on sand offers no foundation and would let a player fence
+ * off open desert.  The second is the reason the first is worth having, and it
+ * is table data: concrete has to be faster than sand for every movement type,
+ * or a road is not a road.
+ *
+ * @return 1 when everything held, 0 on the first thing that did not.
+ */
+static int MoveRules_Failed(const char *why, uint16 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "move-rules-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	Unit_MoveRules_Init();
+	return 0;
+}
+
+/**
+ * When a 45 degree turn is free, and when it is not.
+ *
+ * Two claims.  The predicate is the rule itself: one octant either way, taken
+ * only by a unit that arrived under power, and spent whether or not it is used
+ * -- that last part is what stops a unit which stopped here from claiming a
+ * free turn when its next order arrives, and it is the easiest thing to get
+ * wrong. The second claim is that arriving on a tile is what arms it, which is
+ * checked by actually driving a unit one tile.
+ *
+ * What this cannot show is that the turn is *worth* anything; that is a
+ * question about a whole match, and --war-metrics answers it.
+ *
+ * @return 1 when everything held, 0 on the first thing that did not.
+ */
+static int MoveRules_SelfTest(void)
+{
+	Unit *u = NULL;
+	uint16 packed;
+	uint8 houseID;
+	uint16 guard;
+
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	houseID = Match_GetSlotHouse(0);
+	if (houseID == HOUSE_INVALID) return 0;
+
+	/* Somewhere flat with room to drive east.  Rock rather than sand only
+	 * because a Trike is quicker over it and the loop below is bounded. */
+	for (packed = 0; packed + 2 < 64 * 64; packed++) {
+		if (!Map_IsValidPosition(packed) || !Map_IsValidPosition((uint16)(packed + 1))) continue;
+		if (Map_GetLandscapeType(packed) != LST_ENTIRELY_ROCK) continue;
+		if (Map_GetLandscapeType((uint16)(packed + 1)) != LST_ENTIRELY_ROCK) continue;
+		if (Object_GetByPackedTile(packed) != NULL) continue;
+		if (Object_GetByPackedTile((uint16)(packed + 1)) != NULL) continue;
+
+		u = Unit_Create(UNIT_INDEX_INVALID, UNIT_TRIKE, houseID, Tile_UnpackTile(packed), 0);
+		if (u != NULL) break;
+	}
+
+	if (u == NULL) return MoveRules_Failed("could not put a trike on two clear rock tiles", 0);
+
+	Unit_MoveRules_SetRollingTurn(true);
+
+	/* Pointing north.  East is two octants away, north-east is one. */
+	Unit_SetOrientation(u, 0, true, 0);
+
+	u->rollingTurn = 1;
+	if (!Unit_MoveRules_RollingTurn(u, 32)) {
+		return MoveRules_Failed("45 degrees in motion was refused", 32);
+	}
+	if (Unit_MoveRules_RollingTurn(u, 32)) {
+		return MoveRules_Failed("the same arrival paid for a second free turn", 32);
+	}
+
+	u->rollingTurn = 1;
+	if (!Unit_MoveRules_RollingTurn(u, (int8)224)) {
+		return MoveRules_Failed("45 degrees the other way was refused", 224);
+	}
+
+	u->rollingTurn = 1;
+	if (Unit_MoveRules_RollingTurn(u, 64)) {
+		return MoveRules_Failed("90 degrees was taken for free", 64);
+	}
+
+	u->rollingTurn = 1;
+	if (Unit_MoveRules_RollingTurn(u, (int8)128)) {
+		return MoveRules_Failed("a full about-turn was taken for free", 128);
+	}
+
+	/* From a standstill it costs the turn, however small. */
+	u->rollingTurn = 0;
+	if (Unit_MoveRules_RollingTurn(u, 32)) {
+		return MoveRules_Failed("45 degrees from a standstill was free", 32);
+	}
+
+	/* And the key turns it off. */
+	Unit_MoveRules_SetRollingTurn(false);
+	u->rollingTurn = 1;
+	if (Unit_MoveRules_RollingTurn(u, 32)) {
+		return MoveRules_Failed("move_rolling_turn=0 did not disable the rule", 32);
+	}
+	Unit_MoveRules_SetRollingTurn(true);
+
+	/* Arriving is what arms it.  Drive one tile east and look. */
+	u->rollingTurn = 0;
+	Unit_SetOrientation(u, 64, true, 0);
+	Unit_SetOrientation(u, 64, true, 1);
+	if (!Unit_StartMovement(u)) return MoveRules_Failed("the trike would not set off", packed);
+
+	for (guard = 0; guard < 4096; guard++) {
+		if (Unit_Move(u, min(u->speed * 16, Tile_GetDistance(u->o.position, u->currentDestination) + 16))) break;
+	}
+
+	if (guard == 4096) return MoveRules_Failed("the trike never arrived", packed);
+	if (u->rollingTurn == 0) return MoveRules_Failed("arriving under power did not arm the turn", packed);
+
+	Unit_Free(u);
+	Unit_MoveRules_Init();
+	return 1;
+}
+
+static int BuildRules_Failed(const char *why, uint16 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "build-rules-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	Structure_BuildRules_Init();
+	return 0;
+}
+
+static int BuildRules_SelfTest(void)
+{
+	uint16 packed;
+	uint16 sand = 0xFFFF;
+	uint16 anchor = 0xFFFF;
+	uint8 houseID;
+	uint8 mt;
+
+	/* A real map rather than a synthetic one: the rule reads the landscape and
+	 * the neighbourhood, and both of those are what a generated map makes. */
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	houseID = Match_GetSlotHouse(0);
+	if (houseID == HOUSE_INVALID) return 0;
+
+	/* Two adjacent empty sand tiles, anywhere on the map.  One of them becomes
+	 * this house's concrete, which is the anchor the "must touch something of
+	 * your own" rule wants; the other is the tile under test.  Hunting for a
+	 * natural anchor was the first attempt and it finds nothing: a base is
+	 * placed on rock and paves its own apron, so at tick zero there is no sand
+	 * touching anything the house owns. */
+	for (packed = 0; packed + 1 < 64 * 64 && sand == 0xFFFF; packed++) {
+		uint16 neighbour = (uint16)(packed + 1);
+
+		if (!Map_IsValidPosition(packed) || !Map_IsValidPosition(neighbour)) continue;
+		if (Map_GetLandscapeType(packed) != LST_NORMAL_SAND) continue;
+		if (Map_GetLandscapeType(neighbour) != LST_NORMAL_SAND) continue;
+		if (Object_GetByPackedTile(packed) != NULL) continue;
+		if (Object_GetByPackedTile(neighbour) != NULL) continue;
+
+		anchor = neighbour;
+		sand = packed;
+	}
+
+	if (anchor != 0xFFFF) {
+		g_map[anchor].groundTileID = g_builtSlabTileID;
+		g_map[anchor].houseID      = houseID;
+	}
+
+	if (sand == 0xFFFF) return BuildRules_Failed("the generated map has no pair of adjacent empty sand tiles", 0);
+
+	/* Off: the original rule, rock only. */
+	Structure_BuildRules_SetSlabOnSand(false);
+	if (Structure_IsValidBuildLocation(sand, STRUCTURE_SLAB_1x1, houseID) != 0) {
+		return BuildRules_Failed("slab accepted on sand with the rule off", sand);
+	}
+
+	/* On: concrete goes down.  A building on the same bare tile still does not --
+	 * `isValidForStructure` is false for sand, and that is the original rule this
+	 * change deliberately leaves alone.  Building on bare *rock* is allowed and
+	 * merely unfounded; building on sand is not allowed at all, which is what
+	 * makes paving a purchase rather than a decoration.  Turret because it is one
+	 * tile: a 2x2 would be answering for its other three as well. */
+	Structure_BuildRules_SetSlabOnSand(true);
+	if (Structure_IsValidBuildLocation(sand, STRUCTURE_SLAB_1x1, houseID) == 0) {
+		return BuildRules_Failed("slab refused on sand with the rule on", sand);
+	}
+	if (Structure_IsValidBuildLocation(sand, STRUCTURE_WALL, houseID) != 0) {
+		return BuildRules_Failed("wall accepted on sand -- the rule is meant to skip walls", sand);
+	}
+	if (Structure_IsValidBuildLocation(sand, STRUCTURE_TURRET, houseID) != 0) {
+		return BuildRules_Failed("a turret was accepted on bare sand", sand);
+	}
+
+	/* Pour it, and the same turret becomes not merely allowed but fully founded:
+	 * a positive answer means no slabs are missing, which is what spares a
+	 * structure the hitpoint penalty and the degrades flag. */
+	g_map[sand].groundTileID = g_builtSlabTileID;
+	g_map[sand].houseID      = houseID;
+	if (Map_GetLandscapeType(sand) != LST_CONCRETE_SLAB) {
+		return BuildRules_Failed("pouring concrete did not change the landscape type", sand);
+	}
+	if (Structure_IsValidBuildLocation(sand, STRUCTURE_TURRET, houseID) != 1) {
+		return BuildRules_Failed("a turret on fresh concrete is still short of slabs", sand);
+	}
+
+	/* And the reason to pave at all. */
+	for (mt = 0; mt < MOVEMENT_MAX; mt++) {
+		if (mt == MOVEMENT_WINGER || mt == MOVEMENT_SLITHER) continue;
+
+		if (g_table_landscapeInfo[LST_CONCRETE_SLAB].movementSpeed[mt] <=
+		    g_table_landscapeInfo[LST_NORMAL_SAND].movementSpeed[mt]) {
+			return BuildRules_Failed("concrete is not faster than sand, so it is not a road", mt);
+		}
+	}
+
+	Structure_BuildRules_Init();
+	return 1;
+}
+
+static int Pathfinder_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "pathfinder-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	Pathfinder_Init();
+	return 0;
+}
+
+/** Tile index change per direction, as the search and the scripts both use it. */
+static const int16 s_pathfinderDirection[8] = {-64, -63, 1, 65, 64, 63, -1, -65};
+static const int8 s_pathfinderDirectionX[8] = { 0,  1, 1, 1, 0, -1, -1, -1};
+static const int8 s_pathfinderDirectionY[8] = {-1, -1, 0, 1, 1,  1,  0, -1};
+
+/**
+ * Walk a route and add up what it costs, or 0 when it is not a route at all.
+ *
+ * "Not a route" covers everything the search could get wrong and still look
+ * plausible: a direction byte out of range, a step that leaves the map, a step
+ * onto a tile the unit may not enter, and -- the one a broken unwind produces --
+ * a chain that does not actually end at the destination.
+ */
+static uint32 Pathfinder_ScoreRoute(Unit *unit, uint16 packedSrc, uint16 packedDst, const uint8 *route, uint16 length, bool *valid)
+{
+	uint32 total = 0;
+	uint16 packed = packedSrc;
+	uint16 i;
+
+	*valid = false;
+
+	for (i = 0; i < length; i++) {
+		uint32 cost;
+		int16 x;
+		int16 y;
+
+		if (route[i] > 7) return 0;
+
+		x = (int16)Tile_GetPackedX(packed) + s_pathfinderDirectionX[route[i]];
+		y = (int16)Tile_GetPackedY(packed) + s_pathfinderDirectionY[route[i]];
+		if (x < 0 || x > 63 || y < 0 || y > 63) return 0;
+
+		packed = (uint16)(packed + s_pathfinderDirection[route[i]]);
+
+		cost = Pathfinder_StepCost(unit, packed, route[i]);
+		if (cost == Pathfinder_Unreachable()) return 0;
+
+		total += cost;
+	}
+
+	if (packed != packedDst) return 0;
+
+	*valid = true;
+	return total;
+}
+
+/**
+ * Every tile's true distance, worked out a second time by a method with nothing
+ * in common with the first.
+ *
+ * Repeated relaxation until nothing changes: no priority queue, no heuristic,
+ * no tie-break -- so it shares no code and no assumption with A* beyond the
+ * cost of a single step.  Slow, and that is fine for a test that runs once.
+ * If A* and this disagree, A* is wrong.
+ *
+ * With `backward` it measures the cost of reaching `origin` from each tile
+ * instead of leaving it, which is what the heuristic has to be a lower bound of.
+ */
+static bool Pathfinder_ReferenceDistances(Unit *unit, uint16 origin, bool backward, uint32 *dist)
+{
+	uint16 pass;
+	bool changed = true;
+
+	for (pass = 0; pass < 64 * 64; pass++) dist[pass] = 0xFFFFFFFF;
+	dist[origin] = 0;
+
+	for (pass = 0; pass < 64 * 64 && changed; pass++) {
+		uint16 packed;
+
+		changed = false;
+
+		for (packed = 0; packed < 64 * 64; packed++) {
+			uint8 direction;
+
+			for (direction = 0; direction < 8; direction++) {
+				uint16 neighbour;
+				uint32 cost;
+				int16 x = (int16)Tile_GetPackedX(packed) + s_pathfinderDirectionX[direction];
+				int16 y = (int16)Tile_GetPackedY(packed) + s_pathfinderDirectionY[direction];
+
+				if (x < 0 || x > 63 || y < 0 || y > 63) continue;
+
+				neighbour = (uint16)(packed + s_pathfinderDirection[direction]);
+				if (!Map_IsValidPosition(neighbour)) continue;
+
+				/* The cost of a step is charged on the tile being entered, so
+				 * the two directions of travel are not the same number and the
+				 * backward pass has to say which one it means. */
+				cost = Pathfinder_StepCost(unit, neighbour, direction);
+				if (cost == Pathfinder_Unreachable()) continue;
+
+				if (backward) {
+					if (dist[neighbour] == 0xFFFFFFFF) continue;
+					if (dist[neighbour] + cost < dist[packed]) {
+						dist[packed] = dist[neighbour] + cost;
+						changed = true;
+					}
+				} else {
+					if (dist[packed] == 0xFFFFFFFF) continue;
+					if (dist[packed] + cost < dist[neighbour]) {
+						dist[neighbour] = dist[packed] + cost;
+						changed = true;
+					}
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+/**
+ * How long the engine really takes to cross one tile, measured by crossing it.
+ *
+ * The whole change rests on the claim that Pathfinder_StepTicks() is the time
+ * the movement layer will actually spend, so that claim is worth checking
+ * against the movement layer rather than against the arithmetic it was derived
+ * from -- the accumulator below is Unit_MovementTick()'s, and every other part
+ * of the step is the engine's own.  Without this, a mistake in the metric would
+ * be invisible: the search and the reference both read it from the same place
+ * and would agree with each other about the wrong number.
+ *
+ * @return Game ticks spent, or 0 when the unit would not set off.
+ */
+static uint32 Pathfinder_MeasuredTicks(Unit *unit, int8 orientation)
+{
+	uint32 ticks = 0;
+	uint16 remainder = 0;
+	uint16 guard;
+
+	Unit_SetOrientation(unit, orientation, true, 0);
+	Unit_SetOrientation(unit, orientation, true, 1);
+
+	if (!Unit_StartMovement(unit)) return 0;
+
+	for (guard = 0; guard < 100000; guard++) {
+		remainder = (uint16)(remainder + unit->speedPerTick);
+		ticks += 3;
+
+		if ((remainder & 0xFF00) != 0) {
+			if (Unit_Move(unit, min(unit->speed * 16, Tile_GetDistance(unit->o.position, unit->currentDestination) + 16))) return ticks;
+		}
+
+		remainder &= 0xFF;
+	}
+
+	return 0;
+}
+
+/**
+ * That the route search returns the cheapest route there is, and keeps
+ * returning the same one.
+ *
+ * The obstacle is a cup with its mouth pointing away from the unit and the
+ * destination inside it -- the shape Westwood's router is worst at, because it
+ * walks straight at the destination, meets the back of the cup and then has to
+ * feel its way out along the wall it is already touching.  It is built out of
+ * parked units rather than terrain so the test owns it exactly: an allied unit
+ * standing still is a wall to both routers, by the same line of
+ * Unit_GetTileEnterScore().
+ *
+ * Four claims, in the order they matter:
+ *
+ *  - the heuristic never overestimates, checked against every landscape type
+ *    rather than argued;
+ *  - the route is a route: connected, on the map, passable end to end;
+ *  - it costs exactly what an independent shortest-path calculation says it
+ *    should, which is the only way to catch a search that returns something
+ *    valid but not optimal;
+ *  - and the same question asked twice gets the same answer, byte for byte,
+ *    which is what a lockstep match depends on.
+ *
+ * @return 1 when everything held, 0 on the first thing that did not.
+ */
+static int Pathfinder_SelfTest(void)
+{
+	static const int8 s_cupX[13] = {-2, -1, 0, 1, 2, -2, -2, -2, -2, 2, 2, 2, 2};
+	static const int8 s_cupY[13] = {-3, -3, -3, -3, -3, -2, -1, 0, 1, -2, -1, 0, 1};
+
+	Unit *unit = NULL;
+	Unit *walls[13];
+	uint8 route[128];
+	uint8 sample[128];
+	uint8 legacy[128];
+	uint8 again[128];
+	uint16 wallCount = 0;
+	uint16 origin = 0xFFFF;
+	uint16 packedSrc = 0;
+	uint16 packedDst = 0;
+	uint16 goals[2];
+	uint16 length;
+	uint16 legacyLength;
+	uint16 failedLandscape = 0;
+	uint16 packed;
+	uint32 cost;
+	uint32 reference;
+	uint32 legacyCost;
+	uint32 *dist;
+	uint32 ticks;
+	uint32 expansions;
+	uint8 houseID;
+	bool valid;
+	int i;
+
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	houseID = Match_GetSlotHouse(0);
+	if (houseID == HOUSE_INVALID) return 0;
+
+	/* An eleven by eleven patch of open ground with nothing on it.  The cup is
+	 * drawn in the middle of it, so every tile the answer depends on is one
+	 * this test put there. */
+	for (packed = 0; packed < 64 * 64 && origin == 0xFFFF; packed++) {
+		int16 x = (int16)Tile_GetPackedX(packed);
+		int16 y = (int16)Tile_GetPackedY(packed);
+		int16 dx;
+		int16 dy;
+		bool clear = true;
+
+		if (x + 10 > 63 || y + 10 > 63) continue;
+
+		for (dy = 0; dy <= 10 && clear; dy++) {
+			for (dx = 0; dx <= 10 && clear; dx++) {
+				uint16 t = Tile_PackXY((uint16)(x + dx), (uint16)(y + dy));
+
+				if (!Map_IsValidPosition(t)) clear = false;
+				if (Object_GetByPackedTile(t) != NULL) clear = false;
+				if (Map_GetLandscapeType(t) == LST_ENTIRELY_MOUNTAIN) clear = false;
+				if (Map_GetLandscapeType(t) == LST_PARTIAL_MOUNTAIN) clear = false;
+				if (Map_GetLandscapeType(t) == LST_WALL) clear = false;
+			}
+		}
+
+		if (clear) origin = Tile_PackXY((uint16)(x + 5), (uint16)(y + 5));
+	}
+
+	if (origin == 0xFFFF) return Pathfinder_Failed("the generated map has no clear 11x11 patch", 0);
+
+	packedDst = origin;
+	packedSrc = (uint16)(origin - 5 * 64);
+
+	unit = Unit_Create(UNIT_INDEX_INVALID, UNIT_TRIKE, houseID, Tile_UnpackTile(packedSrc), 0);
+	if (unit == NULL) return Pathfinder_Failed("could not put a trike on the patch", packedSrc);
+
+	/* Claim one, before anything is built: the estimate must never exceed the
+	 * truth, for every ground this unit could be standing on. */
+	if (!Pathfinder_CheckHeuristic(unit, &failedLandscape)) {
+		Unit_Free(unit);
+		return Pathfinder_Failed("the heuristic overestimates on landscape type", failedLandscape);
+	}
+
+	/* The metric, against the engine.  A throwaway unit because measuring means
+	 * actually driving it, and a diagonal has to come out about sqrt(2) times a
+	 * straight one -- 362 against 256 -- which is the one number in the cost
+	 * function that no other part of this test can see. */
+	{
+		Unit *probe;
+		uint32 straightMeasured;
+		uint32 diagonalMeasured;
+		uint32 straightClaimed;
+		uint32 diagonalClaimed;
+
+		probe = Unit_Create(UNIT_INDEX_INVALID, UNIT_TRIKE, houseID, Tile_UnpackTile((uint16)(packedSrc + 1)), 0);
+		if (probe == NULL) {
+			Unit_Free(unit);
+			return Pathfinder_Failed("could not put a second trike on the patch", packedSrc);
+		}
+
+		straightClaimed  = Pathfinder_StepTicks(probe, (uint16)(packedSrc + 2), 2);
+		straightMeasured = Pathfinder_MeasuredTicks(probe, 64);
+		Unit_Free(probe);
+
+		probe = Unit_Create(UNIT_INDEX_INVALID, UNIT_TRIKE, houseID, Tile_UnpackTile((uint16)(packedSrc + 1)), 0);
+		if (probe == NULL) {
+			Unit_Free(unit);
+			return Pathfinder_Failed("could not put a second trike on the patch", packedSrc);
+		}
+
+		diagonalClaimed  = Pathfinder_StepTicks(probe, (uint16)(packedSrc + 2 + 64), 3);
+		diagonalMeasured = Pathfinder_MeasuredTicks(probe, 96);
+		Unit_Free(probe);
+
+		if (straightMeasured == 0 || diagonalMeasured == 0) {
+			Unit_Free(unit);
+			return Pathfinder_Failed("the probe would not cross a tile", straightMeasured);
+		}
+
+		/* Within a movement tick either way: the engine stops when the tile is
+		 * within sixteen units rather than at exactly zero, so a step is a
+		 * fraction shorter than its nominal length. */
+		if (straightClaimed + 6 < straightMeasured || straightMeasured + 6 < straightClaimed) {
+			char line[192];
+
+			snprintf(line, sizeof(line), "pathfinder-self-test: straight step claimed %u ticks, measured %u",
+				(unsigned)straightClaimed, (unsigned)straightMeasured);
+			PrintToConsole(line);
+			Unit_Free(unit);
+			return Pathfinder_Failed("the cost of a straight step is not what it takes", straightClaimed);
+		}
+
+		if (diagonalClaimed + 6 < diagonalMeasured || diagonalMeasured + 6 < diagonalClaimed) {
+			char line[192];
+
+			snprintf(line, sizeof(line), "pathfinder-self-test: diagonal step claimed %u ticks, measured %u",
+				(unsigned)diagonalClaimed, (unsigned)diagonalMeasured);
+			PrintToConsole(line);
+			Unit_Free(unit);
+			return Pathfinder_Failed("the cost of a diagonal step is not what it takes", diagonalClaimed);
+		}
+	}
+
+	for (i = 0; i < 13; i++) {
+		uint16 t = (uint16)(origin + s_cupX[i] + s_cupY[i] * 64);
+
+		walls[wallCount] = Unit_Create(UNIT_INDEX_INVALID, UNIT_TRIKE, houseID, Tile_UnpackTile(t), 0);
+		if (walls[wallCount] == NULL) break;
+		wallCount++;
+	}
+
+	if (wallCount != 13) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("could not build the cup out of units", wallCount);
+	}
+
+	Pathfinder_SetEnabled(true);
+
+	if (!Pathfinder_Run(unit, packedSrc, &packedDst, 1, true)) {
+		cost = 0;
+	} else {
+		length = Pathfinder_GetRoute(packedDst, route, sizeof(route));
+		cost = Pathfinder_ScoreRoute(unit, packedSrc, packedDst, route, length, &valid);
+	}
+
+	if (cost == 0 || !valid) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("no valid route out of the cup", packedDst);
+	}
+
+	/* The route the search says it found and the score it kept for it have to be
+	 * the same number.  They come from different code -- one unwinds cameFrom,
+	 * the other adds up the steps -- so a bug in either shows here. */
+	if (!Pathfinder_GetTicks(packedDst, &ticks) || ticks != cost) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("the route does not cost what the search recorded", (uint32)cost);
+	}
+
+	dist = (uint32 *)malloc(64 * 64 * sizeof(uint32));
+	if (dist == NULL) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("out of memory for the reference distances", 0);
+	}
+
+	Pathfinder_ReferenceDistances(unit, packedSrc, false, dist);
+	reference = (dist[packedDst] == 0xFFFFFFFF) ? 0 : dist[packedDst];
+
+	if (reference == 0 || cost != reference) {
+		char line[192];
+
+		snprintf(line, sizeof(line), "pathfinder-self-test: A* %u ticks, shortest possible %u", (unsigned)cost, (unsigned)reference);
+		PrintToConsole(line);
+		free(dist);
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("the route is not the cheapest one", (uint32)cost);
+	}
+
+	/* Claim one again, and this time against the thing itself rather than its
+	 * ingredients: measure what it really costs to reach the destination from
+	 * every tile on the map, and require the estimate to be no larger anywhere.
+	 * A heuristic that overestimates makes A* close the destination too early
+	 * and return a route that is valid, plausible and not the shortest -- with
+	 * nothing anywhere to say so.  This is the assertion that catches it, and
+	 * it catches it whatever the obstacle happens to look like. */
+	Pathfinder_ReferenceDistances(unit, packedDst, true, dist);
+
+	for (packed = 0; packed < 64 * 64; packed++) {
+		if (dist[packed] == 0xFFFFFFFF) continue;
+
+		if (Pathfinder_GetHeuristic(packed) > dist[packed]) {
+			char line[192];
+
+			snprintf(line, sizeof(line), "pathfinder-self-test: tile %u estimated at %u, truly %u",
+				(unsigned)packed, (unsigned)Pathfinder_GetHeuristic(packed), (unsigned)dist[packed]);
+			PrintToConsole(line);
+			free(dist);
+			for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+			Unit_Free(unit);
+			return Pathfinder_Failed("the heuristic overestimates, so routes are not optimal", packed);
+		}
+	}
+
+	/* One obstacle proves the search can get round an obstacle.  It does not
+	 * prove the search is a shortest-path search, because on an obstacle this
+	 * small the first route found to a tile is usually the cheapest one anyway
+	 * -- so a search that never revisits a tile it has already estimated would
+	 * pass, and be wrong everywhere the map is more interesting.  The forward
+	 * pass measured every tile, so asking about more destinations is very nearly
+	 * free: take them from across the whole generated map, where the ground
+	 * really does vary, and require the same exact agreement each time. */
+	Pathfinder_ReferenceDistances(unit, packedSrc, false, dist);
+
+	{
+		uint16 checked = 0;
+
+		for (packed = 173; packed < 64 * 64 && checked < 48; packed = (uint16)(packed + 173)) {
+			uint16 sampleLength;
+			uint32 sampleCost;
+			uint16 sampleGoal = packed;
+			bool sampleValid;
+
+			if (dist[packed] == 0xFFFFFFFF || dist[packed] == 0) continue;
+
+			if (!Pathfinder_Run(unit, packedSrc, &sampleGoal, 1, true)) {
+				free(dist);
+				for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+				Unit_Free(unit);
+				return Pathfinder_Failed("a tile the reference can reach was reported unreachable", packed);
+			}
+
+			sampleLength = Pathfinder_GetRoute(packed, sample, sizeof(sample));
+			sampleCost = Pathfinder_ScoreRoute(unit, packedSrc, packed, sample, sampleLength, &sampleValid);
+
+			if (!sampleValid || sampleCost != dist[packed]) {
+				char line[192];
+
+				snprintf(line, sizeof(line), "pathfinder-self-test: tile %u routed at %u ticks over %u steps, shortest possible %u",
+					(unsigned)packed, (unsigned)sampleCost, (unsigned)sampleLength, (unsigned)dist[packed]);
+				PrintToConsole(line);
+				free(dist);
+				for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+				Unit_Free(unit);
+				return Pathfinder_Failed("a sampled route is not the cheapest one", packed);
+			}
+
+			checked++;
+		}
+
+		if (checked < 16) {
+			free(dist);
+			for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+			Unit_Free(unit);
+			return Pathfinder_Failed("too few reachable tiles to sample, so this proves little", checked);
+		}
+	}
+
+	free(dist);
+
+	/* Same question, same answer.  Two clients must not disagree about it. */
+	if (!Pathfinder_Run(unit, packedSrc, &packedDst, 1, true)) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("the same search failed the second time", packedDst);
+	}
+	if (Pathfinder_GetRoute(packedDst, again, sizeof(again)) != length || memcmp(route, again, length) != 0) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("the same search returned a different route", packedDst);
+	}
+
+	/* A set of goals is answered in one search, and the cheapest of them is the
+	 * one that comes back -- this is what the firing-position and harvester
+	 * callers ask, dozens of times per unit. */
+	goals[0] = packedDst;
+	goals[1] = (uint16)(origin + 4);
+	if (!Pathfinder_Run(unit, packedSrc, goals, 2, false)) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("a two-goal search found neither", packedDst);
+	}
+	if (!Pathfinder_GetTicks(packedDst, &ticks) || ticks != cost) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("a goal cost more when asked about alongside another", (uint32)ticks);
+	}
+
+	/* What it bought.  Scored with the same metre stick, so the comparison is
+	 * about the routes and not about the two routers' opinions of a tile. */
+	legacyLength = Script_Unit_LegacyRoute(unit, packedSrc, packedDst, legacy, sizeof(legacy));
+	legacyCost = Pathfinder_ScoreRoute(unit, packedSrc, packedDst, legacy, legacyLength, &valid);
+
+	{
+		char line[192];
+
+		snprintf(line, sizeof(line), "pathfinder-self-test: cup of %u tiles -- A* %u ticks over %u steps, Westwood %s%u ticks over %u steps",
+			(unsigned)wallCount, (unsigned)cost, (unsigned)length,
+			valid ? "" : "no route, ", (unsigned)legacyCost, (unsigned)legacyLength);
+		PrintToConsole(line);
+	}
+
+	if (valid && legacyCost < cost) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("the old router beat the shortest route, so the metric is wrong", (uint32)legacyCost);
+	}
+
+	/* And the key turns it off: with the rule off the tactical probe goes
+	 * through Westwood's router instead, which is visible because no node is
+	 * expanded at all. */
+	Pathfinder_SetEnabled(false);
+	expansions = Pathfinder_GetExpansions();
+	Script_Unit_HasRoute(unit, packedSrc, packedDst, &ticks);
+	if (Pathfinder_GetExpansions() != expansions) {
+		Pathfinder_SetEnabled(true);
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("pathfinder_astar=0 did not disable the search", 0);
+	}
+	Pathfinder_SetEnabled(true);
+	Script_Unit_HasRoute(unit, packedSrc, packedDst, &ticks);
+	if (Pathfinder_GetExpansions() == expansions) {
+		for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+		Unit_Free(unit);
+		return Pathfinder_Failed("pathfinder_astar=1 did not enable the search", 0);
+	}
+
+	for (i = 0; i < (int)wallCount; i++) Unit_Free(walls[i]);
+	Unit_Free(unit);
+	Pathfinder_Init();
+	return 1;
+}
+
 static void GameLoop_Main(void)
 {
 	static uint32 l_timerNext = 0;
@@ -1952,6 +2957,10 @@ static void GameLoop_Main(void)
 
 	ReadProfileIni("PROFILE.INI");
 	Unit_CombatBalance_Init();
+	Unit_MoveRules_Init();
+	Structure_BuildRules_Init();
+	Pathfinder_Init();
+	if (s_pathfinderOverride >= 0) Pathfinder_SetEnabled(s_pathfinderOverride != 0);
 	Starport_Init();
 
 	free(g_readBuffer); g_readBuffer = NULL;
@@ -2000,6 +3009,43 @@ static void GameLoop_Main(void)
 
 	GUI_Mouse_Show_Safe();
 
+	if (s_lobbySelfTest) {
+		s_lobbySelfTestResult = GUI_Lobby_RunSelfTest();
+		PrintToConsole((s_lobbySelfTestResult == 1) ? "lobby-self-test: PASS"
+		                                            : "lobby-self-test: FAIL");
+		return;
+	}
+
+	if (s_moveRulesSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_moveRulesSelfTestResult = MoveRules_SelfTest();
+		PrintToConsole((s_moveRulesSelfTestResult == 1) ? "move-rules-self-test: PASS"
+		                                                : "move-rules-self-test: FAIL");
+		return;
+	}
+
+	if (s_pathfinderSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_pathfinderSelfTestResult = Pathfinder_SelfTest();
+		PrintToConsole((s_pathfinderSelfTestResult == 1) ? "pathfinder-self-test: PASS"
+		                                                 : "pathfinder-self-test: FAIL");
+		return;
+	}
+
+	if (s_buildRulesSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_buildRulesSelfTestResult = BuildRules_SelfTest();
+		PrintToConsole((s_buildRulesSelfTestResult == 1) ? "build-rules-self-test: PASS"
+		                                                 : "build-rules-self-test: FAIL");
+		return;
+	}
+
 	if (s_combatBalanceSelfTest) {
 		s_combatBalanceSelfTestResult = Unit_CombatBalance_RunRegressionTest();
 		if (s_combatBalanceSelfTestResult == 1) {
@@ -2032,7 +3078,7 @@ static void GameLoop_Main(void)
 
 	/* The menu allocates this on its way into a game; both skirmish entry
 	 * points skip the menu, and the voice player writes through it. */
-	if (s_skirmishSelfTest || s_skirmishDirect || s_warPlay || s_mpChecksum || s_mpReplay) {
+	if (s_skirmishSelfTest || s_skirmishDirect || s_warPlay || s_mpChecksum || s_mpReplay || s_mpModal) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
 	}
@@ -2282,6 +3328,29 @@ static void GameLoop_Main(void)
 		MpTurn_End();
 		Timer_ClaimAnimClock(false);
 		if (s_mpRelayHost[0] != '\0') MpNet_Disconnect();
+		return;
+	}
+
+	/* Stage 5 of mp.md: the modal screens.  A player who opens the options or
+	 * the mentat must not end the match for the other one. */
+	if (s_mpModal) {
+		MpSyncChecksum quiet[MP_REPLAY_SAMPLES_MAX];
+		MpSyncChecksum opened[MP_REPLAY_SAMPLES_MAX];
+		uint16 quietCount = 0;
+		uint16 openedCount = 0;
+
+		if (!MpHarness_ModalPass(false, quiet, &quietCount, false) ||
+		    !MpHarness_ModalPass(true, opened, &openedCount, false)) {
+			PrintToConsole("mp-modal: FAIL (could not run the match)");
+			return;
+		}
+
+		if (quietCount != openedCount) {
+			PrintToConsole("mp-modal: FAIL (the two passes did not reach the same length)");
+			return;
+		}
+
+		MpHarness_ReportModal(quiet, opened, quietCount);
 		return;
 	}
 
@@ -2992,8 +4061,18 @@ int main(int argc, char **argv)
 		int i;
 		for (i = 1; i < argc; i++) {
 			if (strcmp(argv[i], "--selection-self-test") == 0) s_selectionSelfTest = true;
+			if (strcmp(argv[i], "--build-rules-self-test") == 0) s_buildRulesSelfTest = true;
+			if (strcmp(argv[i], "--move-rules-self-test") == 0) s_moveRulesSelfTest = true;
+			if (strcmp(argv[i], "--lobby-self-test") == 0) s_lobbySelfTest = true;
+			if (strcmp(argv[i], "--pathfinder-self-test") == 0) s_pathfinderSelfTest = true;
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
 			if (strcmp(argv[i], "--economy-trace") == 0) EcoSearch_SetTrace(true);
+			/* The A/B switch for the route search.  It has to be a flag and not
+			 * only the ini key, because opendune.ini is searched in the user's
+			 * Application Support directory first: a copy there shadows anything
+			 * put next to the binary, so on a machine that has one there is no
+			 * way to change this key alone without editing the player's file. */
+			if (strncmp(argv[i], "--pathfinder=", 13) == 0) s_pathfinderOverride = (atoi(argv[i] + 13) != 0) ? 1 : 0;
 			/* "--doctrine=B" for both sides, "--doctrine=A,B" to play one against
 			 * the other on the same map: the only honest test of a battle
 			 * strategy is the strategy it replaces, on the same seed. */
@@ -3158,6 +4237,11 @@ int main(int argc, char **argv)
 				s_mpReplay = true;
 				s_mpViewpoint = true;
 				if (argv[i][14] == '=') sscanf(argv[i] + 15, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
+			} else if (strncmp(argv[i], "--mp-modal-dump=", 16) == 0) {
+				sscanf(argv[i] + 16, "%u", &s_mpModalDumpTick);
+			} else if (strncmp(argv[i], "--mp-modal", 10) == 0) {
+				s_mpModal = true;
+				if (argv[i][10] == '=') sscanf(argv[i] + 11, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
 			} else if (strncmp(argv[i], "--mp-replay", 11) == 0) {
 				s_mpReplay = true;
 				if (argv[i][11] == '=') sscanf(argv[i] + 12, "%u,%u,%u", &s_mpReplayTicks, &s_mpReplayStep, &s_mpReplaySeed);
@@ -3270,6 +4354,10 @@ int main(int argc, char **argv)
 
 	if (s_selectionSelfTest && s_selectionSelfTestResult != 1) return 1;
 	if (s_combatBalanceSelfTest && s_combatBalanceSelfTestResult == 0) return 1;
+	if (s_buildRulesSelfTest && s_buildRulesSelfTestResult != 1) return 1;
+	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;
+	if (s_moveRulesSelfTest && s_moveRulesSelfTestResult != 1) return 1;
+	if (s_lobbySelfTest && s_lobbySelfTestResult != 1) return 1;
 	return 0;
 }
 

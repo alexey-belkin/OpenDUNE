@@ -13,6 +13,7 @@
 #include "gui.h"
 #include "widget.h"
 #include "../mpcommand.h"
+#include "../match.h"
 #include "../mpturn.h"
 #include "../os/error.h"
 #include "../audio/driver.h"
@@ -531,7 +532,7 @@ static void GUI_Widget_Undraw(Widget *w, uint8 colour)
 	}
 }
 
-static void GUI_Window_Create(WindowDesc *desc)
+void GUI_Window_Create(WindowDesc *desc)
 {
 	uint8 i;
 
@@ -665,7 +666,7 @@ static Screen GUI_Window_ScratchScreen(void)
 	return MpTurn_IsActive() ? SCREEN_3 : SCREEN_2;
 }
 
-static void GUI_Window_BackupScreen(WindowDesc *desc)
+void GUI_Window_BackupScreen(WindowDesc *desc)
 {
 	Widget_SetCurrentWidget(desc->index);
 
@@ -674,7 +675,7 @@ static void GUI_Window_BackupScreen(WindowDesc *desc)
 	GUI_Mouse_Show_Safe();
 }
 
-static void GUI_Window_RestoreScreen(WindowDesc *desc)
+void GUI_Window_RestoreScreen(WindowDesc *desc)
 {
 	Widget_SetCurrentWidget(desc->index);
 
@@ -805,6 +806,68 @@ static bool GUI_YesNo(uint16 stringID)
 	return ret;
 }
 /**
+ * What a modal screen does to the *world* on its way in.
+ *
+ * Every fullscreen screen in this game -- the options, the mentat, the build
+ * list -- opened with its own copy of these three calls.  They are collected
+ * here for one reason: in a match the question "what does opening this window
+ * change" has to have an answer that can be read in one place and tested in
+ * one place.  Everything else those screens do is presentation and stays with
+ * them.
+ *
+ * The timer call is a no-op in a match -- the turn loop owns the clock and
+ * Timer_SetTimer() refuses TIMER_GAME while it does (timer.c:499) -- and
+ * unloading the tiles costs nothing a fullscreen window has not already cost.
+ * The world keeps turning behind the window either way: the nested event loops
+ * reach sleepIdle(), and the match pump lives there.
+ */
+void GUI_ModalScreen_Enter(void)
+{
+	Driver_Voice_Play(NULL, 0xFF);
+
+	Sprites_UnloadTiles();
+
+	Timer_SetTimer(TIMER_GAME, false);
+}
+
+/** The other half of GUI_ModalScreen_Enter(). */
+void GUI_ModalScreen_Leave(void)
+{
+	Sprites_LoadTiles();
+
+	Timer_SetTimer(TIMER_GAME, true);
+}
+
+/**
+ * The find-array rebuild the options screen inherited from savegame loading.
+ *
+ * Outside a match it is merely pointless: the arrays are maintained as units
+ * and structures come and go, so a rebuild produces the same set.  It does not
+ * produce the same *order*.  Allocation appends (pool/unit.c:151) and death
+ * compacts (pool/unit.c:184), so the live order is creation order -- and
+ * Unit_SortOrder() then works it towards front-to-back with one bubble pass per
+ * tick, which makes the order a function of the whole history, not of the set.
+ * Unit_Recount() throws that away and rebuilds in index order.
+ *
+ * GameLoop_Unit() walks that array. Reordering it on one client and not the
+ * other means the two machines tick their units in different sequences and draw
+ * from the shared RNG in a different order, and from there it is two different
+ * games -- which is exactly what happened when a player opened Options during a
+ * match.  No savegame chunk records this order, so nothing caught it either.
+ */
+void GUI_Options_Recount(void)
+{
+	/* Match_IsActive() rather than MpTurn_IsActive(): the order matters from the
+	 * first tick of a match, and the turn loop only starts several hundred
+	 * milliseconds of setup later.  A skirmish is held to the same rule, which
+	 * is what lets --mp-modal test this without a socket. */
+	if (Match_IsActive()) return;
+
+	Structure_Recount();
+	Unit_Recount();
+}
+
+/**
  * Handles Click event for "Options" button.
  *
  * @param w The widget.
@@ -820,13 +883,9 @@ bool GUI_Widget_Options_Click(Widget *w)
 
 	Sprites_SetMouseSprite(0, 0, g_sprites[0]);
 
-	Sprites_UnloadTiles();
+	GUI_ModalScreen_Enter();
 
 	memmove(g_palette_998A, g_paletteActive, 256 * 3);
-
-	Driver_Voice_Play(NULL, 0xFF);
-
-	Timer_SetTimer(TIMER_GAME, false);
 
 	GUI_DrawText_Wrapper(NULL, 0, 0, 0, 0, 0x22);
 
@@ -844,6 +903,26 @@ bool GUI_Widget_Options_Click(Widget *w)
 			w = GUI_Widget_Get_ByIndex(w2, key);
 
 			GUI_Window_RestoreScreen(desc);
+
+			/* Four of these seven buttons end or replace this client's world,
+			 * and a networked match is not this client's world to end.  Loading
+			 * is the sharp one -- it swaps the whole simulation out from under
+			 * the turn loop while the other player carries on -- but restart and
+			 * pick-a-house leave the opponent playing against nobody just as
+			 * surely.  Saving is refused with them because a save taken here can
+			 * only be loaded there. */
+			if (MpTurn_IsActive()) {
+				switch ((key & 0x7FFF) - 0x1E) {
+					case 0: case 1: case 3: case 4:
+						GUI_DisplayModalMessage("Not while a network game is running.", 0xFFFF);
+						GUI_Window_BackupScreen(desc);
+						GUI_Window_Create(desc);
+						continue;
+
+					default:
+						break;
+				}
+			}
 
 			switch ((key & 0x7FFF) - 0x1E) {
 				case 0:
@@ -904,19 +983,16 @@ bool GUI_Widget_Options_Click(Widget *w)
 
 	g_textDisplayNeedsUpdate = true;
 
-	Sprites_LoadTiles();
+	GUI_ModalScreen_Leave();
 	GUI_DrawInterfaceAndRadar(SCREEN_0);
 
 	UnshadeScreen();
 
 	GUI_Widget_MakeSelected(w, false);
 
-	Timer_SetTimer(TIMER_GAME, true);
-
 	GameOptions_Save();
 
-	Structure_Recount();
-	Unit_Recount();
+	GUI_Options_Recount();
 
 	g_cursorSpriteID = cursor;
 

@@ -175,6 +175,7 @@ typedef struct Unit {
 	uint8  blinkCounter;                                    /*!< If non-zero, it indicates how many more ticks this unit is blinking. */
 	uint8  team;                                            /*!< If non-zero, unit is part of team. Value 1 means team 0, etc. */
 	uint16 timer;                                           /*!< Timer used in animation, to count down when to do the next step. */
+	uint16 rollingTurn;                                     /*!< Set on arriving at a tile under power; lets the next 45 degree turn cost nothing.  A uint16 for a flag because it takes the reserved slot in the ODUN chunk, which keeps the savegame length unchanged. */
 	uint8  route[14];                                       /*!< The current route the Unit is following. */
 } Unit;
 
@@ -289,6 +290,9 @@ extern void Unit_RemoveFog(Unit *unit);
 extern bool Unit_Deviate(Unit *unit, uint16 probability, uint8 houseID);
 extern bool Unit_Move(Unit *unit, uint16 distance);
 extern bool Unit_Damage(Unit *unit, uint16 damage, uint16 range);
+extern void Unit_MoveRules_Init(void);
+extern void Unit_MoveRules_SetRollingTurn(bool allowed);
+extern bool Unit_MoveRules_RollingTurn(Unit *unit, int8 target);
 extern void Unit_CombatBalance_Init(void);
 extern uint16 Unit_CombatBalance_ApplyHouseDamage(const Unit *attacker, uint16 damage);
 extern uint16 Unit_CombatBalance_ApplyClassDamage(const Unit *attacker, const Unit *target, uint16 damage);

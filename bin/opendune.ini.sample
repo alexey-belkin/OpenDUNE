@@ -34,30 +34,63 @@ midideviceid=0
 ; Optional combat-class balance module. Values are integer percentages:
 ; 100 = x1.00, 250 = x2.50, 30 = x0.30.
 class_balance_enabled=1
-class_balance_shared_infantry=1
+; Barracks and WOR are both available to every House. The Barracks trains
+; Soldier and Infantry, WOR trains Trooper and Troopers. Set to 0 for the
+; original per-House availability. The former name of this key,
+; class_balance_shared_infantry, is still accepted.
+class_balance_infantry_all_houses=1
 ; Extra firing range in map cells for Soldier and Infantry.
 class_range_p_bonus=1
+; Light infantry walking speed as a percentage of the matching rocket infantry:
+; Soldier from Trooper, Infantry from Troopers. 120 makes the light half a fifth
+; faster. 0 switches the rule off and keeps the original factors.
+class_speed_p_over_rp=120
 
-; Attacker P (Soldier, Infantry) versus P, RP, LT, TT.
+; Attacker P (Soldier, Infantry) versus P, RP, LT, TT, AR.
 class_damage_p_vs_p=100
 class_damage_p_vs_rp=250
 class_damage_p_vs_lt=75
 class_damage_p_vs_tt=60
-; Attacker RP (Trooper, Troopers) versus P, RP, LT, TT.
+class_damage_p_vs_ar=100
+; Attacker RP (Trooper, Troopers) versus P, RP, LT, TT, AR.
 class_damage_rp_vs_p=30
 class_damage_rp_vs_rp=100
 class_damage_rp_vs_lt=125
 class_damage_rp_vs_tt=130
-; Attacker LT (Trike, Raider Trike, Quad) versus P, RP, LT, TT.
+class_damage_rp_vs_ar=100
+; Attacker LT (Trike, Raider Trike, Quad) versus P, RP, LT, TT, AR.
 class_damage_lt_vs_p=125
 class_damage_lt_vs_rp=135
 class_damage_lt_vs_lt=100
 class_damage_lt_vs_tt=70
-; Attacker TT (Tank, Siege Tank, Devastator) versus P, RP, LT, TT.
+class_damage_lt_vs_ar=250
+; Attacker TT (Tank, Siege Tank, Devastator) versus P, RP, LT, TT, AR.
 class_damage_tt_vs_p=85
 class_damage_tt_vs_rp=90
 class_damage_tt_vs_lt=130
 class_damage_tt_vs_tt=100
+class_damage_tt_vs_ar=100
+; Attacker AR (Launcher, Sonic Tank) versus P, RP, LT, TT, AR.
+class_damage_ar_vs_p=100
+class_damage_ar_vs_rp=100
+class_damage_ar_vs_lt=100
+class_damage_ar_vs_tt=100
+class_damage_ar_vs_ar=100
+
+; Per-unit tuning, as percentages of the table value. Any unit can be named:
+; the key is its name lowercased with non-letters turned into underscores, so
+; unit_damage_siege_tank, unit_rate_raider_trike, unit_damage_thopter. Damage
+; scales the shot before the House bonus and the class matrix, so it reaches
+; structures too. Rate scales shots per minute, not the delay between them.
+; The Launcher takes its buff on the rate of fire, not on the shot: a shot deals
+; a fixed amount and the excess is lost, so more damage per shot buys nothing
+; against a target that already died to one. The Sonic Tank has no such
+; threshold -- its beam deals hitpoints/4 + 1 per tile -- so it takes damage.
+unit_rate_launcher=150
+unit_damage_sonic_tank=150
+unit_damage_siege_tank=115
+unit_damage_devastator=115
+unit_rate_raider_trike=120
 
 ; House identity bonuses. Quad intentionally does not receive the Ordos bonus.
 class_bonus_atreides_p=120
@@ -94,6 +127,51 @@ starport_stock_ceiling=200
 ; make the shelves refill faster.  A type that has sold out comes back; a type
 ; the freighter never carried stays at zero.
 starport_restock_ticks=1800
+
+; Turning on the move.  Arriving on a tile a unit reads the next direction off
+; its route and, if it differs from where it is pointing, stops and turns.  On a
+; diagonal route that happens every other tile, for 45 degrees each time, which
+; is what makes a column move in jerks.  With this on, a 45 degree turn that
+; arises while moving is applied at once and the unit drives on in the same
+; tick.  Turns from a standstill, and turns of 90 degrees or more, are untouched
+; -- a tank still has to come about.
+move_rolling_turn=1
+
+; Concrete on sand.  With this off a slab may only be laid on rock, as in the
+; original game, so a base can grow no further than the rock the map gave it.
+; With it on a slab is also a road: the landscape table already gives concrete a
+; movement speed of 255 for every kind of unit against sand's 112, so paving
+; costs credits and buys both a foundation to build on and the fastest surface
+; in the game to drive on.  Walls are deliberately not included -- a wall has no
+; foundation to offer, and letting one go up on open sand would fence off the
+; desert.  The "must touch something of your own" rule still applies, so a road
+; can only grow outwards from the base, one tile at a time.
+build_slab_on_sand=1
+
+; Route finding.  With this off, units use Westwood's original router: it walks
+; straight at the destination and, when the next tile is blocked, feels its way
+; round the obstacle in both directions for up to a hundred tiles and takes
+; whichever went better.  It sees one tile ahead, so units drive into dead ends
+; between buildings and grope back out along the wall.  With it on -- the default
+; -- the whole route is worked out at once, over the whole map, and it is the
+; quickest route rather than merely a route: the cost of a tile is the time the
+; unit will really spend crossing it, so concrete is preferred where concrete is
+; faster and a diagonal is charged the extra distance it covers.  A unit that is
+; itself under way is treated as traffic to be waited out rather than as a wall,
+; which keeps a group under one order moving as a group.
+pathfinder_astar=1
+
+; The relay the "Play somebody" lobby offers by default.  A relay is a small
+; server both players connect to; the two computers never talk directly.
+; "host" or "host:port"; the port is 31337 if not given.  Anyone can run one --
+; the relay ships beside the game -- and one is enough for both players:
+;
+;     ./relay -listen 0.0.0.0:31337
+;
+; Note that any change to the balance keys above changes the digest the lobby
+; folds into its room name, so both players need the same settings here or they
+; will be put in different rooms and never find each other.
+mp_relay=146.103.110.160:31337
 
 ; DEBUG options :
 ;debug_game=1

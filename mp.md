@@ -1,8 +1,9 @@
 # Multiplayer — deterministic lockstep over the internet
 
-**Status: stages 0 to 5 are in the tree except the lobby; the interface work is design.** The determinism
-harness, the RNG split, the match descriptor, the command layer, the turn loop
-and the relay exist as code,
+**Status: stages 0 to 6 are in the tree, the lobby included; what is left of the
+interface work is listed in stage 5b.** The determinism
+harness, the RNG split, the match descriptor, the command layer, the turn loop,
+the relay, the real game loop and the lobby exist as code,
 and the sections at the bottom record what each cost and what each found. The
 rest of this file is the plan and, more importantly, the list of things in the
 engine that have to change before any of it can work. The order of the sections
@@ -338,9 +339,43 @@ Either way nothing may block the turn loop, ever.
 * **Pause becomes a networked command**, so a unilateral local pause is impossible
   by construction. Whether one player may pause at all is a rules decision;
   a vote or a per-player quota is the usual answer.
-* Regression test for exactly this: a scripted multiplayer session that opens each
-  modal surface for N ticks and asserts the tick counter advanced and both
-  checksums still match.
+
+### What v1 actually cost (done)
+
+The pump was the easy half. The world kept turning behind the window from the
+day `Timer_PumpMatch()` went in ([timer.c:180](src/timer.c:180)) — and a player
+who opened the mentat or the options screen still desynced the match, because
+four separate places let the local interface write into the shared world.
+
+`--mp-modal=ticks[,step[,seed]]` is the regression test this section asked for.
+It plays the match twice and, in one of the passes, performs what a modal screen
+does to the world — `GUI_ModalScreen_Enter()`, ticks of somebody reading,
+`GUI_ModalScreen_Leave()`, the selection-type flip the build list uses, and the
+recount the options screen carries. The event loops are deliberately not in it:
+they are the part that was already solved. `--sim-purity` on the same run names
+the call and the chunk; `--mp-modal-dump=TICK` leaves both passes' state on disk
+for `tools/mpdesync_diff.py`. All four were found in six runs.
+
+| What | Where | Why it moved the world |
+|---|---|---|
+| `Unit_Recount()` / `Structure_Recount()` on leaving Options | [widget_click.c](src/gui/widget_click.c) | Rebuilds `g_unitFindArray` in **index** order. The live order is creation order, worked towards front-to-back by one bubble pass of `Unit_SortOrder()` per tick — a function of the whole history, not of the set. `GameLoop_Unit()` walks that array, so one client began ticking its units in a different sequence. No chunk records this order, so no checksum saw it directly; it showed up later as everything |
+| The `SELECTIONTYPE_MENTAT` gate in `Unit_HouseUnitCount_Add()` | [unit.c:7056](src/unit.c:7056) | The gate *is* the viewpoint. While one client had a fullscreen screen up it skipped `timerUnitAttack`, `timerSandwormAttack` and `t->script.variables[4] = 1` — the flag that tells a team it is under attack. Two clients, two different scripts, from the next tick |
+| `upgradeTimeLeft = 100` in the action panel | [widget_draw.c:652](src/gui/widget_draw.c:652) | A draw function arming a saved field from whatever the local player had selected. Already guarded — on `MpTurn_IsActive()` |
+| `Structure_UpdateMap()` on a full repaint, `Explosion_Tick()`/`Animation_Tick()` in `GUI_DrawScreen()` | [gui.c](src/gui/gui.c), [map.c](src/map.c) | Same: guarded on `MpTurn_IsActive()` |
+
+The last two are the same mistake and it is worth naming, because it will happen
+again: **`MpTurn_IsActive()` is not "are we in a match"**. It is "is the turn
+loop running", and the match is built several hundred milliseconds earlier — a
+window in which one screen fade is enough. Guards on shared state now ask
+`Match_IsActive()`, or `Timer_AnimClockIsClaimed()` where the question is who
+owns the simulation clock. `MpTurn_IsActive()` stays where it belongs: the
+packet cadence, the opcode budget, and the buttons that must go dead while a
+networked match runs.
+
+Also closed here, from this section's own list: **Save, Load, Restart and Pick a
+new house are refused while `MpTurn_IsActive()`** — the red row in
+[mp-actions.html](mp-actions.html). Loading is the sharp one, but restart and
+pick-a-house leave the opponent playing against nobody just as surely.
 
 ### 6. The radar animation blocks, and the radar rule needs rewriting
 
@@ -449,8 +484,8 @@ Each stage is verifiable on its own, which matters because there is no test suit
 | 2 | **done (v1)** — match descriptor replacing `g_playerHouseID` in the logic; skirmish becomes a case of it | state byte-identical, the sixteen `--war-metrics` numbers unmoved |
 | 3 | **done** — command layer plus local replay: record commands, replay, compare checksums | `--mp-replay` passes on three seeds; dropping one command fails it |
 | 4 | **done** — the lockstep turn loop, with a loopback and a file transport | two processes playing one match; a measured ping table |
-| 5 | **done, less the lobby** — a relay and a TCP transport: rooms, join codes, drop detection | two processes playing one match through a socket, on five seeds |
-| 5b | the lobby: creating and finding a room from the menu, config hash handshake, the render decoupling and `Mp_Pump()` of §5 | a match started without a command line |
+| 5 | **done** — a relay and a TCP transport: rooms, join codes, drop detection | two processes playing one match through a socket, on five seeds |
+| 5b | **done** — the lobby: a room built from the menu, the config digest folded into its name | `--lobby-self-test`; a match started without a command line |
 | 6 | per-house fog, non-modal build panel (§5 v2), reconnect by state upload, more than two houses, AI slots, spectators | |
 
 **Stage 3 deserves the emphasis.** A local replay with no network at all proves the
@@ -1151,7 +1186,8 @@ Every configuration in the table agreed on every checksum.
 * **The real game loop.** The turn loop runs in the harness, which owns its own
   clock. In the game, `g_timerGame` is driven by a 60 Hz timer that does not stop
   — §4 of this document, still design.
-* **A lobby**, and the modal windows and radar animation of §5 and §6.
+* **A lobby**, and the modal windows and radar animation of §5 and §6. *(All
+  three done — stages 5b, 6.)*
 
 ## Stage 5 — the relay and the socket (done; the lobby is not)
 
@@ -1331,13 +1367,15 @@ manual override until then.
 ### What is still missing after this
 
 * **A lobby.** Room codes exist on the wire and nowhere in the interface: today
-  both players type a command line. This is the next piece of work.
+  both players type a command line. This is the next piece of work. *(Done —
+  stage 5b.)*
 * **The real game loop**, still. `--mp-turnloop` owns its clock; the game does
   not (§4).
 * **A handshake.** Nothing yet checks that the two clients are the same build
   with the same `opendune.ini` — the two most likely causes of a desync between
   two real people, and the two easiest to catch before the match instead of at
-  turn 0.
+  turn 0. *(Done — stage 5b folds a digest of both into the room name, so a
+  mismatch cannot start a match at all.)*
 
 ## Stage 6 — the real game loop, and what it cost (done; the interface is not)
 
@@ -1445,8 +1483,10 @@ it named the sleep.
 
 ### What is still missing
 
-* **The interface.** A lobby, a room code the player can type, a build handshake
-  (same binary, same `opendune.ini`) — see §5's list, all still true.
+* **The interface.** Done as far as starting a match goes — stage 5b. What is
+  left is smaller and listed there: the waiting state is a frozen window, the
+  lobby cannot show who else is in the room, and neither player picks a house
+  independently of the other. The modal screens of §5 are done.
 * **The production queue** is the last thing a player can do that is not a
   command. The Palace, the rally point, the Death Hand's aim and the Starport
   all travel now.
@@ -1491,6 +1531,93 @@ it named the sleep.
   4 to 7. It is reachable from reinforcements and from the AI, neither of which
   a two-human match uses yet.
 
+## Stage 5b — the lobby (done)
+
+Everything a match needed came off the command line. Two people who wanted to
+play had to agree on a relay address, a room name, a seed, two houses and two
+slots, and type all six of them correctly in two shells. The lobby is that
+conversation moved into the game: **PLAY SOMEBODY**, the second row of the main
+menu.
+
+### The room name is the handshake
+
+The one design decision. Whatever the two clients must agree on is folded into
+the room name they ask the relay for:
+
+```
+    <game code>.<house pair>.<config digest>
+```
+
+The relay pairs two clients only when they ask for the same room, and it does
+this without knowing why — it has never known anything about the game (see "The
+relay knows nothing about the game", above). So a disagreement about the map, the
+houses, the build or the balance ini cannot start a match. It surfaces as *the
+other player never joined*, thirty seconds of waiting and a return to the menu.
+
+That failure is worth the wait. The alternative — meeting first and comparing
+afterwards — is a desync a few seconds into the match, which to a player is
+indistinguishable from the game being broken. It also means there is no
+handshake packet to write, no version negotiation, and no way for the check to
+be skipped by a client that would rather not run it.
+
+* The **game code** is the only thing anybody has to exchange, and it is the
+  seed: `crc32(code) | 1`. Both sides derive the same map from it, so no seed
+  travels. `| 1` because zero is a legal seed and far too easy to arrive at by
+  accident — an empty code would otherwise silently mean a real map.
+* The **config digest** is `crc32(revision + g_table_unitInfo + g_table_structureInfo)`.
+  Hashing the two tables rather than the ini file is what makes it exact. The
+  balance module and the unit tuning both work by patching those tables, so a
+  key written out at its default value, a reordered file, a comment or a blank
+  line changes nothing — and any difference that would actually change the
+  simulation always changes the digest. The revision is in there because two
+  builds with the same tables can still differ everywhere else.
+* The **house pair** is one of the six *ordered* pairs of three houses. Ordered,
+  not combinations, because slot 1 takes the first and slot 2 the second:
+  "Atreides against Harkonnen" and "Harkonnen against Atreides" are one match
+  seen from two chairs, and the row has to be able to say which chair you are
+  in. The pair is in the room name; the slot deliberately is not — the two
+  players are in the same room, they just sit in different seats.
+
+### What it starts
+
+`MpGame_TakeLobbyChoice()` ([opendune.c](src/opendune.c)) fills in the same four
+statics `--mp-relay` fills in from the command line, sets both slots to
+`MATCH_CONTROLLER_HUMAN_LOCAL`, and returns `GM_SKIRMISH`. From there the two
+roads are one road: `MpGame_Begin()` connects, waits, and the loop of stage 6
+runs the match. Nothing downstream of the lobby knows the lobby exists.
+
+Both controllers are human by construction — a lobby match is 1-v-1, and a house
+left on the AI is an opponent neither player agreed to.
+
+### The guard
+
+`--lobby-self-test` tests the rule, not the drawing, because the rule is what
+protects people: same choices produce an identical room string, any difference at
+all produces a different one, the seed is stable and never zero, the digest is
+stable within a process, and `host`, `host:port`, `host:` and `host:0` all split
+into what `MpNet_Connect()` wants. If that ever stops holding, the lobby stops
+protecting anybody quietly, which is the failure mode a test is for.
+
+### What is still missing
+
+* **The window has not been seen by a person.** Its logic is tested and the
+  widened menu draws under the dummy video driver without crashing; nobody has
+  looked at the lobby or clicked a row.
+* **Waiting is a frozen window.** `MpGame_Begin()` waits up to `--mp-wait`
+  (30 s) with the menu still on screen and reports to the console, not to the
+  player. A person who mistypes the code sees half a minute of nothing and then
+  the menu again.
+* **The lobby cannot see the room.** The relay knows who is in it; the lobby
+  never asks. It cannot show the other player's name, whether anybody is
+  waiting, or which slot is taken — so two players who both pick "player 1"
+  find out by not meeting.
+* **Neither player picks a house independently.** They pick the same *pair* and
+  take opposite ends of it, because the pair is in the room name. Letting each
+  choose their own house needs a real config channel — that is, the handshake
+  this design was built to avoid.
+* **The strings are English literals**, like the modal message of §5. They do not
+  go through the string table and do not translate.
+
 ## Known hazards
 
 * **The unit pool.** Two humans building freely will hit the per-type
@@ -1522,7 +1649,8 @@ output and confuse players.
 
 **`--mp-units=N` starting squad.** Currently off by default with a comment "Off
 by default until the squad stops desyncing." Decide before release: promote to a
-lobby option (both players agree on a count) or remove the flag entirely.
+lobby row (the count would go into the room name like everything else the two
+must agree on) or remove the flag entirely.
 
 **`debug_*` ini keys.** Upstream-inherited (`debug_game`, `debug_scenario`,
 `debug_skip_dialogs`, `debug_log_game`). Present in the original OpenDUNE;
@@ -1534,10 +1662,12 @@ will not see the resulting commands.
 every drawing and input call. Keep in the binary for debugging, do not expose in
 any player-facing interface.
 
-**Savegame load from Options during a match.** The only action in
-[mp-actions.html](mp-actions.html) marked red. Loading a savegame mid-match
-replaces one client's world entirely. The Options buttons for Save and Load should
-be disabled (`w->state = WIDGET_STATE_DISABLED`) while `MpTurn_IsActive()`.
+**Savegame load from Options during a match.** Done — see §5. Load, Save,
+Restart and Pick a new house all answer "Not while a network game is running"
+while `MpTurn_IsActive()`, so the red row in
+[mp-actions.html](mp-actions.html) is closed. What is still open is the wording:
+it is an English literal rather than a table string, like the "No more
+scenarios!" hint it copies.
 
 ## Rejected
 

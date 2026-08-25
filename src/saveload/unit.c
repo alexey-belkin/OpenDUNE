@@ -63,7 +63,9 @@ static const SaveLoadDesc s_saveUnitNew[] = {
 	SLD_ENTRY (Unit, SLDT_UINT16, repairReturnPosition),
 	SLD_ENTRY (Unit, SLDT_UINT16, airTransitDestination),
 	SLD_ENTRY (Unit, SLDT_UINT16, guardAction),
-	SLD_EMPTY (      SLDT_UINT16),
+	/* Takes the slot that was reserved here, so the chunk is the same length it
+	 * was and savegames written before this still load. */
+	SLD_ENTRY (Unit, SLDT_UINT16, rollingTurn),
 	SLD_END
 };
 

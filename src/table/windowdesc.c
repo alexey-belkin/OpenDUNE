@@ -373,3 +373,117 @@ WindowDesc g_savegameNameWindowDesc = {
 		}
 	}
 };
+
+/**
+ * The lobby: five rows to settle and two to act on.
+ *
+ * Widget index 22 is the game-controls panel, the tallest window in the game --
+ * borrowed here because the lobby has one more row than the options screen and
+ * nothing else is deep enough.  The row strings are negative: the lobby fills
+ * them in as the player changes things, and GUI_String_Get_ByIndex() hands them
+ * back (see gui/lobby.c).
+ */
+WindowDesc g_lobbyWindowDesc = {
+	/* index       */ 22,
+	/* stringID    */ -19,
+	/* addArrows   */ false,
+	/* widgetCount */ 7,
+	{ /* widgets */
+		{ /* 0 -- relay */
+		/* stringID      */ -20,
+		/* offsetX       */ 8,
+		/* offsetY       */ 23,
+		/* width         */ 224,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 0,
+		},
+		{ /* 1 -- game code */
+		/* stringID      */ -21,
+		/* offsetX       */ 8,
+		/* offsetY       */ 40,
+		/* width         */ 224,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 0,
+		},
+		{ /* 2 -- which player */
+		/* stringID      */ -22,
+		/* offsetX       */ 8,
+		/* offsetY       */ 57,
+		/* width         */ 224,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 0,
+		},
+		{ /* 3 -- houses */
+		/* stringID      */ -23,
+		/* offsetX       */ 8,
+		/* offsetY       */ 74,
+		/* width         */ 224,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 0,
+		},
+		{ /* 4 -- map, derived from the code */
+		/* stringID      */ -24,
+		/* offsetX       */ 8,
+		/* offsetY       */ 91,
+		/* width         */ 224,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 0,
+		},
+		{ /* 5 -- begin */
+		/* stringID      */ -25,
+		/* offsetX       */ 8,
+		/* offsetY       */ 114,
+		/* width         */ 104,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 0,
+		},
+		{ /* 6 -- cancel */
+		/* stringID      */ STR_CANCEL,
+		/* offsetX       */ 128,
+		/* offsetY       */ 114,
+		/* width         */ 104,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 110,
+		}
+	}
+};
+
+/**
+ * One line of text, with a title that changes.
+ *
+ * Same shape as the savegame name dialog, which is the only other place in the
+ * game where somebody types something; index 14 is that dialog's own frame.
+ */
+WindowDesc g_lobbyEntryWindowDesc = {
+	/* index       */ 14,
+	/* stringID    */ -26,
+	/* addArrows   */ false,
+	/* widgetCount */ 2,
+	{ /* widgets */
+		{ /* 0 */
+		/* stringID      */ STR_PROCEED,
+		/* offsetX       */ 8,
+		/* offsetY       */ 38,
+		/* width         */ 72,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 43,
+		},
+		{ /* 1 */
+		/* stringID      */ STR_CANCEL,
+		/* offsetX       */ 208,
+		/* offsetY       */ 38,
+		/* width         */ 72,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 110,
+		}
+	}
+};

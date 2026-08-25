@@ -183,6 +183,8 @@ typedef struct WidgetProperties {
 extern WidgetInfo g_table_gameWidgetInfo[23];
 extern WidgetInfo g_table_factoryWidgetInfo[13];
 
+extern WindowDesc g_lobbyWindowDesc;
+extern WindowDesc g_lobbyEntryWindowDesc;
 extern WindowDesc g_optionsWindowDesc;
 extern WindowDesc g_gameControlWindowDesc;
 extern WindowDesc g_yesNoWindowDesc;
@@ -249,7 +251,13 @@ extern bool GUI_Widget_Name_Click(Widget *w);
 extern bool GUI_Widget_Cancel_Click(Widget *w);
 extern bool GUI_Widget_Picture_Click(Widget *w);
 extern bool GUI_Widget_RepairUpgrade_Click(Widget *w);
+extern void GUI_Window_Create(WindowDesc *desc);
+extern void GUI_Window_BackupScreen(WindowDesc *desc);
+extern void GUI_Window_RestoreScreen(WindowDesc *desc);
 extern bool GUI_Widget_Options_Click(Widget *w);
+extern void GUI_ModalScreen_Enter(void);
+extern void GUI_ModalScreen_Leave(void);
+extern void GUI_Options_Recount(void);
 extern bool GUI_Widget_SaveLoad_Click(bool save);
 extern bool GUI_Widget_HOF_ClearList_Click(Widget *w);
 extern bool GUI_Widget_HOF_Resume_Click(Widget *w);

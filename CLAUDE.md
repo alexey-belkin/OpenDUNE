@@ -25,7 +25,7 @@ rules for shared state. **Read it before touching anything behavioural.**
 | `src/table/` | static data: `unitinfo.c`, `structureinfo.c`, `actioninfo.c` |
 | `src/skirmish.c` `src/ecosearch.c` `src/warsearch.c` | the AI test bench: match setup, the economy search, the war search |
 | `src/saveload/` | save format — extending a struct means touching this |
-| `tools/` | asset extractors, `dis_emc.py` for the game scripts, `telemetry_report.py` for recorded matches, `relay/` (the multiplayer relay, Go) |
+| `tools/` | asset extractors, `dis_emc.py` for the game scripts, `telemetry_report.py` for recorded matches, `threat_report.py` for the combat balance model, `relay/` (the multiplayer relay, Go) |
 | `bin/` | build output and `bin/data/` (game files) |
 | `bundle/` | `make bundle` output — **wiped on every build** |
 
@@ -49,6 +49,35 @@ mkdir -p bundle/OpenDUNE.app/Contents/Resources/data
 cp -p bin/data/*.PAK bin/data/DUNE.CFG bundle/OpenDUNE.app/Contents/Resources/data/
 ```
 
+## Shipping a build to another machine
+
+```bash
+tools/package.sh              # → bundles/opendune-<rev>-<date>-macos-arm64.zip
+```
+
+`make bundle` on its own does not produce something another Mac can run. Two
+reasons, and the script exists for both: the app has no game data in it (the
+`rm -rf bundle/` above took it out), and the binary still names
+`/opt/homebrew/opt/sdl2/...` in its load commands, so on a machine without that
+Homebrew prefix it dies in dyld before a window appears. `package.sh` copies the
+data back, vendors `libSDL2` into `Contents/Frameworks/`, rewrites the load
+command to `@executable_path/../Frameworks/`, re-signs ad-hoc (an
+`install_name_tool` edit invalidates the signature, and arm64 will not load an
+image whose signature does not match), and refuses to write the archive if
+anything is still linked outside the bundle.
+
+Then it verifies what it is about to hand over rather than the tree it came
+from: the zip is unpacked into a scratch directory and
+`--combat-balance-self-test`, `--selection-self-test` and `--mp-replay` are run
+from *that* copy. A package that fails is deleted rather than shipped. Rerun it
+after every change that a second machine is meant to see — that is the whole
+point of it being one command.
+
+The archive is **arm64 only**. Homebrew ships no universal SDL, so an Intel Mac
+needs its own build, not a repackage. `--no-data` leaves the `*.PAK` out and
+says so in the bundled `INSTALL.txt`; `--no-build` packages whatever `bin/`
+already holds.
+
 ## Game data
 
 Original Dune II files (`*.PAK`, ~13 MB) live in `bin/data/`, gitignored. They
@@ -64,14 +93,31 @@ is the annotated template and README.txt ("Combat class balance") is the
 user-facing description. The file is searched in this order
 ([src/inifile.c:39](src/inifile.c:39)): `~/Library/Application Support/OpenDUNE/`
 (macOS), then the current directory, then `data/`, then the directory *next to*
-`OpenDUNE.app`. **No copy exists yet on this machine**, so the game currently
-runs on the compiled-in defaults.
+`OpenDUNE.app`. **A copy exists on this machine**, at
+`~/Library/Application Support/OpenDUNE/opendune.ini`, and because that is the
+*first* location searched it shadows anything put in `bin/`. It currently
+overrides five keys — `class_range_p_bonus=2`, `class_damage_p_vs_rp=500`,
+`class_damage_rp_vs_lt=200`, `class_damage_rp_vs_tt=300`,
+`class_damage_lt_vs_rp=175` — so **every run on this machine, `--war-metrics`
+included, is played on those numbers and not on the compiled-in defaults**.
+`tools/threat_report.py` reads the source, not the ini, so it is describing a
+configuration this machine does not run.
+
+To measure against the compiled-in defaults, point `HOME` somewhere empty and put
+the ini you want in `bin/`:
+
+```bash
+HOME=/tmp/emptyhome SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune ...
+```
 
 The module itself is `Unit_CombatBalance_*` in [src/unit.c:65](src/unit.c:65):
 
 * `Unit_CombatBalance_Init()` — called once from `opendune.c`; reads every key,
   clamps percentages to 0..1000, and patches `g_table_unitInfo` /
-  `g_table_structureInfo` (infantry range, shared Barracks production). The
+  `g_table_structureInfo` (infantry range, light infantry speed, infantry
+  factories open to every House). It runs immediately after
+  `ReadProfileIni()`, so it wins over the `[combat]` section of `PROFILE.INI`.
+  The
   compiled-in defaults are the `s_combatBalance` initialiser — they are the
   fallback for every missing key, so **defaults live in two places** and the
   sample ini must be kept in step with them.
@@ -82,17 +128,76 @@ The module itself is `Unit_CombatBalance_*` in [src/unit.c:65](src/unit.c:65):
   applied at impact in [src/map.c:435](src/map.c:435), unit-versus-unit only.
 
 Classes are P (Soldier, Infantry), RP (Trooper, Troopers), LT (Trike, Raider
-Trike, Quad) and TT (Tank, Siege Tank, Devastator); every other unit is neutral
-(x1.00) on both sides of the matrix. Values are integer percentages — 100 is
-x1.00. Keys: `class_balance_enabled`, `class_balance_shared_infantry`,
-`class_range_p_bonus`, `class_damage_<attacker>_vs_<target>` for the 16 matrix
-cells, and `class_bonus_atreides_p` / `class_bonus_harkonnen_rp` /
+Trike, Quad), TT (Tank, Siege Tank, Devastator) and AR (Launcher, Sonic Tank —
+the two units that outrange a Rocket Turret, per `Doctrine_RoleOf()`; the
+Saboteur is Ordos' stand-in for them but is not in the class); every other unit
+is neutral (x1.00) on both sides of the matrix. Values are integer percentages —
+100 is x1.00. Keys: `class_balance_enabled`, `class_balance_infantry_all_houses`
+(formerly `class_balance_shared_infantry`, still accepted),
+`class_range_p_bonus`, `class_speed_p_over_rp`,
+`class_damage_<attacker>_vs_<target>` for the 25 matrix cells, and
+`class_bonus_atreides_p` / `class_bonus_harkonnen_rp` /
 `class_bonus_ordos_trike` (the Ordos bonus deliberately skips Quad).
+
+Balance decisions that do not follow the class lines live in the `s_unitTuning`
+table instead: `unit_damage_<name>` and `unit_rate_<name>`, both percentages of
+the table value, with `<name>` the unit's name lowercased and non-letters
+collapsed to underscores. Every unit is reachable from the ini; the table only
+carries the defaults that are not 100 — currently Sonic Tank at 150% damage,
+Siege Tank and Devastator at 115%, Launcher at 150% rate of fire and Raider
+Trike at 120%. `unit_rate_*` scales the whole firing cycle including the short
+gap inside a `firesTwice` doublet, so 120 means a fifth more shots for every
+kind of unit.
+
+**Rate is usually the better lever.** A shot deals a fixed amount and the excess
+is lost (`Map_MakeExplosion`), so damage is a step function: it buys nothing
+until it crosses the shot count a target dies to. Launcher at 150% damage was
+worth exactly zero against Soldier, Trooper, Infantry and Quad — same exchange
+rate to two decimals — while 150% rate paid against all twelve unit types. Check
+a damage change against `tools/threat_attrition.py --units` before trusting it;
+the closed form cannot see the difference (it scored the two Launcher builds at
+18.37 and 18.29 DPS).
+
+`class_speed_p_over_rp` is a rule, not a literal: light infantry's
+`movingSpeedFactor` is derived from the matching rocket infantry's — Soldier
+from Trooper, Infantry from Troopers — so the light half stays the fast half if
+the heavy half is retuned. At the default 120 that is Soldier 18 and Infantry
+12, which lands light infantry beside the Siege Tank and past the Devastator.
+The rationale comment in `Doctrine_RoleOf()` is annotated accordingly: those
+units are still `DOCTRINE_ROLE_GARRISON`, but no longer because they cannot
+keep up.
+
+`python3 tools/threat_report.py` scores the roster against this configuration,
+and `python3 tools/threat_attrition.py` plays the fights out shot by shot when
+the closed form is not enough.
+It carries no balance numbers of its own — it parses `g_table_unitInfo`, the
+`s_combatBalance` matrix and `Unit_CombatBalance_GetClass()` straight out of the
+source, so it follows any change made here. Threat is `DPS x hitpoints`, which
+is the Lanchester square-law strength, so the price index that goes with it is
+`threat / cost^2` rather than `threat / cost`; both are printed, along with the
+class-versus-class exchange matrix. `--flat` reruns it with every multiplier
+forced to 100 and `--no-tuning` drops `s_unitTuning`, which together separate
+what our balance does from what Westwood's stats already did — the useful diff
+when retuning a cell.
+
+`threat_attrition.py` buys two squads for a budget and simulates the fight:
+whole units, dying one at a time, firepower leaving with them, overkill wasted,
+and the `firesTwice` health gate modelled exactly rather than as the closed
+form's flat 0.75 (measured, that correction is 0.95–1.00 under focus fire and
+0.90–0.98 under spread — the Launcher at 0.78 is the one real exception — so the
+closed form under-rates every doublet unit). Fire distribution is the one real choice
+and it has exactly two ends: `--spread` and the default focus. `--sonic-tiles N`
+sets how many occupied tiles a sonic beam crosses, which is the only thing that
+decides whether the Sonic Tank is worthless or the best unit on the field.
+`--split AR` and `--units` control how much aggregation the matrix does.
 
 Changing any default means touching three files: the `s_combatBalance`
 initialiser, `bin/opendune.ini.sample`, and the README.txt section. Verify with
 `--combat-balance-self-test` below, which checks the matrix, the neutral classes,
-the House bonuses and the shared-Barracks patch against the loaded config.
+the House bonuses and the infantry-factory patch against the loaded config.
+That patch keeps the two factories separate: Barracks trains Soldier and
+Infantry, WOR trains Trooper and Troopers, and both are buildable by every
+House.
 
 Its integration step fires a real Atreides Soldier shot (base 10) at a synthetic
 Harkonnen Trooper (45 HP), so a strong enough `class_damage_p_vs_rp` makes that
@@ -101,6 +206,148 @@ loaded — `Sprites_LoadTiles()` only reads it when a scenario loads. The NULL
 guard in `Script_Load()` ([src/script/script.c:283](src/script/script.c:283))
 exists for exactly that; **rebuild before trusting a segfault here**, a stale
 `bin/opendune` predating that guard crashes instead.
+
+## Turning on the move
+
+`move_rolling_turn` (default 1). Arriving on a tile, a unit reads the next
+direction off `u->route[]` and, if it differs from where it is pointing, stops
+and turns — `Script_Unit_MoveToTarget()` in
+[script/unit.c](src/script/unit.c). On a diagonal route that is every other
+tile, 45 degrees each time, and it is what makes a column move in jerks. With
+the rule on, a one-octant turn that arose **in motion** is set instantly and
+`Unit_StartMovement()` runs in the same call, so the unit never stops. Turns
+from a standstill and turns of 90 degrees or more are untouched.
+
+"In motion" is `Unit.rollingTurn`, set by `Unit_Move()` where a ground unit
+completes a tile and consumed by `Unit_MoveRules_RollingTurn()` —
+**consumed whether or not it is used**, which is what stops a unit that halted
+here from claiming a free turn when its next order arrives.
+
+The field is a `uint16` for a flag on purpose: it takes the slot that was
+reserved at the end of `s_saveUnitNew` ([saveload/unit.c](src/saveload/unit.c)),
+so the ODUN chunk is the same length it was and savegames written before this
+still load — `--selection-self-test` replays five of them and is the guard.
+
+Measured with `--war-metrics` on the compiled-in defaults, on versus off:
+`econ.spice/match` 49520 → 56475, `wave.matches %` 58 → 66, `result.points %`
+54 → 66, and `--economy-baseline` 0 from 10311 to 11262. It costs something too:
+`turret.entries/match` 12 → 23 and `result.wipeouts %` 25 → 33, because an army
+that arrives faster kills harder. `--move-rules-self-test` checks the rule
+itself.
+
+## Route finding
+
+`pathfinder_astar` (default 1) replaces Westwood's router with A\* over the
+64x64 grid — [pathfinder.c](src/pathfinder.c), called from
+`Script_Unit_CalculateRoute()` and `Script_Unit_HasRoute()` in
+[script/unit.c](src/script/unit.c). `--pathfinder=0|1` overrides the key from
+the command line, which is the only way to A/B on a machine that has an
+`opendune.ini` in `~/Library/Application Support/` — that copy is searched first
+and shadows anything put in `bin/`.
+
+**The cost function is the whole design.** `Unit_GetTileEnterScore()` still
+decides what is *passable* — it knows about allies, transports, conquerable
+buildings, the Saboteur and the sandworm — but its *number* is not used. That
+number ends in `res ^= 0xFF`, an affine proxy for time, and with
+`g_dune2_enhanced` the rates are first scaled by `movingSpeedFactor/256`, which
+for ground units is 5/256 to 60/256. Every step therefore lands in 211..252 and
+the terrain is worth a few percent of it. Measured properly a Tank crosses sand
+in 78 ticks and concrete in 51 — 1.53, reported as 1.06 — and a Soldier's real
+ratio is 2.18 against a reported 1.04; diagonals are 1.38 against a reported
+1.01. The old router only ever compared two ways round one obstacle so the
+distortion never surfaced, but a shortest-path search optimises exactly what it
+is given. `Pathfinder_TicksForStep()` therefore reproduces the movement layer:
+terrain rate of the tile being **entered** (`Unit_StartMovement()`), the
+quantisation in `Unit_SetSpeed()` — above 16 the rate is rounded down to whole
+sixteenths of a tile per move, so a Trike at 28 and one at 31 are the same speed
+— sixteen-unit moves gated by `Unit_MovementTick()`'s accumulator, arrival at
+under 16 on the `max + min/2` metric, and the movement tick running once every
+three game ticks.
+
+Three things that are easy to get wrong and are guarded:
+
+* **The heuristic is derived, not chosen.** `Pathfinder_MaxSpeed()` asks the same
+  cost function for the fastest ground this unit can be on and builds the octile
+  bound from it, so it survives any balance change. The self-test checks it
+  against independently computed true distances for **every** tile, not against
+  the argument that it ought to be a lower bound.
+* **`Unit_GetTileEnterScore()` returns negative numbers.** −1 is "may drive up to
+  but not into", −2 is "may enter". The wrapper in script/unit.c maps −1 to 256
+  and then lets −2 through *as a negative score*, which was harmless when the
+  score only chose between two detours. A search assumes non-negative edges, so
+  here −2 is passable and everything else negative is a wall.
+* **Ties break on the packed tile index**, never on insertion order or a pointer.
+  `Tools_AdjustToGameSpeed()` is deliberately not applied even though the
+  movement layer applies it, because it reads a local config value.
+
+`u->route[14]` is unchanged. A\* computes the whole path, the unit takes the
+first steps and re-paths when they run out, and each recomputation is optimal in
+its own right — widening the buffer would mean the savegame format for no gain.
+
+One behavioural rule rides along, gated on the same key: a unit that is
+**itself moving** is traffic, not a wall — passable at double the tile's cost, so
+a detour is chosen only when it is genuinely shorter. Without it the search
+commits to a forty-tile detour round somebody who will have moved on in three
+ticks, and it measures worse: `econ.spice/match` 81513 → 78076,
+`result.points %` 100 → 91, `result.wipeouts %` 0 → 8.
+
+The obvious companion to it — when the next tile is briefly occupied, wait a tick
+instead of discarding the route — was built and **rejected on measurement**. It
+costs `econ.spice/match` 81513 → 71786, `result.points %` 100 → 83 and
+`result.wipeouts %` 0 → 16, and buys only `turret.entries/match` 24 → 9. The
+note in `Script_Unit_CalculateRoute()` records it so it is not tried a third
+time.
+
+`Script_Unit_HasRoute()` uses the same search, and the tactical ring loops in
+[unit.c](src/unit.c) route their whole candidate set in **one** search rather
+than one per tile (`Unit_AttackPosition_RouteTicks()`) — a settled tile's cost is
+final, so the answers are identical.
+
+`--pathfinder-self-test` is the guard. It checks admissibility against reference
+distances, that the route is connected and passable, that it costs exactly what
+an independent relaxation says the shortest route costs — for the built obstacle
+and for 48 destinations sampled across the map — that the same question twice
+gives the same bytes, and that the metric matches the engine by driving a unit
+across a tile and counting ticks.
+
+Measured, `--pathfinder=0` against `1`: `econ.spice/match` 58339 → 81513,
+`result.points %` 66 → 100, `result.wipeouts %` 25 → 0, `harv.lost.early` 8 → 0,
+`wave.matches %` 66 → 100, and the suite goes from FAIL (1 regression) to PASS.
+It costs `turret.entries/match` 10 → 24 — **on its gate of 24**, which is the one
+number this change leaves without margin — and `turret.dwell/match` 3752 → 7148.
+`--economy-baseline` is 11262/4982/1729 → 10701/4730/3481. At equal simulation
+work the search costs nothing measurable (`--mp-replay=40000,500` is 7.2 s
+either way); `--war-metrics` takes 16 s → 65 s because the matches now last
+longer and neither army gets wiped out.
+
+## Concrete on sand
+
+`build_slab_on_sand` (default 1) lets a slab be laid on sand, dune and spice as
+well as rock — `Structure_SlabAllowedOn()` in
+[structure.c](src/structure.c). Nothing else moves: `isValidForStructure` still
+refuses a *building* on bare sand, so paving is a purchase and not a decoration,
+and walls are left out of the rule on purpose.
+
+The "road" half needed no code at all. `g_table_landscapeInfo[LST_CONCRETE_SLAB]`
+already carries `movementSpeed` 255 for every movement type against sand's 112
+([landscapeinfo.c:129](src/table/landscapeinfo.c:129)) — the fastest surface in
+the game, with nowhere to use it. In real time that is a Tank crossing concrete
+in 51 ticks against 78 on sand and a Soldier in 51 against 111, so a pathfinder
+that measures time prefers it without being told to.
+
+**A warning about `Unit_GetTileEnterScore()`, because the obvious reading of it
+is wrong.** It inverts speed into a cost with `res ^= 0xFF`, and read on its own
+that says concrete costs 0 and sand 143. That only holds with
+`dune2_enhanced=0`. On the default the rates are first scaled by
+`movingSpeedFactor/256` — 25/256 for a Tank — so the real numbers are 231
+against 245, a difference of six percent rather than of everything. The routing
+metric is in [pathfinder.c](src/pathfinder.c) for that reason; see
+"Route finding".
+
+The skirmish AI is unaffected: `Skirmish_LaySlab()` writes the ground tile
+directly and never asked this rule in the first place.
+
+`--build-rules-self-test` checks both halves against a generated map.
 
 ## Skirmish — the AI test bench
 
@@ -152,15 +399,20 @@ There is no test suite. These run headless and exit:
 ```bash
 cd bin
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-rules-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --pathfinder-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --lobby-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --selection-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish-self-test=200000
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --economy-baseline=80000,3
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --doctrine=B,A --war-metrics=200000,6
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --mp-checksum=20000,5000
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --mp-replay=40000,500
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --mp-modal=40000,4000
 ```
 
-**The last one is the guard on every behavioural change**, and it is the one to
+**`--war-metrics` is the guard on every behavioural change**, and it is the one to
 run before and after touching `doctrine.c`, `skirmish.c` or the AI hooks in
 `unit.c`. Six maps played twice with the doctrines swapped, about forty seconds,
 sixteen named numbers with a regression gate and a goal beside each. It is
@@ -177,6 +429,23 @@ prints, then [harvester.md](harvester.md). It repeats its build orders between
 runs but not its spice totals: the 60 Hz ticker keeps advancing `g_timerGame`
 alongside the loop, so the absolute clock differs run to run
 ([mp.md](mp.md), stage 0).
+
+`--mp-modal=ticks[,step[,seed]]` plays the same match twice and opens the modal
+screens in one of the passes — the world-facing half of the options screen, the
+mentat and the build list, at a fixed cadence, with the event loops left out
+because those are pumped already. Two identical sample sets mean a player may
+read the manual without ending the match for the other one. Add `--sim-purity`
+and the same run also names *which call* and *which chunk*, instead of leaving
+the answer to a sample thousands of ticks later; `--mp-modal-dump=TICK` leaves
+both passes' copy of one sample on disk for `tools/mpdesync_diff.py`. Run it on
+several seeds: the first bug it found showed on one seed in three.
+
+**Guards on match-shared state key on `Match_IsActive()`, not `MpTurn_IsActive()`.**
+The turn loop starts several hundred milliseconds after the match is built, and
+a repaint in that window is enough. `MpTurn_IsActive()` is right only for things
+that are about the turn loop itself — the packet cadence, the opcode budget, the
+buttons that must go dead while it runs. Three of the four bugs `--mp-modal`
+found were this distinction.
 
 `--mp-checksum=ticks[,step[,seed]]` is the determinism harness: it seeds both
 generators from the map seed, takes the clock off the wall and prints a CRC of
@@ -251,6 +520,51 @@ desyncs in stage 6 of mp.md were found, one run each.
 The same dummy-driver invocation without a flag is a useful smoke test that data
 loads — it starts the real game, so kill it (`pkill -9 -f opendune`) rather than
 leaving it running.
+
+## The lobby — a match without a command line
+
+**PLAY SOMEBODY** is the second row of the main menu ([gui/lobby.c](src/gui/lobby.c)).
+It settles a relay address, a game code, which of the two players you are, which
+pair of houses, and starts the same match `--mp-relay` starts — `MpGame_TakeLobbyChoice()`
+in [opendune.c](src/opendune.c) fills in exactly the fields the flags would have.
+
+The design is one sentence: **everything the two players must agree on is folded
+into the room name**, `code.pair.confighash`. The relay puts two clients together
+only if they ask for the same room, so a disagreement about the map, the houses,
+the build or the balance ini cannot start a match — it shows up as *the other
+player never joined*, which is a thing a person can act on. Letting them meet and
+disagree would be a desync a few seconds later, which is not. There is therefore
+no handshake packet: the room name is the handshake, and the relay enforces it
+without knowing that it does.
+
+* The **game code** is the only thing anybody has to exchange. The map seed is
+  `crc32(code) | 1`, so both sides derive the same map from it and no seed is
+  ever sent.
+* The **config hash** is `crc32(revision + g_table_unitInfo + g_table_structureInfo)`.
+  Hashing the tables rather than the ini file is what makes it exact: the balance
+  module works by patching those tables, so a key written out at its default
+  value, a comment or a blank line changes nothing, and a real difference always
+  changes the hash.
+* The **house row** cycles the six *ordered* pairs, and the player row swaps which
+  end of the pair is yours. Both players see the same pair — it is in the room
+  name — and pick opposite seats.
+* The relay defaults to `mp_relay` from `opendune.ini`, then to the project's own
+  relay. Nobody should have to type an address twice.
+
+`--lobby-self-test` is the guard, and it tests the rule rather than the drawing:
+same choices → identical room string, any difference → a different one, the seed
+stable and never zero, and `host` / `host:port` / `host:` / `host:0` all split
+the way `MpNet_Connect()` needs.
+
+Two traps in the menu itself. `mainMenuStrings` is a **seven**-column table now,
+one row per savegame/Hall-of-Fame combination, and every row has to carry the
+lobby entry or it disappears on some profiles. And the menu list is still sized
+by its first `STR_NULL`, which is why the lobby is an entry in that table and not
+an extra item appended after it.
+
+**Not visually verified.** The lobby's logic is tested and the menu draws under
+the dummy video driver without crashing, but no human has seen the window or
+clicked a row.
 
 ## Conventions
 

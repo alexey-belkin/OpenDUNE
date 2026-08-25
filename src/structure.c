@@ -19,6 +19,7 @@
 #include "gui/gui.h"
 #include "gui/widget.h"
 #include "house.h"
+#include "inifile.h"
 #include "map.h"
 #include "match.h"
 #include "opendune.h"
@@ -928,6 +929,66 @@ uint32 Structure_GetStructuresBuilt(House *h)
 }
 
 /**
+ * Whether concrete may be poured onto sand.
+ *
+ * Off is the original game: `notOnConcrete` sends the slab through
+ * `isValidForStructure2`, which is true for rock and nothing else, so a base can
+ * only ever grow over the rock the map happens to have put there.
+ *
+ * On, a slab is also a road.  The landscape table already gives
+ * LST_CONCRETE_SLAB a movement speed of 255 for every movement type against
+ * sand's 112 -- the fastest surface in the game, with nowhere to use it -- so
+ * paving costs credits and buys both a foundation and a road, and the
+ * pathfinder prefers it without being told to.
+ */
+static bool s_slabOnSand = true;
+
+void Structure_BuildRules_Init(void)
+{
+	s_slabOnSand = (IniFile_GetInteger("build_slab_on_sand", 1) != 0);
+}
+
+/** Both settings of the rule, for the self-test that has to see it refuse. */
+void Structure_BuildRules_SetSlabOnSand(bool allowed)
+{
+	s_slabOnSand = allowed;
+}
+
+/**
+ * Whether this structure type is concrete rather than a building.
+ *
+ * Walls are deliberately not in it: a wall on sand is a different decision, it
+ * has no foundation to offer and it would let a player fence off open desert.
+ */
+static bool Structure_IsSlab(StructureType type)
+{
+	return (type == STRUCTURE_SLAB_1x1 || type == STRUCTURE_SLAB_2x2);
+}
+
+/**
+ * The ground a slab may be poured on, over and above the rock it always could.
+ *
+ * Spice is included and paving over it destroys it, which is the player's
+ * business: it costs them the field.  Rubble is not -- LST_DESTROYED_WALL is
+ * already valid for building.  Mountain is not, because nothing crosses it.
+ */
+static bool Structure_SlabAllowedOn(uint16 lst)
+{
+	switch (lst) {
+		case LST_NORMAL_SAND:
+		case LST_PARTIAL_ROCK:
+		case LST_ENTIRELY_DUNE:
+		case LST_PARTIAL_DUNE:
+		case LST_SPICE:
+		case LST_THICK_SPICE:
+			return true;
+
+		default:
+			return false;
+	}
+}
+
+/**
  * Checks if the given position is a valid location for the given structure type.
  *
  * @param position The (packed) tile to check.
@@ -967,7 +1028,11 @@ int16 Structure_IsValidBuildLocation(uint16 position, StructureType type, uint8 
 			}
 
 			if (si->o.flags.notOnConcrete) {
-				if (!g_table_landscapeInfo[lst].isValidForStructure2 && g_validateStrictIfZero == 0) {
+				bool ok = g_table_landscapeInfo[lst].isValidForStructure2;
+
+				if (!ok && s_slabOnSand && Structure_IsSlab(type)) ok = Structure_SlabAllowedOn(lst);
+
+				if (!ok && g_validateStrictIfZero == 0) {
 					isValid = false;
 					break;
 				}

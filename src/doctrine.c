@@ -453,10 +453,16 @@ static uint8 Doctrine_RoleOf(uint16 type)
 		case UNIT_QUAD:
 			return DOCTRINE_ROLE_RAID;
 
-		/* Too slow to march with the rest -- Infantry moves at 2.2 against a
-		 * Tank's 10.9, and a Devastator at 4.4.  Synchronising the whole spread
-		 * means the fast half idles for most of the march, so these hold the base
-		 * instead, where speed does not matter and their damage still does. */
+		/* These were put here because they could not keep up: Infantry moved at
+		 * 2.2 against a Tank's 10.9 and a Devastator's 4.4, so synchronising the
+		 * whole spread meant the fast half idling for most of the march.
+		 *
+		 * The class-balance module now derives light infantry speed from rocket
+		 * infantry (Unit_CombatBalance_LightInfantrySpeed()), which at the
+		 * default puts Infantry at 5.2 and Soldier at 7.9 -- past the Devastator
+		 * and up against the Siege Tank's 8.8.  Rocket infantry is still the slow
+		 * half at 4.4 and 6.6.  The assignment below has not been re-measured
+		 * against those numbers; it is inherited, not derived. */
 		case UNIT_INFANTRY:
 		case UNIT_TROOPERS:
 		case UNIT_SOLDIER:

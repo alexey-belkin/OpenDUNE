@@ -118,33 +118,118 @@ an opendune.ini file in the location described above (on macOS:
 
 Set class_balance_enabled=0 to restore original Dune II damage and original
 Barracks/WOR availability. With the module enabled,
-class_balance_shared_infantry=1 lets every House build Soldier, Infantry,
-Trooper and Troopers in Barracks. Set it to 0 to retain original production
-while keeping the damage matrix.
+class_balance_infantry_all_houses=1 opens both infantry factories to every
+House, each keeping its own roster: the Barracks trains Soldier and Infantry,
+WOR trains Trooper and Troopers. Rocket infantry therefore costs a second
+building, which every House can now put up. Set the key to 0 to retain original
+production while keeping the damage matrix. The former name of this key,
+class_balance_shared_infantry, is still accepted.
 
 Damage values are integer percentages: 100 means x1.00, 250 means x2.50 and 30
-means x0.30. The four classes are P (Soldier, Infantry), RP (Trooper, Troopers),
-LT (Trike, Raider Trike, Quad), and TT (Tank, Siege Tank, Devastator). Launcher,
-'Thopter, Sonic Tank and all other unlisted units are neutral (x1.00).
+means x0.30. The five classes are P (Soldier, Infantry), RP (Trooper, Troopers),
+LT (Trike, Raider Trike, Quad), TT (Tank, Siege Tank, Devastator) and AR
+(Launcher, Sonic Tank). AR is the artillery: the only two units that outrange a
+Rocket Turret, bought at the price of their hitpoints, and light vehicles hit
+them at x2.50 by default. 'Thopter, Deviator, Saboteur, Harvester and all other
+unlisted units are neutral (x1.00) on both sides of the matrix.
 
 class_range_p_bonus=1 adds one map cell of firing range to Soldier and Infantry.
 Set it to 0 to retain their original range while keeping the damage matrix.
 
+class_speed_p_over_rp=120 sets light infantry walking speed as a percentage of
+the matching rocket infantry: Soldier is derived from Trooper and Infantry from
+Troopers. At 120 light infantry keeps pace with a Siege Tank and outruns a
+Devastator. Set it to 0 to retain the original walking speeds.
+
 The default matrix keys, grouped by attacker, are:
 - P:  class_damage_p_vs_p=100, class_damage_p_vs_rp=250,
-      class_damage_p_vs_lt=75, class_damage_p_vs_tt=60
+      class_damage_p_vs_lt=75, class_damage_p_vs_tt=60,
+      class_damage_p_vs_ar=100
 - RP: class_damage_rp_vs_p=30, class_damage_rp_vs_rp=100,
-      class_damage_rp_vs_lt=125, class_damage_rp_vs_tt=130
+      class_damage_rp_vs_lt=125, class_damage_rp_vs_tt=130,
+      class_damage_rp_vs_ar=100
 - LT: class_damage_lt_vs_p=125, class_damage_lt_vs_rp=135,
-      class_damage_lt_vs_lt=100, class_damage_lt_vs_tt=70
+      class_damage_lt_vs_lt=100, class_damage_lt_vs_tt=70,
+      class_damage_lt_vs_ar=250
 - TT: class_damage_tt_vs_p=85, class_damage_tt_vs_rp=90,
-      class_damage_tt_vs_lt=130, class_damage_tt_vs_tt=100
+      class_damage_tt_vs_lt=130, class_damage_tt_vs_tt=100,
+      class_damage_tt_vs_ar=100
+- AR: class_damage_ar_vs_p=100, class_damage_ar_vs_rp=100,
+      class_damage_ar_vs_lt=100, class_damage_ar_vs_tt=100,
+      class_damage_ar_vs_ar=100
+
+Individual units are tuned with unit_damage_NAME and unit_rate_NAME, both
+percentages of the table value. NAME is the unit's name lowercased with every
+run of non-letters replaced by one underscore: launcher, sonic_tank, siege_tank,
+raider_trike, thopter. Damage scales the shot before the House bonus and the
+class matrix, so it applies to structures as well as units; rate scales shots
+per minute rather than the delay between them, and takes the short gap inside a
+double shot into account. The defaults are unit_rate_launcher=150,
+unit_damage_sonic_tank=150, unit_damage_siege_tank=115,
+unit_damage_devastator=115 and unit_rate_raider_trike=120; every other unit
+defaults to 100 on both keys.
+
+Rate is usually the better lever of the two. A shot deals a fixed amount and the
+excess is lost, so extra damage buys nothing at all until it crosses the number
+of shots a target takes to kill: raising the Launcher from 75 to 113 changed
+nothing against Soldier, Trooper, Infantry or Quad. The same increase spent on
+its rate of fire pays against every target.
 
 House identity bonus keys are class_bonus_atreides_p=120,
 class_bonus_harkonnen_rp=110 and class_bonus_ordos_trike=110. The Ordos bonus
 applies to Trike and Raider Trike, not Quad. House bonuses multiply the base
 shot before the class matrix and also affect damage to structures. Deviator
 still deals zero HP damage and uses its normal area-deviation effect.
+
+Turning on the move
+-------------------
+Set move_rolling_turn=0 to restore the original behaviour, where every change of
+direction costs a unit its turning time. With it on -- the default -- a turn of
+45 degrees that arises *while the unit is moving* is applied at once and the unit
+drives on without stopping. Turns from a standstill and turns of 90 degrees or
+more still cost what they always did, so a tank has not stopped being a tank.
+
+The case it addresses is a diagonal route, where the direction alternates
+between two neighbouring octants and the unit therefore stopped every other
+tile. Measured over twelve AI matches it is worth about a seventh more spice
+refined, because harvesters spend their lives driving.
+
+Route finding
+-------------
+Set pathfinder_astar=0 to restore Westwood's original router. It walks straight
+at the destination and, when the next tile is blocked, feels its way round the
+obstacle clockwise and anti-clockwise for up to a hundred tiles and keeps
+whichever went better. It can only see one tile ahead, which is why units drive
+into dead ends between buildings and then grope back out along the wall.
+
+With it on -- the default -- the whole route is worked out at once over the whole
+map, and it is the shortest route rather than merely a route. What "shortest"
+means here is time, not tiles: the cost of entering a tile is how long the unit
+will really take to cross it, so concrete is preferred where concrete is quicker
+and a diagonal is charged the extra ground it covers. A unit that is itself
+moving is treated as traffic to wait out rather than as a wall, and a unit whose
+next tile is briefly occupied waits a moment instead of throwing its route away,
+so a group under one order travels as a group.
+
+Measured over twelve AI matches it is worth about forty percent more spice
+refined, and it removes the early harvester losses that came from harvesters
+walking into places they could not get out of.
+
+Concrete on sand
+----------------
+Set build_slab_on_sand=0 to restore the original rule, where a slab may only be
+laid on rock and a base can grow no further than the rock the map gave it. With
+it on -- the default -- a slab is also a road: the landscape table already gives
+concrete a movement speed of 255 for every kind of unit against sand's 112, so
+paving costs credits and buys both a foundation to build on and the fastest
+surface in the game to drive on.
+
+Buildings themselves are unchanged: sand is still not somewhere a structure may
+stand, which is what makes paving a purchase rather than a decoration. Walls are
+deliberately left out of the rule -- a wall offers no foundation, and letting one
+go up on open sand would fence off the desert. The "must touch something of your
+own" rule still applies to every slab, so a road grows outwards from the base one
+tile at a time.
 
 Starport
 --------
@@ -176,6 +261,32 @@ type the freighter never carried stays at zero.
 A generated skirmish map has no scenario to stock the Starport from, so a match
 between people stocks it as described above. An AI-only skirmish deliberately
 leaves it empty.
+
+
+Playing somebody over the internet
+----------------------------------
+"Play somebody" in the main menu sets up a one-against-one match. Both players
+need the same build of the game, and both must reach the same relay: a small
+server that passes messages between the two of you, because the game does not
+connect the two computers directly. mp_relay in opendune.ini sets the address
+the lobby offers by default; it accepts "host" or "host:port" and the port is
+31337 unless you say otherwise. Anyone can run a relay -- it ships beside the
+game -- and one relay is enough for both players:
+
+    ./relay -listen 0.0.0.0:31337
+
+In the lobby, agree on one thing between you: the game code. Type the same code
+on both machines. The map is made from it, so you do not have to agree on a map
+as well. Then set the house pair to the same value on both machines, and set
+"Player" to 1 on one machine and 2 on the other. Press Begin on both.
+
+If anything differs -- the code, the house pair, the version of the game, or the
+balance settings in opendune.ini -- the two of you are simply put in different
+rooms and neither finds the other. This is deliberate. Two players who disagree
+about the rules cannot see the same battle, and stopping before the match is
+better than the game falling apart in the middle of it.
+
+The waiting side gives up after thirty seconds and returns to the menu.
 
 
 Ingame

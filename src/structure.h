@@ -146,6 +146,8 @@ extern void Structure_CalculateHitpointsMax(struct House *h);
 extern void Structure_SetState(Structure *s, int16 animation);
 extern Structure *Structure_Get_ByPackedTile(uint16 packed);
 extern uint32 Structure_GetStructuresBuilt(struct House *h);
+extern void Structure_BuildRules_Init(void);
+extern void Structure_BuildRules_SetSlabOnSand(bool allowed);
 extern int16 Structure_IsValidBuildLocation(uint16 position, StructureType type, uint8 houseID);
 extern bool Structure_Save(FILE *fp);
 extern bool Structure_Load(FILE *fp, uint32 length);

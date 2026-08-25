@@ -17,6 +17,7 @@
 
 #include "font.h"
 #include "mentat.h"
+#include "lobby.h"
 #include "widget.h"
 #include "../animation.h"
 #include "../audio/driver.h"
@@ -32,6 +33,7 @@
 #include "../input/mouse.h"
 #include "../load.h"
 #include "../map.h"
+#include "../match.h"
 #include "../mpturn.h"
 #include "../opendune.h"
 #include "../pool/pool.h"
@@ -2122,8 +2124,13 @@ void GUI_DrawInterfaceAndRadar(Screen screenID)
 		/* Tiles yes, animations no.  This runs because a full-screen repaint
 		 * scribbled over the map -- a reason the other client does not have, and
 		 * restarting every structure's animation re-slots them all and shifts
-		 * the random stream underneath both. */
-		if (MpTurn_IsActive()) {
+		 * the random stream underneath both.
+		 *
+		 * Match_IsActive() rather than MpTurn_IsActive(): the world is shared
+		 * from the moment the match is built, and the turn loop only starts
+		 * several hundred milliseconds of setup later.  A skirmish is held to
+		 * the same rule, which is what lets --mp-modal test this at all. */
+		if (Match_IsActive()) {
 			Structure_RedrawMap(s);
 		} else {
 			Structure_UpdateMap(s);
@@ -2971,6 +2978,8 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 	extern char g_savegameDesc[5][51];
 	static char healthBarsLabel[] = "HEALTH BARS";
 	static char debugLinesLabel[] = "DEBUG LINES";
+	static char lobbyTitle[] = "PLAY SOMEBODY";
+	static char lobbyBegin[] = "BEGIN";
 
 	switch (stringID) {
 		case -5: case -4: case -3: case -2: case -1: {
@@ -3012,6 +3021,21 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 
 		case -18:
 			return debugLinesLabel;
+
+		/* The lobby.  Its rows say what the player has chosen so far, so they
+		 * are rebuilt as things change rather than looked up in a table; see
+		 * gui/lobby.c. */
+		case -19:
+			return lobbyTitle;
+
+		case -20: case -21: case -22: case -23: case -24:
+			return GUI_Lobby_GetLabel(stringID);
+
+		case -25:
+			return lobbyBegin;
+
+		case -26:
+			return GUI_Lobby_GetEntryTitle();
 
 		default: break;
 	}
@@ -4638,8 +4662,15 @@ void GUI_DrawScreen(Screen screenID)
 	/* Craters and animations write into g_map, which is saved state, so under
 	 * lockstep they are simulation and belong on the game clock -- the turn loop
 	 * steps them there.  Left here they would run at whatever rate each client
-	 * happens to draw at, which is a desync by construction. */
-	if (!MpTurn_IsActive()) {
+	 * happens to draw at, which is a desync by construction.
+	 *
+	 * The test is "has somebody claimed the clock", not "is the turn loop
+	 * running": the claim is taken when the match is built and the turn loop
+	 * starts several hundred milliseconds later, and any repaint in between --
+	 * one screen fade is enough -- would otherwise tick the simulation on one
+	 * client only.  It is also what lets --mp-modal open these screens without
+	 * a socket.  A skirmish claims nothing, so there this still runs. */
+	if (!Timer_AnimClockIsClaimed()) {
 		Explosion_Tick();
 		Animation_Tick();
 		Unit_Sort();

@@ -370,21 +370,16 @@ bool GUI_Widget_Mentat_Click(Widget *w)
 
 	Sound_Output_Feedback(0xFFFE);
 
-	Driver_Voice_Play(NULL, 0xFF);
-
 	Music_Play(g_table_houseInfo[g_playerHouseID].musicBriefing);
 
-	Sprites_UnloadTiles();
-
-	Timer_SetTimer(TIMER_GAME, false);
+	/* Stops the voice, drops the tiles, stops the clock -- see widget_click.c. */
+	GUI_ModalScreen_Enter();
 
 	GUI_Mentat_ShowHelpList(false);
 
-	Timer_SetTimer(TIMER_GAME, true);
-
 	Driver_Sound_Play(1, 0xFF);
 
-	Sprites_LoadTiles();
+	GUI_ModalScreen_Leave();
 
 	g_textDisplayNeedsUpdate = true;
 
