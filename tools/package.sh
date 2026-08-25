@@ -84,7 +84,7 @@ if command -v go >/dev/null 2>&1; then
 		arm64)  RELAY_GOARCH=arm64 ;;
 		*)      RELAY_GOARCH="" ;;
 	esac
-	(cd "$ROOT/tools/relay" && GOOS=darwin ${RELAY_GOARCH:+GOARCH=$RELAY_GOARCH} go build -o "$ROOT/bin/relay" .) && RELAY_BIN="$ROOT/bin/relay"
+	(cd "$ROOT/tools/relay" && env GOOS=darwin ${RELAY_GOARCH:+GOARCH=$RELAY_GOARCH} go build -o "$ROOT/bin/relay" .) && RELAY_BIN="$ROOT/bin/relay"
 	[ -n "$RELAY_BIN" ] || echo "package: relay build failed, packaging without it"
 else
 	echo "package: go not found, packaging without the relay"

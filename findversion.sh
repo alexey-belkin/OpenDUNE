@@ -76,8 +76,10 @@ if [ -d "$ROOT_DIR/.svn" ]; then
 	else
 		REV="r$REV_NR"
 	fi
-elif [ -d "$ROOT_DIR/.git" ]; then
-	# We are a git checkout
+elif [ -e "$ROOT_DIR/.git" ]; then
+	# We are a git checkout.  -e rather than -d: in a git worktree .git is a
+	# file pointing at the real repository, and testing for a directory made
+	# the version silently degrade to nothing there.
 	# Refresh the index to make sure file stat info is in sync, then look for modifications
 	git update-index --refresh >/dev/null
 	if [ -n "`git diff-index HEAD`" ]; then
