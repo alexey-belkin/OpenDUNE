@@ -20,9 +20,11 @@
 #   tools/package.sh --no-verify     skip the self-tests (do not, normally)
 #   tools/package.sh --name=NAME     override the archive name
 #
-# The archive is arm64: it runs on Apple Silicon, not on an Intel Mac.  Nothing
-# here can change that -- Homebrew's SDL is arm64-only, so a universal binary
-# would need a universal SDL first.
+# The archive is named after the architecture it actually contains, and
+# INSTALL.txt states that and the minimum macOS.  Which architecture that is
+# comes from configure, not from here: Homebrew has no Intel bottles any more,
+# so an x86_64 package needs an SDL2 built from source for x86_64 and
+# --with-sdl2 pointed at its sdl2-config.  See "Shipping a build" in CLAUDE.md.
 #
 set -u
 
@@ -74,7 +76,15 @@ esac
 RELAY_BIN=""
 if command -v go >/dev/null 2>&1; then
 	step "Building the relay"
-	(cd "$ROOT/tools/relay" && go build -o "$ROOT/bin/relay" .) && RELAY_BIN="$ROOT/bin/relay"
+	# GOARCH from the game, not from the host: an Intel package with an arm64
+	# relay in it hands the other machine one binary it cannot run.
+	RELAY_GOARCH=$(lipo -archs "$ROOT/bin/opendune" 2>/dev/null | tr ' ' '\n' | head -1)
+	case "$RELAY_GOARCH" in
+		x86_64) RELAY_GOARCH=amd64 ;;
+		arm64)  RELAY_GOARCH=arm64 ;;
+		*)      RELAY_GOARCH="" ;;
+	esac
+	(cd "$ROOT/tools/relay" && GOOS=darwin ${RELAY_GOARCH:+GOARCH=$RELAY_GOARCH} go build -o "$ROOT/bin/relay" .) && RELAY_BIN="$ROOT/bin/relay"
 	[ -n "$RELAY_BIN" ] || echo "package: relay build failed, packaging without it"
 else
 	echo "package: go not found, packaging without the relay"
@@ -120,6 +130,15 @@ else
 	echo "    nothing to vendor (SDL is already relative or statically linked)"
 fi
 
+# What the thing actually is, asked of the binary rather than assumed.  The
+# script used to say "arm64" in the archive name and in INSTALL.txt no matter
+# what it had built, which is a lie in the one place a person will read it.
+ARCH=$(lipo -archs "$MACOS/opendune" | tr ' ' '-')
+MINOS=$(otool -l "$MACOS/opendune" |
+        awk '/LC_BUILD_VERSION/ {b=1} /LC_VERSION_MIN_MACOSX/ {v=1}
+             b && /minos/ {print $2; exit} v && /version/ {print $2; exit}')
+[ -n "$MINOS" ] || MINOS="unknown"
+
 # Anything else outside /usr/lib and /System is a hole this script has not
 # plugged, and the other machine will find it instead of us.
 LEFT=$(otool -L "$MACOS/opendune" | tail -n +2 | awk '{print $1}' |
@@ -141,7 +160,8 @@ OpenDUNE $REV — сборка от $(date '+%Y-%m-%d')
 -------
 Форк OpenDUNE с сетевой игрой 1-на-1. Внутри всё, что нужно для запуска:
 движок, SDL и $( [ "$DATA" = 1 ] && echo "игровые данные Dune II" || echo "НЕ входят игровые данные Dune II" ).
-Собрано для Apple Silicon (arm64). На процессоре Intel не запустится.
+Архитектура: $ARCH. Минимальная версия macOS: $MINOS.
+$( [ "$ARCH" = "arm64" ] && echo "Это сборка для Apple Silicon; на процессоре Intel она не запустится." || echo "Это сборка для Intel; на Apple Silicon она пойдёт через Rosetta." )
 
 Как запустить
 -------------
@@ -200,7 +220,7 @@ EOF
 
 # ---------------------------------------------------------------- zip -------
 step "Archive"
-[ -n "$NAME" ] || NAME="opendune-$SHORTREV-$(date '+%Y%m%d')-macos-arm64"
+[ -n "$NAME" ] || NAME="opendune-$SHORTREV-$(date '+%Y%m%d')-macos-$ARCH"
 BUNDLES="$ROOT/bundles"
 mkdir -p "$BUNDLES"
 ZIP="$BUNDLES/$NAME.zip"
