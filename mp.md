@@ -1589,24 +1589,87 @@ runs the match. Nothing downstream of the lobby knows the lobby exists.
 Both controllers are human by construction — a lobby match is 1-v-1, and a house
 left on the AI is an opponent neither player agreed to.
 
+### What shipped broken, and what the test should have said
+
+The first version of this could never have worked, and the reason is worth
+keeping: `Lobby_ConfigHash()` took a CRC over the raw bytes of the two tables.
+`ObjectInfo` carries `const char *name` and `const char *wsa`, so those bytes
+include two **addresses**, and a position-independent executable is loaded
+somewhere different every launch. Two copies of the same build, on the same
+machine, one second apart:
+
+```
+    client 1:  room dune42.0.227937b8
+    client 2:  room dune42.0.b1efa065
+```
+
+Same code, same houses, same binary, different rooms. Each waited out its
+timeout for a player who was in the other one, reported "the other player never
+joined" to a console nobody was reading, and — see below — went round again.
+
+`Lobby_HashObject()` now folds the three spans around the two pointers.
+Everything else in a static table is the same bytes in every run of the same
+binary, padding included, so nothing else had to be enumerated.
+
+The self-test had a line about this and the line was the bug:
+
+> The build digest has to be stable within one process, or two runs of the same
+> binary would fail to meet each other.
+
+Stable *within one process* is exactly what a pointer is. The claim that
+actually matters is that the digest does not depend on where anything lives, and
+that can be tested inside one process by moving something: repoint a table
+entry's `name` at a copy of the same string and demand the digest not budge.
+Restoring the raw hash now fails the test on that line.
+
+The general lesson, since this fork will hash more things: **a digest that has to
+agree between two processes cannot be taken over memory that contains addresses,
+and a test that compares one process with itself cannot see that it does.**
+
+### Two more ways it did not fail gracefully
+
+* **The wait was a frozen window.** Joining was a `msleep(5)` loop: no SDL events
+  pumped, no frame drawn. macOS put a beachball over a black window for thirty
+  seconds and every report of it was "the game hangs". It waits on `sleepIdle()`
+  now — which is what runs `Video_Tick` and the input pump — with a notice on
+  screen, ESC to give up, and the reason held for six seconds when it ends badly.
+* **A failed match reopened the lobby, for ever.** `GameLoop_GameIntroAnimationMenu()`
+  switches on the *previous* choice, and the lobby handed off to `GM_SKIRMISH`
+  with `stringID` still `STR_LOBBY_MENU`. So a failure came back to the menu,
+  re-entered the lobby immediately — over the screen `GM_SKIRMISH` had already
+  cleared to black — waited thirty seconds, failed, and repeated. The handoff
+  sets `stringID = STR_NULL` and `drawMenu = true` now, so a failure lands in the
+  menu with the lobby's rows still filled in.
+
 ### The guard
 
 `--lobby-self-test` tests the rule, not the drawing, because the rule is what
 protects people: same choices produce an identical room string, any difference at
-all produces a different one, the seed is stable and never zero, the digest is
-stable within a process, and `host`, `host:port`, `host:` and `host:0` all split
-into what `MpNet_Connect()` wants. If that ever stops holding, the lobby stops
-protecting anybody quietly, which is the failure mode a test is for.
+all produces a different one, the seed is stable and never zero, the digest does
+not move when a pointer does and always moves for a real balance change, and
+`host`, `host:port`, `host:` and `host:0` all split into what `MpNet_Connect()`
+wants.
+
+`--lobby-play=relay,code,pair,slot` covers the half a self-test cannot reach: it
+enters the menu as though PLAY SOMEBODY had been clicked and takes the BEGIN
+branch with those values, so two headless processes play the lobby's own road
+from the menu to a running match. It is how the pointer bug was found, and it
+fires once — a test that returns to a menu nobody is sitting at spins for ever.
+
+```bash
+tools/relay/relay -listen 127.0.0.1:31337 &
+./opendune --lobby-play=127.0.0.1:31337,dune42,0,1 &
+./opendune --lobby-play=127.0.0.1:31337,dune42,0,2 &
+```
 
 ### What is still missing
 
 * **The window has not been seen by a person.** Its logic is tested and the
   widened menu draws under the dummy video driver without crashing; nobody has
   looked at the lobby or clicked a row.
-* **Waiting is a frozen window.** `MpGame_Begin()` waits up to `--mp-wait`
-  (30 s) with the menu still on screen and reports to the console, not to the
-  player. A person who mistypes the code sees half a minute of nothing and then
-  the menu again.
+* **The waiting screen is a line of text.** It says what it is waiting for and
+  takes ESC, which is enough not to look broken, but it cannot say whether the
+  relay has anybody else in the room or how long is left.
 * **The lobby cannot see the room.** The relay knows who is in it; the lobby
   never asks. It cannot show the other player's name, whether anybody is
   waiting, or which slot is taken — so two players who both pick "player 1"

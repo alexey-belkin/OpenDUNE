@@ -28,6 +28,7 @@ typedef struct LobbyChoice {
 } LobbyChoice;
 
 extern bool GUI_Lobby_Show(LobbyChoice *out);
+extern bool GUI_Lobby_Choose(const char *relay, const char *code, uint8 pair, uint8 slot, LobbyChoice *out);
 extern int GUI_Lobby_RunSelfTest(void);
 
 /* Resolved by GUI_String_Get_ByIndex() for the window's negative stringIDs. */

@@ -15,6 +15,7 @@
  * handshake, and the relay enforces it without knowing that it does.
  */
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,33 @@ static char s_label[5][64];
 static char s_entryTitle[64] = "";
 
 /**
+ * Fold one table entry's common half into the digest, without its pointers.
+ *
+ * ObjectInfo carries `name` and `wsa`, which are addresses in *this* process
+ * and have nothing to do with the balance.  Hashing them raw made the digest
+ * different on every launch -- the loader puts the image somewhere else each
+ * time -- so two copies of one build asked the relay for different rooms and
+ * never met each other.  The bug could not be seen from inside one process,
+ * which is exactly what the first version of the self-test compared.
+ *
+ * Everything else in a static table is the same bytes in every run of the same
+ * binary, padding included, so the three spans around the pointers can be taken
+ * as they lie.
+ */
+static uint32 Lobby_HashObject(uint32 crc, const ObjectInfo *o)
+{
+	const uint8 *base = (const uint8 *)o;
+
+	crc = MpSync_Crc32(crc, base, (uint32)offsetof(ObjectInfo, name));
+	crc = MpSync_Crc32(crc, base + offsetof(ObjectInfo, stringID_full),
+	                   (uint32)(offsetof(ObjectInfo, wsa) - offsetof(ObjectInfo, stringID_full)));
+	crc = MpSync_Crc32(crc, base + offsetof(ObjectInfo, flags),
+	                   (uint32)(sizeof(ObjectInfo) - offsetof(ObjectInfo, flags)));
+
+	return crc;
+}
+
+/**
  * A digest of everything about this build that changes what the simulation
  * does.
  *
@@ -81,10 +109,25 @@ static char s_entryTitle[64] = "";
 static uint32 Lobby_ConfigHash(void)
 {
 	uint32 crc;
+	uint16 i;
 
 	crc = MpSync_Crc32(0, g_opendune_revision, (uint32)strlen(g_opendune_revision));
-	crc = MpSync_Crc32(crc, g_table_unitInfo, (uint32)(sizeof(g_table_unitInfo[0]) * UNIT_MAX));
-	crc = MpSync_Crc32(crc, g_table_structureInfo, (uint32)(sizeof(g_table_structureInfo[0]) * STRUCTURE_MAX));
+
+	for (i = 0; i < UNIT_MAX; i++) {
+		const uint8 *entry = (const uint8 *)&g_table_unitInfo[i];
+
+		crc = Lobby_HashObject(crc, &g_table_unitInfo[i].o);
+		crc = MpSync_Crc32(crc, entry + offsetof(UnitInfo, indexStart),
+		                   (uint32)(sizeof(UnitInfo) - offsetof(UnitInfo, indexStart)));
+	}
+
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		const uint8 *entry = (const uint8 *)&g_table_structureInfo[i];
+
+		crc = Lobby_HashObject(crc, &g_table_structureInfo[i].o);
+		crc = MpSync_Crc32(crc, entry + offsetof(StructureInfo, enterFilter),
+		                   (uint32)(sizeof(StructureInfo) - offsetof(StructureInfo, enterFilter)));
+	}
 
 	return crc;
 }
@@ -262,9 +305,59 @@ int GUI_Lobby_RunSelfTest(void)
 	if (Lobby_Seed("dune42") == Lobby_Seed("dune43")) return 0;
 	if (Lobby_Seed("") == 0) return 0;
 
-	/* The build digest has to be stable within one process, or two runs of the
-	 * same binary would fail to meet each other. */
+	/* The build digest has to be stable within one process... */
 	if (Lobby_ConfigHash() != Lobby_ConfigHash()) return 0;
+
+	/* ...and that is nowhere near enough, which is how the first version of
+	 * this shipped broken.  The digest hashed the tables raw, pointers and all,
+	 * so it was stable here and different on every launch -- two copies of one
+	 * build asked for different rooms and each waited for somebody who was in
+	 * the other one.  What has to hold is that the digest does not depend on
+	 * where anything happens to live, so move a pointer and demand it does not
+	 * budge. */
+	{
+		const char *savedName = g_table_unitInfo[UNIT_TANK].o.name;
+		const char *savedWsa  = g_table_unitInfo[UNIT_TANK].o.wsa;
+		char nameCopy[64];
+		char wsaCopy[64];
+		uint32 before = Lobby_ConfigHash();
+		uint32 after;
+
+		snprintf(nameCopy, sizeof(nameCopy), "%s", (savedName != NULL) ? savedName : "");
+		snprintf(wsaCopy, sizeof(wsaCopy), "%s", (savedWsa != NULL) ? savedWsa : "");
+
+		g_table_unitInfo[UNIT_TANK].o.name = nameCopy;
+		if (savedWsa != NULL) g_table_unitInfo[UNIT_TANK].o.wsa = wsaCopy;
+
+		after = Lobby_ConfigHash();
+
+		g_table_unitInfo[UNIT_TANK].o.name = savedName;
+		g_table_unitInfo[UNIT_TANK].o.wsa  = savedWsa;
+
+		if (after != before) return 0;
+	}
+
+	/* The other half of the same claim: a real balance difference must always
+	 * change it, or the digest protects nobody. */
+	{
+		uint16 savedDamage = g_table_unitInfo[UNIT_TANK].damage;
+		uint16 savedPower  = (uint16)g_table_structureInfo[STRUCTURE_WINDTRAP].powerUsage;
+		uint32 before = Lobby_ConfigHash();
+		bool ok;
+
+		g_table_unitInfo[UNIT_TANK].damage = (uint16)(savedDamage + 1);
+		ok = (Lobby_ConfigHash() != before);
+		g_table_unitInfo[UNIT_TANK].damage = savedDamage;
+
+		if (ok) {
+			g_table_structureInfo[STRUCTURE_WINDTRAP].powerUsage = (int16)(savedPower + 1);
+			ok = (Lobby_ConfigHash() != before);
+			g_table_structureInfo[STRUCTURE_WINDTRAP].powerUsage = (int16)savedPower;
+		}
+
+		if (!ok) return 0;
+		if (Lobby_ConfigHash() != before) return 0;
+	}
 
 	/* host, host:port, and the nonsense in between. */
 	Lobby_SplitRelay("example.net", host, sizeof(host), &port);
@@ -280,6 +373,31 @@ int GUI_Lobby_RunSelfTest(void)
 	if (port != LOBBY_PORT_DEFAULT) return 0;
 
 	return 1;
+}
+
+/**
+ * Turn a set of choices into a match, without a screen.
+ *
+ * The BEGIN row calls this and so does --lobby-play, which is the point: the
+ * flag has to exercise the same arithmetic a person's click does, or it guards
+ * nothing.
+ *
+ * @return False when the choices are not enough to start a match.
+ */
+bool GUI_Lobby_Choose(const char *relay, const char *code, uint8 pair, uint8 slot, LobbyChoice *out)
+{
+	if (relay == NULL || code == NULL || out == NULL) return false;
+	if (relay[0] == '\0' || code[0] == '\0') return false;
+	if (pair >= 6 || slot >= 2) return false;
+
+	Lobby_SplitRelay(relay, out->relayHost, sizeof(out->relayHost), &out->relayPort);
+	Lobby_BuildRoom(out->room, sizeof(out->room), code, pair);
+	out->slot     = slot;
+	out->house[0] = s_pairs[pair][0];
+	out->house[1] = s_pairs[pair][1];
+	out->seed     = Lobby_Seed(code);
+
+	return true;
 }
 
 /**
@@ -349,14 +467,7 @@ bool GUI_Lobby_Show(LobbyChoice *out)
 				break;
 
 			case 5: /* BEGIN */
-				if (s_code[0] == '\0' || s_relay[0] == '\0') break;
-
-				Lobby_SplitRelay(s_relay, out->relayHost, sizeof(out->relayHost), &out->relayPort);
-				Lobby_BuildRoom(out->room, sizeof(out->room), s_code, s_pair);
-				out->slot     = s_slot;
-				out->house[0] = s_pairs[s_pair][0];
-				out->house[1] = s_pairs[s_pair][1];
-				out->seed     = Lobby_Seed(s_code);
+				if (!GUI_Lobby_Choose(s_relay, s_code, s_pair, s_slot, out)) break;
 
 				loop = false;
 				ret = true;

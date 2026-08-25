@@ -112,6 +112,17 @@ static uint8 s_enableLog = 0; /*!< 0 = off, 1 = record game, 2 = playback game (
 static bool s_selectionSelfTest = false;
 static int s_selectionSelfTestResult = -1;
 static bool s_lobbySelfTest = false;
+
+/* --lobby-play: take the lobby's road into a match without a person clicking
+ * through it.  The room, the seed and the houses are computed by the lobby's
+ * own code, and the handoff to GM_SKIRMISH is the same one BEGIN takes, which
+ * is the half that no self-test could reach. */
+static bool s_lobbyPlay = false;
+static char s_lobbyPlayRelay[128] = "";
+static char s_lobbyPlayCode[32] = "";
+static uint8 s_lobbyPlayPair = 0;
+static uint8 s_lobbyPlaySlot = 0;
+static bool s_lobbyPlayEntered = false;
 static int s_lobbySelfTestResult = -1;
 static bool s_moveRulesSelfTest = false;
 static int s_moveRulesSelfTestResult = -1;
@@ -862,6 +873,17 @@ static void GameLoop_GameIntroAnimationMenu(void)
 	 * -- so it is not cleared out from under it. */
 	s_mpRelayHost[0] = '\0';
 
+	/* Nothing to draw for somebody who is leaving. */
+	if (!g_running) return;
+
+	/* Arrive as though PLAY SOMEBODY had just been chosen, so the flag exercises
+	 * the handoff and not a shortcut past it.  Once only: a second pass would
+	 * be the retry loop this flag was written to catch. */
+	if (s_lobbyPlay && !s_lobbyPlayEntered) {
+		stringID = STR_LOBBY_MENU;
+		s_lobbyPlayEntered = true;
+	}
+
 	if (index == 0xFFFF) {
 		hasSave = File_Exists_Personal("_save000.dat");
 		hasFame = File_Exists_Personal("SAVEFAME.DAT");
@@ -923,10 +945,25 @@ static void GameLoop_GameIntroAnimationMenu(void)
 
 		case STR_LOBBY_MENU: {
 			LobbyChoice choice;
+			bool agreed;
 
-			if (GUI_Lobby_Show(&choice)) {
+			agreed = s_lobbyPlay
+			       ? GUI_Lobby_Choose(s_lobbyPlayRelay, s_lobbyPlayCode, s_lobbyPlayPair, s_lobbyPlaySlot, &choice)
+			       : GUI_Lobby_Show(&choice);
+
+			if (agreed) {
 				MpGame_TakeLobbyChoice(&choice);
 				g_gameMode = GM_SKIRMISH;
+
+				/* Coming back here means the match ended or never began, and
+				 * this switch runs on whatever was chosen last.  Left as it
+				 * was, the lobby reopened itself the instant the match failed
+				 * -- over a black screen, because GM_SKIRMISH had already
+				 * cleared it -- and did so again thirty seconds later, for
+				 * ever.  Land in the menu instead, with the lobby's rows still
+				 * filled in for a second try. */
+				stringID = STR_NULL;
+				drawMenu = true;
 				return;
 			}
 
@@ -1529,6 +1566,55 @@ static void MpGame_Pump(void)
 }
 
 /**
+ * Put a whole-screen notice up, for the moments when there is no game yet.
+ *
+ * Joining a match is the only place in the program where the player waits on
+ * somebody else, and it used to be a msleep() loop: no events pumped and no
+ * frame drawn, so the window went black, macOS put a beachball over it, and
+ * every report of it was "the game hangs".  A wait a person can read is a wait
+ * they can be patient about -- and it is the same screen that has to carry the
+ * reason when the wait ends badly.
+ */
+static void MpGame_Notice(const char *title, const char *detail, const char *footer)
+{
+	GUI_Mouse_Hide_Safe();
+
+	GFX_Screen_SetActive(SCREEN_0);
+	GUI_ClearScreen(SCREEN_0);
+
+	GUI_DrawText_Wrapper(NULL, 0, 0, 0, 0, 0x22);
+	GUI_DrawText_Wrapper(title, SCREEN_WIDTH / 2, 80, 15, 0, 0x122);
+	if (detail != NULL) GUI_DrawText_Wrapper(detail, SCREEN_WIDTH / 2, 100, 6, 0, 0x122);
+	if (footer != NULL) GUI_DrawText_Wrapper(footer, SCREEN_WIDTH / 2, 130, 15, 0, 0x122);
+
+	GUI_Mouse_Show_Safe();
+}
+
+/**
+ * Say what went wrong, and hold it on the screen long enough to be read.
+ *
+ * Everything that can stop a match beginning happens before there is a world to
+ * draw, so PrintToConsole() is the only place these ever went -- which is to
+ * say nowhere, for anybody who started the game by double-clicking it.
+ */
+static void MpGame_Failed(const char *reason)
+{
+	uint32 until;
+
+	MpGame_Notice("CANNOT START THE MATCH", reason, "PRESS ANY KEY");
+
+	until = Timer_GetTime() + 6000;
+	Input_History_Clear();
+
+	while (Timer_GetTime() < until) {
+		if (Input_Keyboard_NextKey() != 0) break;
+		sleepIdle();
+	}
+
+	Input_History_Clear();
+}
+
+/**
  * Join the room and start the match everybody agreed on.
  *
  * Both clients build the same map from the same seed and hand both houses to
@@ -1539,11 +1625,15 @@ static void MpGame_Pump(void)
 static bool MpGame_Begin(void)
 {
 	char line[256];
+	char waiting[128];
 	uint32 until;
+
+	MpGame_Notice("CONNECTING TO THE RELAY", s_mpRelayHost, NULL);
 
 	if (!MpNet_Connect(s_mpRelayHost, s_mpRelayPort, s_mpRelayRoom, s_mpTurnSlot)) {
 		snprintf(line, sizeof(line), "mp-live: FAIL (%s)", MpNet_GetError());
 		PrintToConsole(line);
+		MpGame_Failed(MpNet_GetError());
 		return false;
 	}
 
@@ -1551,19 +1641,39 @@ static bool MpGame_Begin(void)
 	         s_mpRelayRoom, (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpLiveSeed);
 	PrintToConsole(line);
 
+	snprintf(waiting, sizeof(waiting), "YOU ARE PLAYER %u -- THEY MUST BE THE OTHER ONE",
+	         (unsigned)(s_mpTurnSlot + 1));
+	MpGame_Notice("WAITING FOR THE OTHER PLAYER", waiting, "PRESS ESC TO GO BACK");
+	Input_History_Clear();
+
 	until = Timer_GetTime() + s_mpNetWaitMs;
 	while (!MpNet_IsReady()) {
 		MpNet_Pump();
 
 		if (!MpNet_IsConnected() || Timer_GetTime() > until) {
+			const char *reason = MpNet_IsConnected()
+			                   ? "THE OTHER PLAYER NEVER JOINED"
+			                   : MpNet_GetError();
+
 			snprintf(line, sizeof(line), "mp-live: FAIL (%s)",
 			         MpNet_IsConnected() ? "the other player never joined" : MpNet_GetError());
 			PrintToConsole(line);
 			MpNet_Disconnect();
+			MpGame_Failed(reason);
 			return false;
 		}
 
-		msleep(5);
+		/* 0x1B is ESC.  Somebody who mistyped the code should not have to sit
+		 * out the whole timeout to find out. */
+		if (Input_Keyboard_NextKey() == 0x1B) {
+			PrintToConsole("mp-live: cancelled at the wait");
+			MpNet_Disconnect();
+			return false;
+		}
+
+		/* Not msleep(): this is what pumps SDL's events and draws the frame, so
+		 * the window stays a window rather than becoming a beachball. */
+		sleepIdle();
 	}
 
 	/* Before the match, not after: the viewpoint has to name a house, and the
@@ -3638,6 +3748,13 @@ static void GameLoop_Main(void)
 
 			if (!started) {
 				g_gameMode = GM_MENU;
+
+				/* The flag is a test, and a test that goes back to a menu
+				 * nobody is sitting at spins for ever. */
+				if (s_lobbyPlay) {
+					PrintToConsole("lobby-play: FAIL (the match did not begin)");
+					g_running = false;
+				}
 			} else {
 				g_gameMode = GM_NORMAL;
 
@@ -4064,6 +4181,17 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--build-rules-self-test") == 0) s_buildRulesSelfTest = true;
 			if (strcmp(argv[i], "--move-rules-self-test") == 0) s_moveRulesSelfTest = true;
 			if (strcmp(argv[i], "--lobby-self-test") == 0) s_lobbySelfTest = true;
+			if (strncmp(argv[i], "--lobby-play=", 13) == 0) {
+				/* relay,code,pair,slot -- the four things the lobby's rows set. */
+				unsigned pair = 0, slot = 1;
+
+				s_lobbyPlayRelay[0] = '\0';
+				s_lobbyPlayCode[0] = '\0';
+				sscanf(argv[i] + 13, "%127[^,],%31[^,],%u,%u", s_lobbyPlayRelay, s_lobbyPlayCode, &pair, &slot);
+				s_lobbyPlayPair = (uint8)(pair % 6);
+				s_lobbyPlaySlot = (uint8)((slot >= 2) ? 1 : 0);
+				s_lobbyPlay = (s_lobbyPlayRelay[0] != '\0' && s_lobbyPlayCode[0] != '\0');
+			}
 			if (strcmp(argv[i], "--pathfinder-self-test") == 0) s_pathfinderSelfTest = true;
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
 			if (strcmp(argv[i], "--economy-trace") == 0) EcoSearch_SetTrace(true);

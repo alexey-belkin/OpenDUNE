@@ -286,7 +286,9 @@ rooms and neither finds the other. This is deliberate. Two players who disagree
 about the rules cannot see the same battle, and stopping before the match is
 better than the game falling apart in the middle of it.
 
-The waiting side gives up after thirty seconds and returns to the menu.
+While a client is waiting it says so on screen. Press Escape to give up and go
+back to the menu; otherwise it waits thirty seconds, tells you why it stopped,
+and returns to the menu with your settings still in the lobby.
 
 
 Ingame

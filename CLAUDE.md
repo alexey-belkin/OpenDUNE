@@ -579,10 +579,34 @@ without knowing that it does.
 * The relay defaults to `mp_relay` from `opendune.ini`, then to the project's own
   relay. Nobody should have to type an address twice.
 
+**The digest must not be hashed raw, and the first version was.** `ObjectInfo`
+carries `const char *name` and `const char *wsa`; a CRC over the table bytes
+therefore includes two addresses, and the loader puts the image somewhere else
+on every launch. The digest came out different every time, so two copies of one
+build asked the relay for different rooms and each waited out its timeout for
+somebody who was in the other one. `Lobby_HashObject()` takes the three spans
+around those pointers instead — everything else in a static table is the same
+bytes in every run of the same binary, padding included.
+
 `--lobby-self-test` is the guard, and it tests the rule rather than the drawing:
 same choices → identical room string, any difference → a different one, the seed
-stable and never zero, and `host` / `host:port` / `host:` / `host:0` all split
-the way `MpNet_Connect()` needs.
+stable and never zero, `host` / `host:port` / `host:` / `host:0` all split the
+way `MpNet_Connect()` needs, and — the check that was missing — **the digest does
+not move when a pointer does**. Comparing two calls inside one process was what
+let the pointer bug ship; the test now repoints a table entry's `name` at a copy
+of the same string and demands the digest stay put, and separately that a real
+balance change always move it.
+
+`--lobby-play=relay,code,pair,slot` is the other half: it enters the menu as
+though PLAY SOMEBODY had just been clicked and takes the BEGIN branch with those
+values, so two headless processes play the lobby's own road end to end. It fires
+once and reports `lobby-play: FAIL` rather than returning to a menu nobody is
+sitting at.
+
+```bash
+./opendune --lobby-play=127.0.0.1:31337,dune42,0,1 &
+./opendune --lobby-play=127.0.0.1:31337,dune42,0,2 &
+```
 
 Two traps in the menu itself. `mainMenuStrings` is a **seven**-column table now,
 one row per savegame/Hall-of-Fame combination, and every row has to carry the
@@ -590,9 +614,19 @@ lobby entry or it disappears on some profiles. And the menu list is still sized
 by its first `STR_NULL`, which is why the lobby is an entry in that table and not
 an extra item appended after it.
 
-**Not visually verified.** The lobby's logic is tested and the menu draws under
-the dummy video driver without crashing, but no human has seen the window or
-clicked a row.
+Two more things the first version got wrong, both about what happens when no
+match starts. Joining used to be a `msleep()` loop — no SDL events pumped and no
+frame drawn, so the window went black and macOS put a beachball over it for the
+whole thirty seconds. It waits on `sleepIdle()` now, with a notice on screen,
+ESC to give up, and the reason held up for six seconds when it ends badly. And
+the menu's `stringID` was left on `STR_LOBBY_MENU` when the lobby handed off, so
+a failed match reopened the lobby the instant it failed — over the black screen
+GM_SKIRMISH had already cleared — and again thirty seconds later, for ever. It
+lands back in the menu now, with the lobby's rows still filled in.
+
+**Only the logic is verified.** `--lobby-self-test` and `--lobby-play` cover the
+rule and the handoff, and the menu draws under the dummy video driver without
+crashing, but no human has seen the lobby window or clicked a row.
 
 ## Conventions
 
