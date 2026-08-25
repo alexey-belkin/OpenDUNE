@@ -1066,8 +1066,27 @@ make_cflags_and_ldflags() {
 		CFLAGS="$CFLAGS `$sdl2_config --cflags | sed 's@-D_GNU_SOURCE[^ ]*@@'` -DSDL_FORCE_INLINE='static __inline'"
 		if [ "$enable_static" != "0" ]; then
 			if [ "$os" = "OSX" ] ; then
+				# Name the SDL2 archives by path, because the linker prefers a
+				# dylib to a static library when both are on the search path and
+				# there is no -Bstatic on Darwin.  Only the libraries that are
+				# actually in SDL's own directory, though: rewriting every -l
+				# turned the system -lm into <sdl>/lib/libm.a, which does not
+				# exist.  Homebrew's sdl2-config does not list -lm, so this only
+				# showed up against an SDL2 built from source.
 				libpath=`$sdl2_config --static-libs | cut -d ' ' -f 1 | cut -b 3- `
-				LIBS="$LIBS `$sdl2_config --static-libs | cut -d ' ' -f 2- | sed 's@-l\([^ ]*\)@'${libpath}'/lib\1.a@' `"
+				sdl2_static_libs=""
+				for sdl2_lib in `$sdl2_config --static-libs | cut -d ' ' -f 2- `; do
+					case "$sdl2_lib" in
+						-l*)
+							sdl2_libname=`echo "$sdl2_lib" | cut -b 3- `
+							if [ -f "$libpath/lib$sdl2_libname.a" ]; then
+								sdl2_lib="$libpath/lib$sdl2_libname.a"
+							fi
+							;;
+					esac
+					sdl2_static_libs="$sdl2_static_libs $sdl2_lib"
+				done
+				LIBS="$LIBS $sdl2_static_libs"
 			else
 				LIBS="$LIBS `$sdl2_config --static-libs`"
 			fi
