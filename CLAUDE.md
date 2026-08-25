@@ -73,10 +73,38 @@ from *that* copy. A package that fails is deleted rather than shipped. Rerun it
 after every change that a second machine is meant to see — that is the whole
 point of it being one command.
 
-The archive is **arm64 only**. Homebrew ships no universal SDL, so an Intel Mac
-needs its own build, not a repackage. `--no-data` leaves the `*.PAK` out and
-says so in the bundled `INSTALL.txt`; `--no-build` packages whatever `bin/`
-already holds.
+The archive is named after the architecture it actually contains, and
+`INSTALL.txt` states that and the **minimum macOS**, which is the thing that
+really stops an older machine from opening it. Watch that number: nothing sets
+a deployment target, so clang stamps the host's version — a build made here
+today refuses to launch on anything older than macOS 26, Apple Silicon
+included. `--no-data` leaves the `*.PAK` out and says so in `INSTALL.txt`;
+`--no-build` packages whatever `bin/` already holds.
+
+**An Intel package** is a separate build, not a repackage, and Homebrew has no
+Intel bottles any more — so SDL2 has to be built from source for x86_64 first.
+Statically, which is better than the arm64 path: nothing is left to vendor, no
+load command to rewrite, no signature to repair.
+
+```bash
+curl -fsSLO https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
+tar xzf SDL2-2.32.10.tar.gz && cd SDL2-2.32.10
+./configure --host=x86_64-apple-darwin --prefix=/tmp/sdl-x86_64 \
+  CC="clang -arch x86_64 -mmacosx-version-min=10.13" \
+  LDFLAGS="-arch x86_64 -mmacosx-version-min=10.13"
+make -j8 && make install
+
+git worktree add /tmp/x86tree HEAD && cd /tmp/x86tree
+cp -p <repo>/bin/data/*.PAK <repo>/bin/data/DUNE.CFG bin/data/
+./configure --with-sdl2=/tmp/sdl-x86_64/bin/sdl2-config --enable-static \
+  CC="clang -arch x86_64 -mmacosx-version-min=10.13"
+tools/package.sh
+```
+
+A worktree rather than the main tree because `./configure` overwrites
+`Makefile.config` in place, and the two architectures cannot share it. The
+result runs on any Intel Mac from High Sierra onwards and, through Rosetta, on
+this machine — which is how `package.sh` verifies it.
 
 ## Game data
 
