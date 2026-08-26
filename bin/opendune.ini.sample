@@ -161,6 +161,70 @@ build_slab_on_sand=1
 ; which keeps a group under one order moving as a group.
 pathfinder_astar=1
 
+; The tech tree -- what has to stand before a building may be built.
+;
+; "stock" is Westwood's tree and the default.  "mp" is the tree this fork plays
+; in a match: every early branch hangs off the Refinery instead of the Outpost,
+; the Outpost carries the three high-tech buildings, and the Rocket Turret is
+; bought with the House of IX instead of with two Construction Yard upgrades.
+;
+;   building        stock                mp
+;   --------        -----                --
+;   Windtrap        -                    -
+;   Refinery        Windtrap             Windtrap
+;   Outpost         Windtrap             Refinery
+;   Barracks        Outpost              Refinery
+;   WOR             Outpost+Barracks     Refinery+Barracks
+;   Wall, Turret    Outpost              Refinery
+;   Spice Silo      Refinery             Refinery
+;   Light Fctry     Refinery             Refinery
+;   Heavy Fctry     Outpost+Light Fctry  Light Fctry
+;   Repair          Outpost+Light Fctry  Light Fctry
+;   Hi-Tech         Outpost+Light Fctry  Outpost
+;   Starport        Refinery             Outpost
+;   IX              Refinery+Starport    Outpost
+;   R-Turret        Outpost + 2 upgrades IX
+;   Palace          Starport             Hi-Tech+IX+Starport
+;
+; Because the Rocket Turret no longer wants a Construction Yard upgrade, the mp
+; tree leaves the Yard with one upgrade instead of two -- the one the large
+; concrete slab needs.  The campaign gate is a separate thing and is untouched:
+; a match sets it past every building, so in multiplayer this list is the whole
+; tech tree, while in the campaign the mission number still has its say.
+;
+; Both players must be on the same tree.  It is folded into the lobby's room
+; name, so a disagreement shows up as "the other player never joined" rather
+; than as a desync a minute in.
+tech_tree=stock
+
+; Either tree can be edited a line at a time.  tech_req_<building> is the list
+; of buildings that must stand first -- "none" for nothing, several separated by
+; commas -- and it replaces whatever the named tree said.  The building's name
+; is its name lowercased with non-letters turned into underscores; the longer
+; spellings in brackets also answer:
+;
+;   concrete, concrete4 (slab, slab4)     windtrap         refinery
+;   const_yard (construction_yard)        outpost (radar)  barracks
+;   wor                                   starport         repair
+;   light_fctry (light_factory)           wall             turret
+;   heavy_fctry (heavy_factory)           palace           ix (house_of_ix)
+;   hi_tech (high_tech)                   spice_silo (silo)
+;   r_turret (rocket_turret)
+;
+; tech_upgrade_<building> is the Construction Yard upgrade level the building
+; also needs (0 to 3), and tech_upgrade_levels_<building> is how many upgrade
+; steps the building itself offers -- it can only take levels away, never invent
+; them.
+;
+;   tech_req_starport=refinery, outpost
+;   tech_req_palace=ix
+;   tech_upgrade_r_turret=0
+;   tech_upgrade_levels_const_yard=1
+;
+; A tree that cannot be played is refused at start-up and the stock tree is kept:
+; that means a cycle (A wants B, B wants A), a building nothing can ever reach,
+; or an upgrade level the Construction Yard does not offer.
+
 ; The relay the "Play somebody" lobby offers by default.  A relay is a small
 ; server both players connect to; the two computers never talk directly.
 ; "host" or "host:port"; the port is 31337 if not given.  Anyone can run one --

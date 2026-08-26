@@ -135,6 +135,8 @@ static int s_pathfinderSelfTestResult = -1;
 static int s_pathfinderOverride = -1;
 static bool s_combatBalanceSelfTest = false;
 static int s_combatBalanceSelfTestResult = -1;
+static bool s_techTreeSelfTest = false;
+static int s_techTreeSelfTestResult = -1;
 /* Extra simulation passes per loop iteration, on top of whatever the Game
  * Controls speed setting already does.  Powers of two only: the '[' and ']'
  * keys halve and double it. */
@@ -3242,6 +3244,7 @@ static void GameLoop_Main(void)
 	Unit_CombatBalance_Init();
 	Unit_MoveRules_Init();
 	Structure_BuildRules_Init();
+	Structure_TechTree_Init();
 	Pathfinder_Init();
 	if (s_pathfinderOverride >= 0) Pathfinder_SetEnabled(s_pathfinderOverride != 0);
 	Starport_Init();
@@ -3336,6 +3339,13 @@ static void GameLoop_Main(void)
 		s_buildQueueSelfTestResult = BuildQueue_SelfTest();
 		PrintToConsole((s_buildQueueSelfTestResult == 1) ? "build-queue-self-test: PASS"
 		                                                 : "build-queue-self-test: FAIL");
+		return;
+	}
+
+	if (s_techTreeSelfTest) {
+		s_techTreeSelfTestResult = Structure_TechTree_RunRegressionTest();
+		PrintToConsole((s_techTreeSelfTestResult == 1) ? "tech-tree-self-test: PASS"
+		                                               : "tech-tree-self-test: FAIL");
 		return;
 	}
 
@@ -4378,6 +4388,13 @@ int main(int argc, char **argv)
 			}
 			if (strcmp(argv[i], "--pathfinder-self-test") == 0) s_pathfinderSelfTest = true;
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
+			if (strcmp(argv[i], "--tech-tree-self-test") == 0) s_techTreeSelfTest = true;
+			/* Same reason as --pathfinder=: opendune.ini is searched in the
+			 * player's Application Support directory first, so a copy there
+			 * shadows anything put next to the binary.  Both players must end up
+			 * on the same tree -- it is folded into the room name -- so there has
+			 * to be a way to name it that does not depend on which file wins. */
+			if (strncmp(argv[i], "--tech-tree=", 12) == 0) Structure_TechTree_SetTree(argv[i] + 12);
 			if (strcmp(argv[i], "--economy-trace") == 0) EcoSearch_SetTrace(true);
 			/* The A/B switch for the route search.  It has to be a flag and not
 			 * only the ini key, because opendune.ini is searched in the user's
@@ -4668,6 +4685,7 @@ int main(int argc, char **argv)
 	if (s_combatBalanceSelfTest && s_combatBalanceSelfTestResult == 0) return 1;
 	if (s_buildRulesSelfTest && s_buildRulesSelfTestResult != 1) return 1;
 	if (s_buildQueueSelfTest && s_buildQueueSelfTestResult != 1) return 1;
+	if (s_techTreeSelfTest && s_techTreeSelfTestResult != 1) return 1;
 	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;
 	if (s_moveRulesSelfTest && s_moveRulesSelfTestResult != 1) return 1;
 	if (s_lobbySelfTest && s_lobbySelfTestResult != 1) return 1;

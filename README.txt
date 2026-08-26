@@ -256,6 +256,38 @@ its quarter of the price and its quarter of the area. The original game gave
 both the same build time, so paving a square one tile at a time took four times
 as long as paving it in one piece.
 
+The tech tree
+-------------
+tech_tree names which tech tree the game plays. "stock" is Westwood's and the
+default; "mp" is the tree this fork plays in a match. In a campaign a building
+is gated twice, by the mission number and by the buildings already standing; a
+match has no mission number, so in multiplayer the prerequisites are the whole
+tech tree and changing them is the only way to change the shape of an opening.
+
+The mp tree hangs the early branches off the Refinery rather than the Outpost --
+Barracks, Light Factory, the defence line and the Outpost itself all follow it --
+puts the Heavy Factory and the Repair yard behind the Light Factory, and gives
+the Outpost the three technology buildings: Hi-Tech, House of IX and Starport.
+The Rocket Turret is bought with the House of IX instead of with two Construction
+Yard upgrades, which moves the best defence in the game out of the opening, and
+the Palace asks for Hi-Tech, IX and Starport together. WOR keeps both the
+Barracks and the Refinery in its list: Harkonnen are waived the Barracks, and
+without the Refinery beside it that waiver would leave them able to build WOR on
+the first tick.
+
+Either tree can be edited a line at a time from the ini: tech_req_<building> is
+the list of buildings that must stand first, tech_upgrade_<building> the
+Construction Yard upgrade level it also needs, tech_upgrade_levels_<building> how
+many upgrade steps the building itself offers. bin/opendune.ini.sample lists both
+trees side by side and every name the keys accept. A tree with a cycle, with a
+building nothing can reach, or with an upgrade level the Construction Yard does
+not offer is refused at start-up and the stock tree is kept.
+
+Both players must be on the same tree. It is part of the digest the lobby folds
+into its room name, so two players who disagree are put in different rooms and
+never meet, which is a thing a person can act on -- unlike a desync a minute into
+the match.
+
 Starport
 --------
 The Starport is a trader rather than a second factory: the goods come from

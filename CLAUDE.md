@@ -139,10 +139,11 @@ user-facing description. The file is searched in this order
 `OpenDUNE.app`. **A copy exists on this machine**, at
 `~/Library/Application Support/OpenDUNE/opendune.ini`, and because that is the
 *first* location searched it shadows anything put in `bin/`. It currently
-overrides five keys — `class_range_p_bonus=2`, `class_damage_p_vs_rp=500`,
+overrides six keys — `class_range_p_bonus=2`, `class_damage_p_vs_rp=500`,
 `class_damage_rp_vs_lt=200`, `class_damage_rp_vs_tt=300`,
-`class_damage_lt_vs_rp=175` — so **every run on this machine, `--war-metrics`
-included, is played on those numbers and not on the compiled-in defaults**.
+`class_damage_lt_vs_rp=175` and `tech_tree=mp` — so **every run on this machine,
+`--war-metrics` and `tools/mpduel.sh` included, is played on those numbers and
+on the fork's tech tree, not on the compiled-in defaults**.
 `tools/threat_report.py` reads the source, not the ini, so it is describing a
 configuration this machine does not run.
 
@@ -392,6 +393,68 @@ directly and never asked this rule in the first place.
 
 `--build-rules-self-test` checks both halves against a generated map.
 
+## The tech tree
+
+`tech_tree` (default `stock`) names which tree the game plays —
+`Structure_TechTree_*` in [structure.c](src/structure.c), patched into
+`g_table_structureInfo` at start-up next to the combat balance module.
+`--tech-tree=stock|mp` overrides the key from the command line, for the same
+reason `--pathfinder=` exists: the `opendune.ini` in `~/Library/Application
+Support/` is searched first and shadows anything put in `bin/`.
+
+**In a campaign a building is gated twice, in a match only once.**
+`Structure_GetBuildable()` checks `g_campaignID >= availableCampaign - 1` *and*
+the `structuresRequired` mask; `Skirmish_Prepare()` sets `g_campaignID` to 8,
+past the latest building on the list, so in multiplayer the mask is the whole
+tech tree. That is what makes it worth configuring at all.
+
+`mp` is the fork's tree: the Refinery carries the early branches (Barracks,
+Light Factory, Wall, Turret, Silo, Outpost), the Light Factory carries the Heavy
+Factory and the Repair yard, the Outpost carries Hi-Tech, IX and Starport, the
+Rocket Turret hangs off **IX** rather than off two Construction Yard upgrades,
+and the Palace wants Hi-Tech, IX and Starport together. Two details that are
+not arbitrary:
+
+* **WOR keeps `refinery` beside `barracks`.** `Structure_GetBuildable()` waives
+  the Barracks bit for Harkonnen — House identity, deliberately left alone — and
+  a mask of `barracks` alone would leave them with *no* prerequisite, i.e.
+  rocket infantry on the first tick.
+* **The Construction Yard drops to one upgrade** (`upgradeCampaign[1] = 0`). Its
+  second level only ever unlocked the Rocket Turret; left standing it is 200
+  credits and twenty ticks for nothing. Level 1 stays — the large slab needs it.
+
+Per-key overrides ride on top of the named tree: `tech_req_<building>` (a list,
+`none` for nothing), `tech_upgrade_<building>` (Construction Yard level) and
+`tech_upgrade_levels_<building>` (which can only remove levels). Names are the
+table name lowercased with non-letters collapsed, plus readable aliases —
+`light_factory` for `light_fctry`, `house_of_ix` for `ix`, `radar` for
+`outpost`. `bin/opendune.ini.sample` lists both trees side by side.
+
+**A tree the players disagree about cannot start a match**, and that is free:
+`Lobby_FoldStructure()` already folds `structuresRequired`,
+`upgradeLevelRequired` and `upgradeCampaign`, so the tree is inside the room
+name. Measured: `x.0.713e1bf9` on stock against `x.0.20d7121b` on `mp`. This is
+also why the module patches the table at **start-up** and not at match start —
+the digest is taken in the menu, before either player has clicked BEGIN.
+
+`Structure_TechTree_Validate()` refuses a tree with a cycle, with a building
+nothing can reach, or with an upgrade level the Construction Yard does not
+offer, and keeps stock instead. `--tech-tree-self-test` is the guard: it checks
+that `stock` is byte-for-byte the compiled table (a module that quietly plays a
+game of its own on machines that set no key is the failure worth catching), that
+the `mp` preset is what this file says it is, that the validator refuses both
+bad shapes, and then **plays it** — the real `Structure_GetBuildable()` on a
+real Construction Yard, growing `structuresBuilt` one building at a time, at
+campaign 8 with the house human-controlled. Ordos on purpose: the Harkonnen WOR
+waiver and the Atreides WOR ban are House identity and do not belong in a test
+of the tree.
+
+The AI is waived from the tree by `Structure_GetBuildable()` but *not* by
+`Skirmish_Plan_PickNext()`, which checks the mask itself — so a changed tree
+reorders the AI's base rather than stalling it. Measured under `mp`, the two
+Rocket Turrets the blueprint lists before the House of IX are simply built after
+it.
+
 ## The build queue
 
 A factory takes repeat orders — left click on its picture in the action panel is
@@ -517,6 +580,7 @@ cd bin
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-queue-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --tech-tree-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --pathfinder-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --lobby-self-test

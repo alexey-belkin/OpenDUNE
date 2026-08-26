@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "types.h"
+#include "os/common.h"
 #include "os/error.h"
 #include "os/math.h"
 #include "os/strings.h"
@@ -1207,6 +1208,535 @@ void Structure_BuildRules_Init(void)
 void Structure_BuildRules_SetSlabOnSand(bool allowed)
 {
 	s_slabOnSand = allowed;
+}
+
+/**
+ * The tech tree -- what has to stand before a building may be built.
+ *
+ * Westwood's answer is the `structuresRequired` mask in g_table_structureInfo,
+ * one line per building, and in a campaign it is only half the gate: the
+ * mission number decides the rest through `availableCampaign`.  A match has no
+ * mission number -- Skirmish_Prepare() sets g_campaignID to 8, past the last
+ * building on the list -- so in multiplayer the mask *is* the tech tree, and
+ * changing it is the only way to change the shape of an opening.
+ *
+ * This module makes it configuration rather than a table.  It patches
+ * g_table_structureInfo the way Unit_CombatBalance_Init() patches the unit
+ * table, and for the same reason: the lobby folds both tables into the room
+ * name (Lobby_FoldStructure() hashes structuresRequired, upgradeLevelRequired
+ * and upgradeCampaign), so two players whose trees differ ask the relay for
+ * different rooms and never meet.  A disagreement about the tech tree is
+ * therefore "the other player never joined" rather than a desync the moment
+ * somebody builds.  That is why this runs at start-up and not at match start:
+ * the digest is taken in the menu, before either of them has clicked BEGIN.
+ *
+ * `tech_tree=stock` is the compiled-in tree and the default.  `tech_tree=mp`
+ * is the tree this fork plays: every branch hangs off the Refinery instead of
+ * the Outpost, the Outpost carries the three high-tech buildings, and the
+ * Rocket Turret is bought with the House of IX rather than with a Construction
+ * Yard upgrade.  Either can be edited key by key with `tech_req_<building>`.
+ */
+
+typedef struct TechTreeEdge {
+	uint8  type;                                            /*!< Which building this line is about. */
+	uint32 required;                                        /*!< What has to stand before it. */
+	uint16 upgradeLevelRequired;                            /*!< Construction Yard upgrade level it also needs. */
+} TechTreeEdge;
+
+/**
+ * The multiplayer tree.
+ *
+ * Read it as four branches off one trunk.  The Refinery is the trunk -- nothing
+ * but the Windtrap comes before it, so the first decision of a match is always
+ * the same one and the openings diverge after it.  Off the Refinery hang the
+ * cheap branches a player needs early: infantry, light vehicles, the defence
+ * line and the Outpost.  Off the Light Factory hang the two buildings that are
+ * about vehicles, and off the Outpost the three that are about technology.  The
+ * Palace is the only building that asks for a whole tier: Angar, IX and
+ * Starport together, which is most of a finished base.
+ *
+ * The Rocket Turret moves the furthest.  In the original it is an Outpost
+ * building behind two Construction Yard upgrades, which makes the best defence
+ * in the game an early purchase; here it is behind the House of IX, so a player
+ * who wants it pays for the Outpost, the Starport-free IX branch and 500
+ * credits of building first, and an army that arrives before that meets Turrets.
+ *
+ * WOR keeps the Barracks *and* the Refinery in its mask although the Barracks
+ * alone would imply the Refinery.  Structure_GetBuildable() waives the Barracks
+ * bit for Harkonnen -- their identity, and the one thing the tree may not
+ * flatten -- and without the Refinery beside it that waiver would leave WOR
+ * with no prerequisite at all, i.e. rocket infantry on the first tick.
+ */
+static const TechTreeEdge s_techTreeMultiplayer[] = {
+	{ STRUCTURE_WINDTRAP,      FLAG_STRUCTURE_NONE,                                                        0 },
+	{ STRUCTURE_REFINERY,      FLAG_STRUCTURE_WINDTRAP,                                                    0 },
+	{ STRUCTURE_BARRACKS,      FLAG_STRUCTURE_REFINERY,                                                    0 },
+	{ STRUCTURE_LIGHT_VEHICLE, FLAG_STRUCTURE_REFINERY,                                                    0 },
+	{ STRUCTURE_TURRET,        FLAG_STRUCTURE_REFINERY,                                                    0 },
+	{ STRUCTURE_WALL,          FLAG_STRUCTURE_REFINERY,                                                    0 },
+	{ STRUCTURE_SILO,          FLAG_STRUCTURE_REFINERY,                                                    0 },
+	{ STRUCTURE_OUTPOST,       FLAG_STRUCTURE_REFINERY,                                                    0 },
+	{ STRUCTURE_WOR_TROOPER,   FLAG_STRUCTURE_BARRACKS | FLAG_STRUCTURE_REFINERY,                          0 },
+	{ STRUCTURE_HEAVY_VEHICLE, FLAG_STRUCTURE_LIGHT_VEHICLE,                                               0 },
+	{ STRUCTURE_REPAIR,        FLAG_STRUCTURE_LIGHT_VEHICLE,                                               0 },
+	{ STRUCTURE_HIGH_TECH,     FLAG_STRUCTURE_OUTPOST,                                                     0 },
+	{ STRUCTURE_HOUSE_OF_IX,   FLAG_STRUCTURE_OUTPOST,                                                     0 },
+	{ STRUCTURE_STARPORT,      FLAG_STRUCTURE_OUTPOST,                                                     0 },
+	{ STRUCTURE_ROCKET_TURRET, FLAG_STRUCTURE_HOUSE_OF_IX,                                                 0 },
+	{ STRUCTURE_PALACE,        FLAG_STRUCTURE_HIGH_TECH | FLAG_STRUCTURE_HOUSE_OF_IX | FLAG_STRUCTURE_STARPORT, 0 }
+};
+
+/** The compiled-in tree, taken once before anything patches it. */
+static struct {
+	uint32 required;
+	uint16 upgradeLevelRequired;
+	uint16 upgradeCampaign[3];
+} s_techTreeStock[STRUCTURE_MAX];
+static bool s_techTreeStockTaken = false;
+
+/** Which tree is standing, for the self-test and for the log line. */
+static char s_techTreeName[16] = "stock";
+
+/** --tech-tree=NAME, which beats the ini key.  See Structure_TechTree_SetTree(). */
+static char s_techTreeOverride[16] = "";
+
+static void Structure_TechTree_TakeStock(void)
+{
+	uint16 i;
+	uint16 j;
+
+	if (s_techTreeStockTaken) return;
+
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		s_techTreeStock[i].required             = g_table_structureInfo[i].o.structuresRequired;
+		s_techTreeStock[i].upgradeLevelRequired = g_table_structureInfo[i].o.upgradeLevelRequired;
+		for (j = 0; j < 3; j++) s_techTreeStock[i].upgradeCampaign[j] = g_table_structureInfo[i].upgradeCampaign[j];
+	}
+
+	s_techTreeStockTaken = true;
+}
+
+static void Structure_TechTree_Restore(void)
+{
+	uint16 i;
+	uint16 j;
+
+	if (!s_techTreeStockTaken) return;
+
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		g_table_structureInfo[i].o.structuresRequired   = s_techTreeStock[i].required;
+		g_table_structureInfo[i].o.upgradeLevelRequired = s_techTreeStock[i].upgradeLevelRequired;
+		for (j = 0; j < 3; j++) g_table_structureInfo[i].upgradeCampaign[j] = s_techTreeStock[i].upgradeCampaign[j];
+	}
+}
+
+/** The ini key for a building: its table name, lowercased, non-letters collapsed. */
+static void Structure_TechTree_KeySlug(const char *name, char *dest, uint16 destLen)
+{
+	uint16 out = 0;
+	uint16 i;
+
+	for (i = 0; name[i] != '\0' && out + 1 < destLen; i++) {
+		char c = name[i];
+
+		if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+		if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			dest[out++] = c;
+		} else if (out != 0 && dest[out - 1] != '_') {
+			dest[out++] = '_';
+		}
+	}
+	while (out != 0 && dest[out - 1] == '_') out--;
+	dest[out] = '\0';
+}
+
+/**
+ * A building named in a config line.
+ *
+ * The table names are what the keys are built from, but half of them are the
+ * abbreviations that fitted the original's build panel -- "Light Fctry",
+ * "Hi-Tech", "R-Turret".  The aliases let a config say what a person would say
+ * without introducing a second naming scheme: both spellings answer.
+ */
+static uint8 Structure_TechTree_TypeByName(const char *token)
+{
+	static const struct {
+		const char *name;
+		uint8 type;
+	} aliases[] = {
+		{ "construction_yard", STRUCTURE_CONSTRUCTION_YARD },
+		{ "light_factory",     STRUCTURE_LIGHT_VEHICLE },
+		{ "heavy_factory",     STRUCTURE_HEAVY_VEHICLE },
+		{ "high_tech",         STRUCTURE_HIGH_TECH },
+		{ "hitech",            STRUCTURE_HIGH_TECH },
+		{ "house_of_ix",       STRUCTURE_HOUSE_OF_IX },
+		{ "rocket_turret",     STRUCTURE_ROCKET_TURRET },
+		{ "silo",              STRUCTURE_SILO },
+		{ "radar",             STRUCTURE_OUTPOST },
+		{ "slab",              STRUCTURE_SLAB_1x1 },
+		{ "slab4",             STRUCTURE_SLAB_2x2 }
+	};
+	char slug[32];
+	uint16 i;
+
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		Structure_TechTree_KeySlug(g_table_structureInfo[i].o.name, slug, sizeof(slug));
+		if (slug[0] != '\0' && strcasecmp(slug, token) == 0) return (uint8)i;
+	}
+
+	for (i = 0; i < lengthof(aliases); i++) {
+		if (strcasecmp(aliases[i].name, token) == 0) return aliases[i].type;
+	}
+
+	return STRUCTURE_INVALID;
+}
+
+/** "refinery, outpost" -> the mask.  "none" is no prerequisite, "never" is unbuildable. */
+static bool Structure_TechTree_ParseList(const char *list, uint32 *mask)
+{
+	char token[32];
+	uint16 len = 0;
+	uint16 i;
+
+	*mask = FLAG_STRUCTURE_NONE;
+
+	for (i = 0; ; i++) {
+		char c = list[i];
+
+		if (c != '\0' && c != ',' && c != '+' && c != ' ' && c != '\t') {
+			if (len + 1 < sizeof(token)) token[len++] = c;
+			continue;
+		}
+
+		if (len != 0) {
+			token[len] = '\0';
+			len = 0;
+
+			if (strcasecmp(token, "none") == 0) {
+				/* Nothing: an empty mask is the answer. */
+			} else if (strcasecmp(token, "never") == 0) {
+				*mask = (uint32)FLAG_STRUCTURE_NEVER;
+			} else {
+				uint8 type = Structure_TechTree_TypeByName(token);
+
+				if (type == STRUCTURE_INVALID) return false;
+				*mask |= (uint32)1 << type;
+			}
+		}
+
+		if (c == '\0') break;
+	}
+
+	return true;
+}
+
+/**
+ * Whether the standing tree can actually be played.
+ *
+ * Two ways a hand-written tree kills a match, and neither of them shows up
+ * until somebody sits in front of a build list that is missing a row: a cycle
+ * (A wants B, B wants A) and a building whose prerequisites can never all be
+ * met.  Both are the same question -- grow the set of buildings reachable from
+ * a Construction Yard until it stops growing, and see whether anything is left
+ * outside it.
+ *
+ * The third way is the upgrade gate: a building may ask for a Construction Yard
+ * upgrade level the Construction Yard does not offer, which is a row that is
+ * drawn and never lights up.
+ */
+static bool Structure_TechTree_Validate(void)
+{
+	uint32 reachable = FLAG_STRUCTURE_CONSTRUCTION_YARD;
+	uint16 upgradeLevels = 0;
+	bool grew = true;
+	uint16 i;
+
+	for (i = 0; i < 3; i++) {
+		if (g_table_structureInfo[STRUCTURE_CONSTRUCTION_YARD].upgradeCampaign[i] != 0) upgradeLevels++;
+	}
+
+	while (grew) {
+		grew = false;
+
+		for (i = 0; i < STRUCTURE_MAX; i++) {
+			uint32 bit = (uint32)1 << i;
+			uint32 required = g_table_structureInfo[i].o.structuresRequired;
+
+			if ((reachable & bit) != 0) continue;
+			if (required == (uint32)FLAG_STRUCTURE_NEVER) continue;
+			if ((required & ~reachable) != 0) continue;
+
+			reachable |= bit;
+			grew = true;
+		}
+	}
+
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		if (g_table_structureInfo[i].o.structuresRequired == (uint32)FLAG_STRUCTURE_NEVER) continue;
+		if ((reachable & ((uint32)1 << i)) == 0) return false;
+		if (g_table_structureInfo[i].o.upgradeLevelRequired > upgradeLevels) return false;
+	}
+
+	return true;
+}
+
+static void Structure_TechTree_ApplyTree(const char *name)
+{
+	uint16 i;
+
+	Structure_TechTree_TakeStock();
+	Structure_TechTree_Restore();
+
+	if (strcasecmp(name, "mp") == 0 || strcasecmp(name, "multiplayer") == 0) {
+		for (i = 0; i < lengthof(s_techTreeMultiplayer); i++) {
+			StructureInfo *si = &g_table_structureInfo[s_techTreeMultiplayer[i].type];
+
+			si->o.structuresRequired   = s_techTreeMultiplayer[i].required;
+			si->o.upgradeLevelRequired = s_techTreeMultiplayer[i].upgradeLevelRequired;
+		}
+
+		/* The Construction Yard's second upgrade only ever unlocked the Rocket
+		 * Turret, and the Rocket Turret is bought with the House of IX now.  Left
+		 * standing it would be 200 credits and twenty ticks for nothing, offered
+		 * by a button that says nothing about what it buys. */
+		g_table_structureInfo[STRUCTURE_CONSTRUCTION_YARD].upgradeCampaign[1] = 0;
+		g_table_structureInfo[STRUCTURE_CONSTRUCTION_YARD].upgradeCampaign[2] = 0;
+	}
+
+	strncpy(s_techTreeName, name, sizeof(s_techTreeName) - 1);
+	s_techTreeName[sizeof(s_techTreeName) - 1] = '\0';
+}
+
+/** --tech-tree=NAME.  The ini is shadowed by the player's own copy; a flag is not. */
+void Structure_TechTree_SetTree(const char *name)
+{
+	strncpy(s_techTreeOverride, name, sizeof(s_techTreeOverride) - 1);
+	s_techTreeOverride[sizeof(s_techTreeOverride) - 1] = '\0';
+}
+
+const char *Structure_TechTree_GetTree(void)
+{
+	return s_techTreeName;
+}
+
+void Structure_TechTree_Init(void)
+{
+	char name[16];
+	char value[160];
+	uint16 i;
+
+	Structure_TechTree_TakeStock();
+
+	if (s_techTreeOverride[0] != '\0') {
+		strncpy(name, s_techTreeOverride, sizeof(name) - 1);
+		name[sizeof(name) - 1] = '\0';
+	} else {
+		IniFile_GetString("tech_tree", "stock", name, sizeof(name));
+	}
+
+	if (strcasecmp(name, "stock") != 0 && strcasecmp(name, "mp") != 0 && strcasecmp(name, "multiplayer") != 0) {
+		Warning("tech_tree: no tree called \"%s\"; stock and mp are the two there are\n", name);
+		strcpy(name, "stock");
+	}
+
+	Structure_TechTree_ApplyTree(name);
+
+	/* Key by key on top of the named tree, so a tree can be edited without
+	 * being retyped.  Every building is reachable, including the ones no tree
+	 * moves. */
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		StructureInfo *si = &g_table_structureInfo[i];
+		char slug[32];
+		char key[64];
+		int levels;
+
+		Structure_TechTree_KeySlug(si->o.name, slug, sizeof(slug));
+		if (slug[0] == '\0') continue;
+
+		sprintf(key, "tech_req_%s", slug);
+		IniFile_GetString(key, "", value, sizeof(value));
+		if (value[0] != '\0') {
+			uint32 mask;
+
+			if (Structure_TechTree_ParseList(value, &mask)) {
+				si->o.structuresRequired = mask;
+			} else {
+				Warning("%s=\"%s\": that is not a list of buildings\n", key, value);
+			}
+		}
+
+		sprintf(key, "tech_upgrade_%s", slug);
+		si->o.upgradeLevelRequired = (uint16)min(max(IniFile_GetInteger(key, si->o.upgradeLevelRequired), 0), 3);
+
+		/* Levels can be taken away but not invented: the campaign number that
+		 * gates each one is the table's business, so this only ever zeroes. */
+		sprintf(key, "tech_upgrade_levels_%s", slug);
+		levels = IniFile_GetInteger(key, -1);
+		if (levels >= 0) {
+			int j;
+
+			for (j = max(levels, 0); j < 3; j++) si->upgradeCampaign[j] = 0;
+		}
+	}
+
+	if (!Structure_TechTree_Validate()) {
+		Warning("tech_tree: the configured tree has a building nothing can reach; keeping stock\n");
+		Structure_TechTree_ApplyTree("stock");
+	}
+}
+
+/**
+ * The guard.  It checks the rule, not the drawing.
+ *
+ * The last section is the one that matters: it asks the real
+ * Structure_GetBuildable() what a real Construction Yard offers, growing the
+ * house's built mask one building at a time.  A tree that only reads right in
+ * the table is not a tree anybody can play -- the campaign gate, the House
+ * filter and the upgrade level all sit between the mask and the build list, and
+ * the Rocket Turret in particular is only where this config says it is if it
+ * lights up at Construction Yard level 0.
+ */
+int Structure_TechTree_RunRegressionTest(void)
+{
+	static const struct {
+		uint32 built;                                       /*!< What stands, on top of the Construction Yard. */
+		uint32 expected;                                    /*!< What has to be offered on top of what came before. */
+		uint32 forbidden;                                   /*!< What may not be offered yet. */
+	} steps[] = {
+		{ 0,
+		  FLAG_STRUCTURE_WINDTRAP | FLAG_STRUCTURE_SLAB_1x1,
+		  FLAG_STRUCTURE_REFINERY | FLAG_STRUCTURE_BARRACKS | FLAG_STRUCTURE_OUTPOST | FLAG_STRUCTURE_ROCKET_TURRET | FLAG_STRUCTURE_SLAB_2x2 },
+		{ FLAG_STRUCTURE_WINDTRAP,
+		  FLAG_STRUCTURE_REFINERY,
+		  FLAG_STRUCTURE_OUTPOST | FLAG_STRUCTURE_BARRACKS | FLAG_STRUCTURE_LIGHT_VEHICLE | FLAG_STRUCTURE_TURRET },
+		{ FLAG_STRUCTURE_WINDTRAP | FLAG_STRUCTURE_REFINERY,
+		  FLAG_STRUCTURE_BARRACKS | FLAG_STRUCTURE_LIGHT_VEHICLE | FLAG_STRUCTURE_TURRET | FLAG_STRUCTURE_WALL | FLAG_STRUCTURE_SILO | FLAG_STRUCTURE_OUTPOST,
+		  FLAG_STRUCTURE_HEAVY_VEHICLE | FLAG_STRUCTURE_REPAIR | FLAG_STRUCTURE_HIGH_TECH | FLAG_STRUCTURE_STARPORT | FLAG_STRUCTURE_HOUSE_OF_IX | FLAG_STRUCTURE_WOR_TROOPER | FLAG_STRUCTURE_ROCKET_TURRET | FLAG_STRUCTURE_PALACE },
+		{ FLAG_STRUCTURE_WINDTRAP | FLAG_STRUCTURE_REFINERY | FLAG_STRUCTURE_BARRACKS,
+		  FLAG_STRUCTURE_WOR_TROOPER,
+		  FLAG_STRUCTURE_HIGH_TECH | FLAG_STRUCTURE_ROCKET_TURRET },
+		{ FLAG_STRUCTURE_WINDTRAP | FLAG_STRUCTURE_REFINERY | FLAG_STRUCTURE_LIGHT_VEHICLE,
+		  FLAG_STRUCTURE_HEAVY_VEHICLE | FLAG_STRUCTURE_REPAIR,
+		  FLAG_STRUCTURE_HIGH_TECH | FLAG_STRUCTURE_HOUSE_OF_IX | FLAG_STRUCTURE_STARPORT | FLAG_STRUCTURE_ROCKET_TURRET },
+		{ FLAG_STRUCTURE_WINDTRAP | FLAG_STRUCTURE_REFINERY | FLAG_STRUCTURE_OUTPOST,
+		  FLAG_STRUCTURE_HIGH_TECH | FLAG_STRUCTURE_HOUSE_OF_IX | FLAG_STRUCTURE_STARPORT,
+		  FLAG_STRUCTURE_ROCKET_TURRET | FLAG_STRUCTURE_PALACE },
+		{ FLAG_STRUCTURE_WINDTRAP | FLAG_STRUCTURE_REFINERY | FLAG_STRUCTURE_OUTPOST | FLAG_STRUCTURE_HOUSE_OF_IX,
+		  FLAG_STRUCTURE_ROCKET_TURRET,
+		  FLAG_STRUCTURE_PALACE },
+		{ FLAG_STRUCTURE_WINDTRAP | FLAG_STRUCTURE_REFINERY | FLAG_STRUCTURE_OUTPOST | FLAG_STRUCTURE_HOUSE_OF_IX | FLAG_STRUCTURE_HIGH_TECH | FLAG_STRUCTURE_STARPORT,
+		  FLAG_STRUCTURE_PALACE,
+		  FLAG_STRUCTURE_SLAB_2x2 }
+	};
+	char configured[16];
+	uint16 campaignID = g_campaignID;
+	int result = 1;
+	uint16 i;
+
+	strcpy(configured, s_techTreeName);
+
+	/* The stock tree has to be exactly the table, or the module is quietly
+	 * playing a game of its own on every machine that never set a key. */
+	Structure_TechTree_ApplyTree("stock");
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		uint16 j;
+
+		if (g_table_structureInfo[i].o.structuresRequired != s_techTreeStock[i].required) result = 0;
+		if (g_table_structureInfo[i].o.upgradeLevelRequired != s_techTreeStock[i].upgradeLevelRequired) result = 0;
+		for (j = 0; j < 3; j++) {
+			if (g_table_structureInfo[i].upgradeCampaign[j] != s_techTreeStock[i].upgradeCampaign[j]) result = 0;
+		}
+	}
+	if (!Structure_TechTree_Validate()) result = 0;
+
+	Structure_TechTree_ApplyTree("mp");
+	if (!Structure_TechTree_Validate()) result = 0;
+
+	for (i = 0; i < lengthof(s_techTreeMultiplayer); i++) {
+		const StructureInfo *si = &g_table_structureInfo[s_techTreeMultiplayer[i].type];
+
+		if (si->o.structuresRequired != s_techTreeMultiplayer[i].required) result = 0;
+		if (si->o.upgradeLevelRequired != s_techTreeMultiplayer[i].upgradeLevelRequired) result = 0;
+	}
+
+	/* The two halves of moving the Rocket Turret: it hangs off the House of IX,
+	 * and it costs no Construction Yard upgrade -- which leaves the Yard with
+	 * exactly one upgrade, the one the large slab needs. */
+	if (g_table_structureInfo[STRUCTURE_ROCKET_TURRET].o.upgradeLevelRequired != 0) result = 0;
+	if (g_table_structureInfo[STRUCTURE_CONSTRUCTION_YARD].upgradeCampaign[0] == 0) result = 0;
+	if (g_table_structureInfo[STRUCTURE_CONSTRUCTION_YARD].upgradeCampaign[1] != 0) result = 0;
+	if (g_table_structureInfo[STRUCTURE_SLAB_2x2].o.upgradeLevelRequired != 1) result = 0;
+
+	/* A cycle and an orphan both have to be refused, or the validator is only
+	 * an opinion. */
+	g_table_structureInfo[STRUCTURE_REFINERY].o.structuresRequired = FLAG_STRUCTURE_HEAVY_VEHICLE;
+	if (Structure_TechTree_Validate()) result = 0;
+	Structure_TechTree_ApplyTree("mp");
+	g_table_structureInfo[STRUCTURE_ROCKET_TURRET].o.upgradeLevelRequired = 2;
+	if (Structure_TechTree_Validate()) result = 0;
+	Structure_TechTree_ApplyTree("mp");
+
+	/* Now play it.  Ordos on purpose: the Harkonnen WOR waiver and the Atreides
+	 * WOR ban are both House identity, and neither belongs in a test of the
+	 * tree.  Campaign 8 is what a match sets, and it is what makes the mask the
+	 * whole gate. */
+	{
+		House *h = House_Allocate(HOUSE_ORDOS);
+		Structure yard;
+		uint32 offered = 0;
+
+		if (h == NULL) h = House_Get_ByIndex(HOUSE_ORDOS);
+
+		g_campaignID = 8;
+		Match_Reset();
+		Match_SetSlot(0, HOUSE_ORDOS, MATCH_CONTROLLER_HUMAN_LOCAL);
+		Match_SetSlot(1, HOUSE_HARKONNEN, MATCH_CONTROLLER_AI);
+		Match_Begin();
+
+		memset(&yard, 0, sizeof(yard));
+		yard.o.type          = STRUCTURE_CONSTRUCTION_YARD;
+		yard.o.houseID       = HOUSE_ORDOS;
+		yard.creatorHouseID  = HOUSE_ORDOS;
+		yard.upgradeLevel    = 0;
+		yard.upgradeTimeLeft = 0;
+
+		for (i = 0; i < lengthof(steps); i++) {
+			h->structuresBuilt = FLAG_STRUCTURE_CONSTRUCTION_YARD | steps[i].built;
+			offered = Structure_GetBuildable(&yard);
+
+			if ((offered & steps[i].expected) != steps[i].expected) {
+				printf("tech-tree: step %u offers %08x, missing %08x\n",
+				       (unsigned)i, (unsigned)offered, (unsigned)(steps[i].expected & ~offered));
+				result = 0;
+			}
+			if ((offered & steps[i].forbidden) != 0) {
+				printf("tech-tree: step %u offers %08x too early\n",
+				       (unsigned)i, (unsigned)(offered & steps[i].forbidden));
+				result = 0;
+			}
+		}
+
+		/* The same house with the AI at the wheel is waived from the tree
+		 * entirely, and that asymmetry is deliberate -- if it ever stops being
+		 * true the AI stops building. */
+		Match_Reset();
+		Match_SetSlot(0, HOUSE_ORDOS, MATCH_CONTROLLER_AI);
+		Match_Begin();
+		h->structuresBuilt = FLAG_STRUCTURE_CONSTRUCTION_YARD;
+		offered = Structure_GetBuildable(&yard);
+		if ((offered & FLAG_STRUCTURE_HEAVY_VEHICLE) == 0) result = 0;
+
+		Match_Reset();
+		h->structuresBuilt = 0;
+		g_campaignID = campaignID;
+	}
+
+	/* Leave the process holding what the player configured, not what the test
+	 * was looking at. */
+	Structure_TechTree_Init();
+	if (strcasecmp(s_techTreeName, configured) != 0) result = 0;
+
+	return result;
 }
 
 /**
