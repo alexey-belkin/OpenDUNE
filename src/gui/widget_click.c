@@ -190,6 +190,34 @@ bool GUI_Widget_PlaceIt_Click(Widget *w)
 }
 
 /**
+ * Handles Click event for the "Auto Repair" button on the Repair facility.
+ *
+ * The setting is the House's rather than this building's, so any of its Repair
+ * facilities shows it and toggles the same thing.  It spends credits and repairs
+ * buildings on both machines, so it is an order like any other and not a button
+ * press: pressed locally it would be one player's base healing itself on one
+ * screen.
+ */
+bool GUI_Widget_AutoRepair_Click(Widget *w)
+{
+	MpCommand cmd;
+	Structure *s;
+
+	VARIABLE_NOT_USED(w);
+
+	s = Structure_Get_ByPackedTile(g_selectionPosition);
+	if (s == NULL || s->o.type != STRUCTURE_REPAIR) return false;
+	if (s->o.houseID != g_playerHouseID) return false;
+
+	/* A toggle rather than a state, for the reason MP_CMD_STRUCTURE_REPAIR is
+	 * one: both clients hold the same flag and resolve it the same way. */
+	MpCommand_Init(&cmd, MP_CMD_AUTO_REPAIR, s->o.houseID);
+	MpCommand_Submit(&cmd);
+
+	return false;
+}
+
+/**
  * Handles Click event for scrollbar up button.
  *
  * @param w The widget.

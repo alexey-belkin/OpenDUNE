@@ -393,6 +393,55 @@ directly and never asked this rule in the first place.
 
 `--build-rules-self-test` checks both halves against a generated map.
 
+## Repair all
+
+`Structure_AutoRepair_*` in [structure.c](src/structure.c). A switch on the
+Repair facility's panel that puts every damaged building of the House into
+repair, one `Structure_AutoRepair_Consider()` call per structure per structure
+tick, which sets exactly the flag the building's own Repair button sets and
+leaves the rest — the credits, the five hitpoints a tick, the stop when the
+money runs out — to the original game's code in `GameLoop_Structure()`.
+
+Four decisions, each of which is a line of code and a reason:
+
+* **The state is the House's, not the building's**, and it lives in a spare
+  `HouseFlags` bit — the one `unused_0020:3` was holding. `SLDT_HOUSEFLAGS`
+  folds it as 0x20, so the ODHO chunk is the length it was and a savegame
+  written before this loads with the switch off. Several Repair facilities
+  therefore show one setting rather than one each.
+* **It travels as `MP_CMD_AUTO_REPAIR`**, a toggle rather than a state, for the
+  same reason `MP_CMD_STRUCTURE_REPAIR` is one: it spends credits and repairs
+  buildings, so it happens on both machines or the match is over. The flag is
+  inside the house chunk's checksum, which is what would catch it if it ever
+  did not.
+* **It does not set `onHold`** the way the button does. The tick already refuses
+  to produce while `repairing` is set, so the flag buys nothing here — and it is
+  *not* cleared when the credits run out, which would leave a factory held for
+  ever by a repair that never started.
+* **A factory with something inside it is left alone** (`countDown != 0 &&
+  linkedID != 0xFF`, plus the Construction Yard's own countdown). Repairing
+  stops production; stopping every factory in the base is not what somebody who
+  asked for their turrets to survive has asked for. The building's own button
+  still does that.
+
+The label is `STR_AUTO_REPAIR`, one of the strings the fork adds — the original
+data files have no entry for it, so `String_Get_ByIndex()` answers everything
+from `STR_FORK_FIRST` (0x7100) out of `s_forkStrings` in
+[string.c](src/string.c). 0x7000 is not in that range because the main menu's
+lobby row took the number first and resolves it before asking for a string.
+The button is widget index 13 and it shares the Construction Yard's "place it"
+row — the only free space on the panel — which is safe because one belongs to
+the Construction Yard and the other to the Repair facility.
+
+`--auto-repair-self-test` is the guard. It checks the rule one condition at a
+time without a map, because the rule is entirely about flags: off does nothing,
+on repairs a damaged turret, no Repair facility standing does nothing but keeps
+the setting, full health / upgrading / rubble are left alone, a busy factory is
+left alone and an idle one is not, and the switch toggles both ways. It also
+measures the label in the 6p font the panel actually draws with and fails if it
+does not fit the button — "Auto Repair" is 65 pixels against the 60 there are,
+which is how the button came to say "Repair All".
+
 ## The tech tree
 
 `tech_tree` (default `stock`) names which tree the game plays —
@@ -581,6 +630,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-tes
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-queue-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --tech-tree-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --auto-repair-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --pathfinder-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --lobby-self-test

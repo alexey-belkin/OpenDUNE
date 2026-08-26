@@ -256,6 +256,23 @@ its quarter of the price and its quarter of the area. The original game gave
 both the same build time, so paving a square one tile at a time took four times
 as long as paving it in one piece.
 
+Repair all
+----------
+Select a Repair facility and a "Repair All" button appears on the row below the
+vehicle it is working on. It is a switch, not an order: while it is lit, every
+damaged building of yours starts repairing itself as soon as it is hit, at the
+same price per hitpoint the Repair button on each building charges. It is off
+when the match starts, and the Repair facility is what sells it -- lose your
+last one and the switch stops working until you build another, keeping its
+setting for when you do. Several Repair facilities all show the same switch,
+because it belongs to the base and not to the building.
+
+It exists for the buildings that cannot ask for help: turrets, walls and
+windtraps under fire, which are cheap to save and expensive to replace. A
+factory that is building something is left alone -- repairing a factory stops
+its production, and stopping every factory in the base is not what this is for.
+Use the building's own Repair button when that is what you want.
+
 The tech tree
 -------------
 tech_tree names which tech tree the game plays. "stock" is Westwood's and the

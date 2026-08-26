@@ -626,6 +626,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	Widget *buttons[8];
 	Widget *widget24, *widget28, *widget2C, *widget30, *widget34;
 	Widget *widgetPlaceIt;
+	Widget *widgetAutoRepair;
 
 	o  = NULL;
 	u  = NULL;
@@ -741,6 +742,8 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 
 		widgetPlaceIt = GUI_Widget_Get_ByIndex(w, 12);
 		GUI_Widget_MakeInvisible(widgetPlaceIt);
+		widgetAutoRepair = GUI_Widget_Get_ByIndex(w, 13);
+		GUI_Widget_MakeInvisible(widgetAutoRepair);
 
 		/* Create the command buttons, including the four compact group rows. */
 		for (i = 0; i < 8; i++) {
@@ -945,6 +948,23 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 						GUI_Widget_MakeVisible(widgetPlaceIt);
 						GUI_Widget_MakeNormal(widgetPlaceIt, false);
 						GUI_Widget_Draw(widgetPlaceIt);
+					}
+
+					/* The same row on the Repair facility, which has no use for
+					 * it: the switch that repairs the whole base.  It is the
+					 * House's setting, so every Repair facility shows it and
+					 * shows it in the same position -- highlighted while it is
+					 * on, exactly as REPAIRING is. */
+					if (o->type == STRUCTURE_REPAIR && !isNotPlayerOwned) {
+						GUI_Widget_MakeVisible(widgetAutoRepair);
+
+						if (Structure_AutoRepair_IsEnabled((uint8)o->houseID)) {
+							GUI_Widget_MakeSelected(widgetAutoRepair, false);
+						} else {
+							GUI_Widget_MakeNormal(widgetAutoRepair, false);
+						}
+
+						GUI_Widget_Draw(widgetAutoRepair);
 					}
 
 					switch (o->type) {

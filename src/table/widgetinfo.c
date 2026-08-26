@@ -9,7 +9,7 @@
 extern bool GUI_Widget_Mentat_Click(Widget *w);
 
 /* TODO : const */
-WidgetInfo g_table_gameWidgetInfo[24] = {
+WidgetInfo g_table_gameWidgetInfo[25] = {
 	{ /* 0 */
 		/* index       */ 1,
 		/* clickProc   */ &GUI_Widget_Mentat_Click,
@@ -292,6 +292,22 @@ WidgetInfo g_table_gameWidgetInfo[24] = {
 		/* stringID    */ STR_PLACE_IT,
 	},
 	{ /* 23 */
+		/* The same row, borrowed by the Repair facility: the two are never on
+		 * screen at once, because one belongs to the Construction Yard and the
+		 * other to the Repair facility.  Below the "% done" line at y=116 on
+		 * purpose -- the vehicle inside has to stay readable. */
+		/* index       */ 13,
+		/* clickProc   */ &GUI_Widget_AutoRepair_Click,
+		/* shortcut    */ 0,
+		/* flags       */ 17605,
+		/* spriteID    */ -2,
+		/* offsetX     */ 258,
+		/* offsetY     */ 123,
+		/* width       */ 60,
+		/* height      */ 11,
+		/* stringID    */ STR_AUTO_REPAIR,
+	},
+	{ /* 24 */
 		/* index       */ -1,
 		/* clickProc   */ NULL,
 		/* shortcut    */ 0,

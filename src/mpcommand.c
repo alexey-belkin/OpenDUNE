@@ -241,6 +241,13 @@ void MpCommand_Execute(const MpCommand *cmd)
 			GameLoop_SetSpeed(cmd->value, cmd->action);
 			break;
 
+		case MP_CMD_AUTO_REPAIR:
+			/* The switch is the House's, not the building's: the click carries
+			 * no object, and either of two Repair facilities toggles the same
+			 * thing.  It spends credits on both machines, so it travels. */
+			Structure_AutoRepair_Set(cmd->houseID, -1);
+			break;
+
 		case MP_CMD_HOUSE_MISSILE:
 			/* Aiming draws randoms and frees a unit, so it happens on both
 			 * clients or neither. */

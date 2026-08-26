@@ -18,6 +18,7 @@
 #include "explosion.h"
 #include "gfx.h"
 #include "gui/gui.h"
+#include "gui/font.h"
 #include "gui/widget.h"
 #include "house.h"
 #include "inifile.h"
@@ -53,6 +54,8 @@ static uint32 s_tickStructureScript    = 0; /*!< Indicates next time Script func
 static uint32 s_tickStructurePalace    = 0; /*!< Indicates next time Palace function is executed. */
 
 uint16 g_structureIndex;
+
+static void Structure_AutoRepair_Consider(Structure *s, House *h);
 
 typedef struct UnitBuildQueue {
 	uint16 type;
@@ -538,6 +541,11 @@ void GameLoop_Structure(void)
 			if (Structure_Queue_CanOrder(s) && s->o.flags.s.onHold && s->countDown != 0 && s->o.linkedID != 0xFF && h->credits != 0) {
 				s->o.flags.s.onHold = false;
 			}
+
+			/* Before the chain below, which is what actually pays for and
+			 * applies the repair: this only ever sets the flag the player's own
+			 * Repair button sets. */
+			Structure_AutoRepair_Consider(s, h);
 
 			if (s->o.flags.s.upgrading) {
 				uint16 upgradeCost = si->o.buildCredits / 40;
@@ -3027,6 +3035,255 @@ bool Structure_SetRepairingState(Structure *s, int8 state, Widget *w)
 	GUI_Widget_MakeSelected(w, false);
 
 	return true;
+}
+
+/**
+ * Auto repair: every damaged building of a House starts repairing itself.
+ *
+ * The switch belongs to the Repair facility -- it is bought with one and it
+ * stops working when the last one falls -- but the state is the House's, so
+ * several facilities show one shared setting rather than one each.  It rides in
+ * a spare HouseFlags bit, which is what keeps the savegame the length it was.
+ *
+ * Off by default.  Repairing costs credits at exactly the rate the button does,
+ * and a base that quietly spends its income on its walls is not something to
+ * hand a player without asking.
+ */
+bool Structure_AutoRepair_IsEnabled(uint8 houseID)
+{
+	House *h = House_Get_ByIndex(houseID);
+
+	if (h == NULL) return false;
+
+	return h->flags.autoRepair;
+}
+
+/**
+ * Whether the House still has the building the switch lives on.
+ *
+ * structuresBuilt rather than a search: it is recomputed whenever a structure
+ * is built, captured or destroyed, and it counts only what is on the map.
+ */
+bool Structure_AutoRepair_IsAvailable(uint8 houseID)
+{
+	House *h = House_Get_ByIndex(houseID);
+
+	if (h == NULL) return false;
+
+	return (h->structuresBuilt & FLAG_STRUCTURE_REPAIR) != 0;
+}
+
+/**
+ * Turn auto repair on, off, or (state -1) over.
+ *
+ * @return The setting it ended on.
+ */
+bool Structure_AutoRepair_Set(uint8 houseID, int8 state)
+{
+	House *h = House_Get_ByIndex(houseID);
+
+	if (h == NULL) return false;
+
+	if (state == -1) state = h->flags.autoRepair ? 0 : 1;
+
+	h->flags.autoRepair = (state != 0);
+
+	if (houseID == g_playerHouseID) {
+		GUI_DisplayText(String_Get_ByIndex(h->flags.autoRepair ? STR_AUTO_REPAIR_ON : STR_AUTO_REPAIR_OFF), 2);
+	}
+
+	return h->flags.autoRepair;
+}
+
+/**
+ * Start the repair of one damaged building, if auto repair is on.
+ *
+ * Called once per structure tick from GameLoop_Structure(), which is also where
+ * the repair itself is paid for and applied -- so this only ever sets the flag
+ * the player's own button sets, and everything after it is the original game's.
+ *
+ * Two things it deliberately does not do.  It does not set `onHold` the way the
+ * button does: the tick already refuses to produce while `repairing` is set, so
+ * the flag would buy nothing and would be left standing when the credits run
+ * out.  And it leaves a factory that is building something alone -- repairing
+ * stops production, and stopping a factory is not what somebody who asked for
+ * their turrets to be saved has asked for.  The button is still there for that
+ * case.
+ */
+static void Structure_AutoRepair_Consider(Structure *s, House *h)
+{
+	const StructureInfo *si;
+
+	if (s == NULL || h == NULL) return;
+	if (!h->flags.autoRepair) return;
+	if (!s->o.flags.s.allocated) return;
+	if (s->o.flags.s.repairing || s->o.flags.s.upgrading) return;
+
+	si = &g_table_structureInfo[s->o.type];
+
+	if (s->o.hitpoints == 0 || s->o.hitpoints >= si->o.hitpoints) return;
+	if ((h->structuresBuilt & FLAG_STRUCTURE_REPAIR) == 0) return;
+
+	/* Busy means "has something inside it that is being worked on": a factory
+	 * with an order, a Construction Yard with a building, a Repair facility
+	 * with a vehicle in it. */
+	if (s->countDown != 0 && s->o.linkedID != 0xFF) return;
+	if (s->o.type == STRUCTURE_CONSTRUCTION_YARD && s->countDown != 0) return;
+
+	s->o.flags.s.repairing = true;
+}
+
+/**
+ * Auto repair, checked without a map: the rule is entirely about flags.
+ *
+ * The half this cannot reach is the repair itself -- the credits and the five
+ * hitpoints a tick -- because that is the original game's code inside
+ * GameLoop_Structure() and this changes none of it.  What is new is which
+ * buildings get the flag set, so that is what is checked, one condition at a
+ * time.
+ */
+int Structure_AutoRepair_RunRegressionTest(void)
+{
+	House *h;
+	Structure s;
+	int result = 1;
+	uint16 labelWidth;
+	uint16 buttonWidth = 0;
+	uint16 i;
+
+	h = House_Allocate(HOUSE_ORDOS);
+	if (h == NULL) h = House_Get_ByIndex(HOUSE_ORDOS);
+	if (h == NULL) return 0;
+
+	/* Off is the default, and it has to survive a damaged base. */
+	h->flags.autoRepair = false;
+	h->structuresBuilt = FLAG_STRUCTURE_CONSTRUCTION_YARD | FLAG_STRUCTURE_REPAIR | FLAG_STRUCTURE_TURRET;
+
+	memset(&s, 0, sizeof(s));
+	s.o.type          = STRUCTURE_TURRET;
+	s.o.houseID       = HOUSE_ORDOS;
+	s.o.flags.s.allocated = true;
+	s.o.linkedID      = 0xFF;
+	s.o.hitpoints     = 10;
+
+	Structure_AutoRepair_Consider(&s, h);
+	if (s.o.flags.s.repairing) {
+		printf("auto-repair: repaired with the switch off\n");
+		result = 0;
+	}
+
+	/* On, and the turret repairs. */
+	h->flags.autoRepair = true;
+	Structure_AutoRepair_Consider(&s, h);
+	if (!s.o.flags.s.repairing) {
+		printf("auto-repair: a damaged turret was left alone\n");
+		result = 0;
+	}
+
+	/* The switch is bought with the building it lives on: without a Repair
+	 * facility standing it does nothing, and the setting itself is kept. */
+	s.o.flags.s.repairing = false;
+	h->structuresBuilt = FLAG_STRUCTURE_CONSTRUCTION_YARD | FLAG_STRUCTURE_TURRET;
+	Structure_AutoRepair_Consider(&s, h);
+	if (s.o.flags.s.repairing) {
+		printf("auto-repair: repaired without a Repair facility\n");
+		result = 0;
+	}
+	if (!Structure_AutoRepair_IsEnabled(HOUSE_ORDOS)) {
+		printf("auto-repair: losing the facility cleared the setting\n");
+		result = 0;
+	}
+	if (Structure_AutoRepair_IsAvailable(HOUSE_ORDOS)) {
+		printf("auto-repair: available without a Repair facility\n");
+		result = 0;
+	}
+	h->structuresBuilt |= FLAG_STRUCTURE_REPAIR;
+
+	/* An undamaged building, a building being upgraded and a rubble heap are
+	 * all left alone. */
+	s.o.flags.s.repairing = false;
+	s.o.hitpoints = g_table_structureInfo[STRUCTURE_TURRET].o.hitpoints;
+	Structure_AutoRepair_Consider(&s, h);
+	if (s.o.flags.s.repairing) {
+		printf("auto-repair: repaired a building at full hitpoints\n");
+		result = 0;
+	}
+
+	s.o.hitpoints = 10;
+	s.o.flags.s.upgrading = true;
+	Structure_AutoRepair_Consider(&s, h);
+	if (s.o.flags.s.repairing) {
+		printf("auto-repair: interrupted an upgrade\n");
+		result = 0;
+	}
+	s.o.flags.s.upgrading = false;
+
+	s.o.hitpoints = 0;
+	Structure_AutoRepair_Consider(&s, h);
+	if (s.o.flags.s.repairing) {
+		printf("auto-repair: repaired a destroyed building\n");
+		result = 0;
+	}
+
+	/* A factory with something inside it keeps building it.  Repairing stops
+	 * production, and stopping a factory is not what this switch is for. */
+	memset(&s, 0, sizeof(s));
+	s.o.type          = STRUCTURE_HEAVY_VEHICLE;
+	s.o.houseID       = HOUSE_ORDOS;
+	s.o.flags.s.allocated = true;
+	s.o.hitpoints     = 10;
+	s.o.linkedID      = 3;
+	s.countDown       = 100;
+
+	Structure_AutoRepair_Consider(&s, h);
+	if (s.o.flags.s.repairing) {
+		printf("auto-repair: stopped a factory that was building something\n");
+		result = 0;
+	}
+
+	s.o.linkedID = 0xFF;
+	s.countDown  = 0;
+	Structure_AutoRepair_Consider(&s, h);
+	if (!s.o.flags.s.repairing) {
+		printf("auto-repair: an idle factory was left damaged\n");
+		result = 0;
+	}
+
+	/* The switch itself: explicit both ways, and a toggle in between. */
+	if (Structure_AutoRepair_Set(HOUSE_ORDOS, 0) || Structure_AutoRepair_IsEnabled(HOUSE_ORDOS)) result = 0;
+	if (!Structure_AutoRepair_Set(HOUSE_ORDOS, -1) || !Structure_AutoRepair_IsEnabled(HOUSE_ORDOS)) result = 0;
+	if (Structure_AutoRepair_Set(HOUSE_ORDOS, -1) || Structure_AutoRepair_IsEnabled(HOUSE_ORDOS)) result = 0;
+	if (!Structure_AutoRepair_Set(HOUSE_ORDOS, 1) || !Structure_AutoRepair_IsEnabled(HOUSE_ORDOS)) result = 0;
+	Structure_AutoRepair_Set(HOUSE_ORDOS, 0);
+
+	/* The label has to fit the button it is centred in, or it runs off the
+	 * panel and into the screen edge -- there are 60 pixels there and no more. */
+	for (i = 0; i < lengthof(g_table_gameWidgetInfo); i++) {
+		if (g_table_gameWidgetInfo[i].stringID == STR_AUTO_REPAIR) buttonWidth = g_table_gameWidgetInfo[i].width;
+	}
+	{
+		/* The panel draws its buttons through GUI_DrawText_Wrapper(..., 0x121):
+		 * the 6p font, one pixel of kerning taken off each character.  Measured
+		 * with anything else this check means nothing. */
+		Font *font = g_fontCurrent;
+		int8 offset = g_fontCharOffset;
+
+		if (g_fontNew6p != NULL) Font_Select(g_fontNew6p);
+		g_fontCharOffset = -1;
+		labelWidth = Font_GetStringWidth(String_Get_ByIndex(STR_AUTO_REPAIR));
+		g_fontCharOffset = offset;
+		if (font != NULL) Font_Select(font);
+	}
+	if (buttonWidth == 0) {
+		printf("auto-repair: no button carries the label\n");
+		result = 0;
+	} else if (labelWidth > buttonWidth) {
+		printf("auto-repair: the label is %u pixels wide and the button is %u\n",
+		       (unsigned)labelWidth, (unsigned)buttonWidth);
+		result = 0;
+	}
+
+	return result;
 }
 
 /**

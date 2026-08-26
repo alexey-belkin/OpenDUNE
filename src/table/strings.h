@@ -539,7 +539,19 @@ enum {
 	STR_SECURITY_TEXT_ORDOS = 532,
 	STR_SECURITY_CORRECT_ORDOS = 533,
 	STR_SECURITY_WRONG_ORDOS = 534,
-	STR_SECURITY_QUESTIONS = 535
+	STR_SECURITY_QUESTIONS = 535,
+
+	/* Strings this fork adds, which the original data files have no entry for.
+	 * They live past every real string ID, and String_Get_ByIndex() answers
+	 * them out of a table of its own -- see s_forkStrings in string.c.  0x7000
+	 * is not the first of them: the main menu's PLAY SOMEBODY row took that
+	 * number before this table existed, and resolves it before it ever asks for
+	 * a string. */
+	STR_FORK_FIRST = 0x7100,
+	STR_AUTO_REPAIR = 0x7100,
+	STR_AUTO_REPAIR_ON = 0x7101,
+	STR_AUTO_REPAIR_OFF = 0x7102,
+	STR_FORK_LAST = 0x7102
 };
 
 #endif /* TABLE_STRINGS_H */

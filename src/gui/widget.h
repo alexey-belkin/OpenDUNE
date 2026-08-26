@@ -180,7 +180,7 @@ typedef struct WidgetProperties {
 	uint8  fgColourSelected;                                /*!< Foreground colour when 'selected' */
 } WidgetProperties;
 
-extern WidgetInfo g_table_gameWidgetInfo[24];
+extern WidgetInfo g_table_gameWidgetInfo[25];
 extern WidgetInfo g_table_factoryWidgetInfo[13];
 
 extern WindowDesc g_lobbyWindowDesc;
@@ -244,6 +244,7 @@ extern void GUI_Widget_Viewport_RedrawMap(Screen screenID);
 /* widget_click.c */
 extern bool GUI_Widget_SpriteTextButton_Click(Widget *w);
 extern bool GUI_Widget_PlaceIt_Click(Widget *w);
+extern bool GUI_Widget_AutoRepair_Click(Widget *w);
 extern bool GUI_Widget_Scrollbar_ArrowUp_Click(Widget *w);
 extern bool GUI_Widget_Scrollbar_ArrowDown_Click(Widget *w);
 extern bool GUI_Widget_Scrollbar_Click(Widget *w);

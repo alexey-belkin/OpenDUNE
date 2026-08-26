@@ -154,7 +154,8 @@ bool SaveLoad_Load(const SaveLoadDesc *sld, FILE *fp, void *object)
 					f->doneFullScaleAttack = (value & 0x04) ? true : false;
 					f->isAIActive = (value & 0x08) ? true : false;
 					f->radarActivated = (value & 0x10) ? true : false;
-					f->unused_0020 = 0;
+					f->autoRepair = (value & 0x20) ? true : false;
+					f->unused_0040 = 0;
 				} break;
 
 				case SLDT_OBJECTFLAGS: {
@@ -257,7 +258,7 @@ bool SaveLoad_Save(const SaveLoadDesc *sld, FILE *fp, void *object)
 
 				case SLDT_HOUSEFLAGS: {
 					HouseFlags *f = (HouseFlags *)ptr;
-					value = f->used | (f->human << 1) | (f->doneFullScaleAttack << 2) | (f->isAIActive << 3) | (f->radarActivated << 4);
+					value = f->used | (f->human << 1) | (f->doneFullScaleAttack << 2) | (f->isAIActive << 3) | (f->radarActivated << 4) | (f->autoRepair << 5);
 				} break;
 
 				case SLDT_OBJECTFLAGS: {

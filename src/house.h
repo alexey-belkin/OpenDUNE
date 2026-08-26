@@ -67,7 +67,8 @@ typedef struct {
 	BIT_U8 doneFullScaleAttack:1;                       /*!< The House did his one time attack the human with everything we have. */
 	BIT_U8 isAIActive:1;                                /*!< The House has been seen by the human, and everything now becomes active (Team attack, house missiles, rebuilding, ..). */
 	BIT_U8 radarActivated:1;                            /*!< The radar is activated. */
-	BIT_U8 unused_0020:3;                               /*!< Unused */
+	BIT_U8 autoRepair:1;                                /*!< Damaged buildings repair themselves while a Repair facility stands and the credits last. */
+	BIT_U8 unused_0040:2;                               /*!< Unused */
 } HouseFlags;
 
 /**

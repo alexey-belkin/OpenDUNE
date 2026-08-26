@@ -102,8 +102,24 @@ const char *String_GenerateFilename(const char *name)
  * @param stringID The index of the string.
  * @return The pointer to the string.
  */
+/* The fork's own strings, in STR_FORK_FIRST order.  Not const, because
+ * String_Get_ByIndex() hands out a writable pointer into the string buffer and
+ * every caller is typed for that. */
+static char s_forkStrings[][24] = {
+	"Repair All",                                           /* STR_AUTO_REPAIR -- 56 pixels of the button's 60; see the self-test. */
+	"Repair all: on",                                       /* STR_AUTO_REPAIR_ON */
+	"Repair all: off"                                       /* STR_AUTO_REPAIR_OFF */
+};
+
 char *String_Get_ByIndex(uint16 stringID)
 {
+	if (stringID >= STR_FORK_FIRST) {
+		uint16 index = stringID - STR_FORK_FIRST;
+
+		if (index >= lengthof(s_forkStrings)) return s_forkStrings[0];
+		return s_forkStrings[index];
+	}
+
 	return s_stringsBuffer + s_strings[stringID];
 }
 

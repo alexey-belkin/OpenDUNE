@@ -32,7 +32,8 @@ typedef enum MpCommandType {
 	MP_CMD_STRUCTURE_SPECIAL,                               /*!< The Palace: arm the missile, call the Fremen, send the saboteur. */
 	MP_CMD_HOUSE_MISSILE,                                   /*!< Aim the armed missile at a tile. */
 	MP_CMD_STRUCTURE_QUEUE,                                 /*!< Queue one more of what a factory is making, or take one off; value 1 removes. */
-	MP_CMD_MATCH_SPEED                                      /*!< How fast the match runs: value is the tick multiplier, action the NORMAL/FAST setting. */
+	MP_CMD_MATCH_SPEED,                                     /*!< How fast the match runs: value is the tick multiplier, action the NORMAL/FAST setting. */
+	MP_CMD_AUTO_REPAIR                                      /*!< The Repair facility's auto repair switch: a toggle, resolved where it runs. */
 } MpCommandType;
 
 /**
