@@ -229,6 +229,18 @@ void MpCommand_Execute(const MpCommand *cmd)
 			Structure_ActivateSpecial(s);
 			break;
 
+		case MP_CMD_MATCH_SPEED:
+			/* Speed is one dial for both players, and it has to be, twice over.
+			 * The tick multiplier decides the turn delay -- see
+			 * MpGame_DelayForSpeed() -- and two clients with different delays
+			 * stamp their commands for different turns, which stalls the match
+			 * rather than desyncing it.  The NORMAL/FAST setting is worse: it
+			 * feeds Tools_AdjustToGameSpeed(), so it changes how fast a unit
+			 * walks and how often it fires, and one player turning it on used to
+			 * take the two worlds apart within a minute. */
+			GameLoop_SetSpeed(cmd->value, cmd->action);
+			break;
+
 		case MP_CMD_HOUSE_MISSILE:
 			/* Aiming draws randoms and frees a unit, so it happens on both
 			 * clients or neither. */

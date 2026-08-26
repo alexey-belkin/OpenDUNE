@@ -46,6 +46,8 @@ typedef struct MpTransport {
 extern void MpTurn_Begin(uint8 localSlot, const MpTransport *transport, uint16 turnLength, uint8 delay);
 extern void MpTurn_End(void);
 extern bool MpTurn_IsActive(void);
+extern void MpTurn_SetDelay(uint8 delay);
+extern uint8 MpTurn_GetDelay(void);
 
 extern bool MpTurn_Submit(const MpCommand *cmd);
 extern bool MpTurn_Advance(void);

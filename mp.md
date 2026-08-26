@@ -51,7 +51,7 @@ is 16.67 ms.
 | Symbol | Meaning | Default |
 |---|---|---|
 | `TL` | turn length in ticks | 8 ticks = 133 ms |
-| `D` | turn delay: an order issued during turn N executes at turn N+D | 2, adaptive |
+| `D` | turn delay: an order issued during turn N executes at turn N+D | `ceil(3 * M / 2)`, where M is the speed |
 | `L` | one-way delivery A → relay → B | ≈ ping / 2 |
 
 Per turn each client sends one packet, always, even empty — an empty command list
@@ -971,6 +971,7 @@ decides whether a house is the AI's already asks `Match_IsHumanControlled()`.
 |---|---|
 | `MP_CMD_STRUCTURE_PLACE` | `Structure_Place()`, plus the Palace position and the Refinery's free harvester — which was created for `g_playerHouseID`, i.e. for the wrong player the moment two can build |
 | `MP_CMD_STRUCTURE_HOLD` | hold and resume; a house nobody resumes stops building the first time it runs out of money |
+| `MP_CMD_MATCH_SPEED` | the speed dial, both halves of it: the tick multiplier decides the turn delay, and the Normal/Fast row feeds `Tools_AdjustToGameSpeed()`, i.e. how fast a unit walks and how often it fires |
 
 The placement command names the **yard**, not the building. Clearing
 `linkedID` is simulation state, and the GUI used to do it when the player pressed
@@ -1177,7 +1178,41 @@ the ping fits inside it the match does not stutter at all, and when it does not,
 it stutters badly. Both ways out work — a longer delay or longer turns — and both
 are paid for in how long the player waits to see their own order take effect.
 `--mp-turn=TL,D` is where that trade is made; adapting it to the measured ping
-is v2.
+is still v2.
+
+**The budget is in ticks, and the player can change how long a tick lasts.**
+`D * TL` ticks is `D * TL / (60 * M)` seconds, where M is the speed multiplier
+the `[` and `]` keys set — so doubling the speed halves the time a packet has to
+arrive in, and the same match that never stuttered at x2 stalls at every turn
+boundary at x4. Measured against this relay's 170 ms p90, a 50 ms budget (the
+default D and TL at x4) stalls both clients for most of every second; a 200 ms
+budget does not stall at all. `MpGame_DelayForSpeed()` therefore derives the
+delay from the speed — `D = ceil(Dc * M / 2)`, which holds the budget at
+whatever `Dc` was calibrated to at x2 — and `GameLoop_SetSpeed()` reapplies it
+whenever the speed changes.
+
+That makes the speed a **shared** dial, and it has to be one for two separate
+reasons. Two clients with different delays stamp their commands for different
+turns, which does not desync anything — it stalls the match, because a turn
+nobody addressed a packet to is a turn everybody waits at. And the second half
+of the speed, the Normal/Fast row in the options screen, feeds
+`Tools_AdjustToGameSpeed()`: it changes walking speed and fire delays, i.e. the
+simulation itself. Both travel as `MP_CMD_MATCH_SPEED`, so both players change
+speed together, in the same turn, on both machines; either of them may reach for
+the dial and the last one to do so wins.
+
+Changing D mid-match is the one thing in the turn loop that can leave a turn
+without a packet, and `MpTurn_SetDelay()` handles both directions.
+Raising it opens a gap between the turn the outbox is addressed to and the turn
+it would now be addressed to; `MpTurn_Advance()` fills the gap with empty
+packets, exactly as `MpTurn_Begin()` fills the opening turns. Lowering it is the
+opposite: the packets for the next few turns have already gone, so the outbox
+stays where it is and the loop waits for the clock to catch up with it. What it
+may never do is re-address the outbox — a command collected for turn N+6 cannot
+be moved to N+3 once N+3 has been sent.
+
+`--mp-realtime` paces at the speed in force rather than at a flat 60 Hz, or the
+harness could not measure the case it exists for.
 
 Every configuration in the table agreed on every checksum.
 

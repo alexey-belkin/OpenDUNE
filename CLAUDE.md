@@ -660,8 +660,22 @@ loop, where a command is stamped for turn N+D instead of happening now. On its
 own it uses a loopback transport; `--mp-net=slot,dir` makes this process one
 player of two and the directory their wire, so two processes play one match and
 `diff` of their checksum logs decides. `--mp-turn=TL,D` sets turn length and
-delay, `--mp-realtime` paces at 60 Hz and `--mp-lag=ms` holds packets back at the
-sender — together they measure whether a given ping stalls anybody.
+delay, `--mp-realtime` paces at the speed in force and `--mp-lag=ms` holds
+packets back at the sender — together they measure whether a given ping stalls
+anybody.
+
+**D is derived from the speed, and the speed is shared.** The budget for a
+packet to arrive is `D * TL` ticks, which is `D * TL / (60 * M)` seconds — so
+doubling the speed halves it, and the default D at x4 leaves 50 ms against a
+relay whose p90 is 170. `MpGame_DelayForSpeed()` in [opendune.c](src/opendune.c)
+therefore uses `D = ceil(Dc * M / 2)`, holding the budget where `--mp-turn`
+calibrated it. The speed itself travels as `MP_CMD_MATCH_SPEED`: two clients
+with different delays stall each other, and the options screen's Normal/Fast row
+is a simulation input (`Tools_AdjustToGameSpeed()` reads it for walking speed and
+fire delays), so both halves change on both machines in the same turn.
+`MpTurn_SetDelay()` is what makes a mid-match change safe in either direction —
+raising D fills the gap with empty packets, lowering it waits for the clock
+rather than re-addressing an outbox whose turn has already been sent.
 
 ```bash
 ./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=1,/tmp/net &

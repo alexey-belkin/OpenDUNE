@@ -1083,22 +1083,100 @@ uint16 GameLoop_GetSpeedFactor(void)
 	return s_gameSpeedFactor * ((g_gameConfig.gameSpeed == GAME_SPEED_FAST) ? 2 : 1);
 }
 
-/** Halve (direction < 0) or double (direction > 0) the game speed. */
-static void GameLoop_StepSpeed(int direction)
+/** The [ and ] step on its own, without the NORMAL/FAST doubling folded in. */
+uint16 GameLoop_GetSpeedStep(void)
 {
-	uint16 old = s_gameSpeedFactor;
+	return s_gameSpeedFactor;
+}
 
-	if (direction < 0) {
-		s_gameSpeedFactor = max(1, s_gameSpeedFactor / 2);
-	} else {
-		s_gameSpeedFactor = min(GAME_SPEED_FACTOR_MAX, s_gameSpeedFactor * 2);
-	}
+/**
+ * The turn delay that goes with a speed.
+ *
+ * The delay is a number of *turns*, and a turn is a fixed number of ticks -- so
+ * the wall-clock time a packet has to arrive in is `delay * turnLength / (60 *
+ * speed)` seconds, and it halves every time the speed doubles.  At the default
+ * eight ticks a turn and a delay of three that is 200 ms at x2 and 100 ms at
+ * x4, which is less than an ordinary ping across a country: every turn boundary
+ * then waits for the wire, and the match stutters although nothing is wrong
+ * with it.
+ *
+ * D = Dc * M / 2 keeps that budget where it was calibrated instead, rounded up
+ * so it never lands short.  Dc is what --mp-turn asked for, or the default; the
+ * only speed at which this changes the old behaviour is x1, where the budget
+ * used to be 400 ms and is now 266 ms.
+ */
+static uint8 MpGame_DelayForSpeed(uint16 speedFactor)
+{
+	uint32 delay;
 
-	if (s_gameSpeedFactor == old) return;
+	if (speedFactor == 0) speedFactor = 1;
+
+	delay = ((uint32)s_mpTurnDelay * speedFactor + 1) / 2;
+
+	if (delay < 1) delay = 1;
+	if (delay > 64) delay = 64;
+
+	return (uint8)delay;
+}
+
+/**
+ * Set the speed of the match, both halves of it, and the delay that follows.
+ *
+ * In a networked match this is only ever reached through MP_CMD_MATCH_SPEED, so
+ * the two clients change speed in the same turn.  That matters twice: the delay
+ * derived here has to be the same on both, and the NORMAL/FAST setting is a
+ * simulation input -- Tools_AdjustToGameSpeed() reads it for walking speed and
+ * fire delays -- so a player toggling it alone would take the two worlds apart.
+ */
+void GameLoop_SetSpeed(uint16 factor, uint16 gameSpeed)
+{
+	if (factor < 1) factor = 1;
+	if (factor > GAME_SPEED_FACTOR_MAX) factor = GAME_SPEED_FACTOR_MAX;
+	if (gameSpeed != GAME_SPEED_NORMAL && gameSpeed != GAME_SPEED_FAST) gameSpeed = g_gameConfig.gameSpeed;
+
+	if (factor == s_gameSpeedFactor && gameSpeed == g_gameConfig.gameSpeed) return;
+
+	s_gameSpeedFactor       = factor;
+	g_gameConfig.gameSpeed  = gameSpeed;
+
+	if (MpTurn_IsActive()) MpTurn_SetDelay(MpGame_DelayForSpeed(GameLoop_GetSpeedFactor()));
 
 	/* The indicator sits over the map, which is only repainted where it is
 	 * dirty; without this the previous factor stays on screen. */
 	g_viewport_forceRedraw = true;
+}
+
+/**
+ * Halve (direction < 0) or double (direction > 0) the game speed.
+ *
+ * In a match it is not this client's dial: the change is submitted like any
+ * other order and takes effect on both machines in the same turn.  Either
+ * player may reach for it, and the last one to do so wins -- which is the same
+ * bargain as every other command in a game two people are playing.
+ */
+static void GameLoop_StepSpeed(int direction)
+{
+	uint16 factor = s_gameSpeedFactor;
+
+	if (direction < 0) {
+		factor = max(1, factor / 2);
+	} else {
+		factor = min(GAME_SPEED_FACTOR_MAX, factor * 2);
+	}
+
+	if (factor == s_gameSpeedFactor) return;
+
+	if (MpTurn_IsActive()) {
+		MpCommand cmd;
+
+		MpCommand_Init(&cmd, MP_CMD_MATCH_SPEED, (uint8)g_playerHouseID);
+		cmd.value  = factor;
+		cmd.action = (uint8)g_gameConfig.gameSpeed;
+		MpCommand_Submit(&cmd);
+		return;
+	}
+
+	GameLoop_SetSpeed(factor, g_gameConfig.gameSpeed);
 }
 
 static void InGame_Numpad_Move(uint16 key)
@@ -1735,13 +1813,14 @@ static bool MpGame_Begin(void)
 		MpSync_Dump(path);
 	}
 
-	MpTurn_Begin(s_mpTurnSlot, MpTransport_Net(), s_mpTurnLength, s_mpTurnDelay);
+	MpTurn_Begin(s_mpTurnSlot, MpTransport_Net(), s_mpTurnLength, MpGame_DelayForSpeed(GameLoop_GetSpeedFactor()));
 	MpTurn_SetSnapshots(s_mpDesyncDump);
 
 	Timer_SetMatchPump(&MpGame_Pump);
 
-	snprintf(line, sizeof(line), "mp-live: playing, tl%u d%u, viewpoint slot %u",
-	         (unsigned)s_mpTurnLength, (unsigned)s_mpTurnDelay, (unsigned)(s_mpTurnSlot + 1));
+	snprintf(line, sizeof(line), "mp-live: playing, tl%u d%u at x%u, viewpoint slot %u",
+	         (unsigned)s_mpTurnLength, (unsigned)MpTurn_GetDelay(),
+	         (unsigned)GameLoop_GetSpeedFactor(), (unsigned)(s_mpTurnSlot + 1));
 	PrintToConsole(line);
 
 	return true;
@@ -1855,6 +1934,22 @@ static void MpHarness_ScriptedPlayer(uint8 houseID, uint32 tick)
 	if (h == NULL) return;
 
 	round = (uint16)(tick / 100);
+
+	/* Change the speed now and then, because the turn delay follows it and a
+	 * delay that changes mid-match is the one thing in the turn loop that can
+	 * leave a turn without a packet.  Raising it opens a gap the loop has to
+	 * fill, lowering it addresses the outbox to a turn that has already gone --
+	 * so both directions are walked here, on the tick, where the harnesses can
+	 * see whether the two sides stayed in step. */
+	if ((round % 23) == 0) {
+		static const uint16 ladder[4] = { 1, 2, 4, 2 };
+		MpCommand cmd;
+
+		MpCommand_Init(&cmd, MP_CMD_MATCH_SPEED, houseID);
+		cmd.value  = ladder[(round / 23) % 4];
+		cmd.action = (uint8)g_gameConfig.gameSpeed;
+		MpCommand_Submit(&cmd);
+	}
 
 	/* Sweep the pools by index rather than by find order: it is the one walk
 	 * that does not depend on when anything was allocated. */
@@ -3439,6 +3534,9 @@ static void GameLoop_Main(void)
 		uint32 waited = 0;
 		uint32 samples = 0;
 		uint32 startedAt = 0;
+		uint32 paceStart = 0;                               /* When the current speed started being paced. */
+		uint32 paceTick = 0;                                /* And at which tick, so a speed change rebases. */
+		uint16 paceFactor = 1;
 		uint32 lateBy = 0;
 		uint32 stalledMs = 0;
 		uint32 tick;
@@ -3493,10 +3591,13 @@ static void GameLoop_Main(void)
 
 		houseID = s_skirmishHouse[s_mpTurnSlot];
 
-		MpTurn_Begin(s_mpTurnSlot, transport, s_mpTurnLength, s_mpTurnDelay);
+		MpTurn_Begin(s_mpTurnSlot, transport, s_mpTurnLength, MpGame_DelayForSpeed(GameLoop_GetSpeedFactor()));
 		MpTurn_SetSnapshots(s_mpDesyncDump);
 
-		startedAt = Timer_GetTime();
+		startedAt  = Timer_GetTime();
+		paceStart  = startedAt;
+		paceTick   = 0;
+		paceFactor = GameLoop_GetSpeedFactor();
 
 		for (tick = 0; ; tick++) {
 			/* Real time or as fast as the CPU allows.  The difference decides
@@ -3504,8 +3605,29 @@ static void GameLoop_Main(void)
 			 * clock in a real game and microseconds in a headless one, so only
 			 * the paced run can answer whether a given ping stalls anybody. */
 			if (s_mpRealtime) {
-				uint32 due = startedAt + (tick * 1000 / 60);
-				uint32 now = Timer_GetTime();
+				/* At the speed the players are actually playing at, not at 60 Hz
+				 * flat.  The whole point of a paced run is to say whether a given
+				 * ping stalls anybody, and the answer depends on the speed twice
+				 * over: the ticks come faster, so a turn is shorter in
+				 * milliseconds, and the delay that buys the packet its time is
+				 * derived from the same number.  Paced at 60 Hz this harness
+				 * could not see the case it exists to measure.
+				 *
+				 * Rebased when the speed changes rather than computed from tick
+				 * zero, because the ticks before the change happened at the old
+				 * rate and no single formula covers both. */
+				uint32 due;
+				uint32 now;
+				uint16 factor = GameLoop_GetSpeedFactor();
+
+				if (factor != paceFactor) {
+					paceStart  = Timer_GetTime();
+					paceTick   = tick;
+					paceFactor = factor;
+				}
+
+				due = paceStart + ((tick - paceTick) * 1000) / (60 * factor);
+				now = Timer_GetTime();
 
 				if (now < due) {
 					msleep(due - now);
@@ -3615,7 +3737,7 @@ static void GameLoop_Main(void)
 			 * each one: the file transport's lag is a figure we chose, the
 			 * relay's is whatever the internet did. */
 			snprintf(line, sizeof(line), "mp-turnloop: slot %u tl%u d%u %s played %u turns over %u ticks, %u samples, %u ms stalled",
-			         (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpTurnLength, (unsigned)s_mpTurnDelay,
+			         (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpTurnLength, (unsigned)MpTurn_GetDelay(),
 			         wire, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpReplayTicks,
 			         (unsigned)samples, (unsigned)stalledMs);
 			PrintToConsole(line);

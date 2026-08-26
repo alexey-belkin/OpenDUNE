@@ -74,6 +74,41 @@ void MpTurn_Begin(uint8 localSlot, const MpTransport *transport, uint16 turnLeng
 	s_turn.outbox.turn = delay;
 }
 
+/**
+ * Change how far ahead commands are stamped, mid-match.
+ *
+ * The delay is the latency budget in turns, and the turn is a fixed number of
+ * ticks -- so at a higher tick rate the same delay is a shorter wait for the
+ * other player's packet.  That is why it moves with the speed: see
+ * MpGame_DelayForSpeed() in opendune.c.
+ *
+ * Both directions have to work without leaving a turn nobody sent a packet for,
+ * because a missing packet stalls everybody until it arrives and it never will.
+ * Raising the delay opens a gap between the turn the outbox is addressed to and
+ * the turn it would now be addressed to; MpTurn_Advance() fills it with empty
+ * packets, exactly as MpTurn_Begin() fills the opening turns.  Lowering it is
+ * the opposite problem -- the packets for the next few turns have already gone
+ * -- so the outbox simply stays where it is and the loop waits until the clock
+ * catches up with it.  Neither case may be answered by re-addressing the
+ * outbox: a command already collected for turn N+6 cannot be moved to N+3 once
+ * N+3 has been sent, and moving it to a turn already executed loses it.
+ *
+ * This is only safe because the change itself travels as a command: both
+ * clients run it in the same turn, so they agree about the delay from the same
+ * turn onwards.  Calling it locally in a networked match would stall the match.
+ */
+void MpTurn_SetDelay(uint8 delay)
+{
+	if (!s_turn.active || delay == 0) return;
+
+	s_turn.delay = delay;
+}
+
+uint8 MpTurn_GetDelay(void)
+{
+	return s_turn.delay;
+}
+
 void MpTurn_End(void)
 {
 	memset(&s_turn, 0, sizeof(s_turn));
@@ -224,8 +259,15 @@ bool MpTurn_Advance(void)
 	if (!s_turn.active) return true;
 
 	/* Ours first, so a single-player-in-two-processes match cannot deadlock on
-	 * itself, and so the others have the longest possible time to receive it. */
-	if (s_turn.outbox.turn == s_turn.turn + s_turn.delay) {
+	 * itself, and so the others have the longest possible time to receive it.
+	 *
+	 * A loop rather than a single send, and that is what lets the delay change
+	 * mid-match: raising it leaves several turns between the outbox and the new
+	 * horizon, and every one of them still needs a packet from us.  The first
+	 * pass carries whatever the player has issued, the rest are empty -- the
+	 * same "I am here and I did nothing" packet the opening turns use.  While
+	 * the delay is unchanged this runs exactly once, as it always did. */
+	while (s_turn.outbox.turn <= s_turn.turn + s_turn.delay) {
 		s_turn.outbox.checkTurn = s_turn.turn;
 		if (!MpSync_Take(&s_turn.outbox.check)) memset(&s_turn.outbox.check, 0, sizeof(s_turn.outbox.check));
 
@@ -233,8 +275,12 @@ bool MpTurn_Advance(void)
 
 		if (!s_turn.transport->send(s_turn.localSlot, &s_turn.outbox)) return false;
 
-		memset(&s_turn.outbox, 0, sizeof(s_turn.outbox));
-		s_turn.outbox.turn = s_turn.turn + s_turn.delay + 1;
+		{
+			uint32 sent = s_turn.outbox.turn;
+
+			memset(&s_turn.outbox, 0, sizeof(s_turn.outbox));
+			s_turn.outbox.turn = sent + 1;
+		}
 	}
 
 	/* Everybody's packet for this turn, or nobody moves. */

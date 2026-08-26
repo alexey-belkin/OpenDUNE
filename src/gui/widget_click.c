@@ -732,9 +732,28 @@ static void GUI_Widget_GameControls_Click(Widget *w)
 					if (g_gameConfig.sounds == 0) Driver_Sound_Stop();
 					break;
 
-				case 2:
-					g_gameConfig.gameSpeed = (g_gameConfig.gameSpeed == GAME_SPEED_FAST) ? GAME_SPEED_NORMAL : GAME_SPEED_FAST;
-					break;
+				case 2: {
+					uint16 speed = (g_gameConfig.gameSpeed == GAME_SPEED_FAST) ? GAME_SPEED_NORMAL : GAME_SPEED_FAST;
+
+					/* Not a preference: Tools_AdjustToGameSpeed() reads this for
+					 * how fast a unit walks and how often it fires, so in a match
+					 * it is a simulation input and belongs to both players.  It
+					 * travels as a command, which also means the row here does
+					 * not change under the finger that clicked it -- it changes a
+					 * couple of hundred milliseconds later, when the turn it was
+					 * stamped for comes round on both machines. */
+					if (MpTurn_IsActive()) {
+						MpCommand cmd;
+
+						MpCommand_Init(&cmd, MP_CMD_MATCH_SPEED, (uint8)g_playerHouseID);
+						cmd.value  = GameLoop_GetSpeedStep();
+						cmd.action = (uint8)speed;
+						MpCommand_Submit(&cmd);
+						break;
+					}
+
+					g_gameConfig.gameSpeed = speed;
+				} break;
 
 				case 3:
 					g_gameConfig.hints ^= 0x1;
