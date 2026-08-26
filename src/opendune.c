@@ -210,6 +210,11 @@ static char s_mpRelayRoom[64] = "opendune";
 static uint32 s_mpLiveSeed = 1000;
 static uint32 s_mpLiveStart = 0;
 static uint32 s_mpLiveSteps = 0;
+/* The schedule in MpGame_Step() is wall clock x speed, so it is drawn from the
+ * moment the speed last changed and not from the start of the match.  See the
+ * rebase there for what happens without these two. */
+static uint32 s_mpLiveBase = 0;
+static uint16 s_mpLiveFactor = 0;
 static uint32 s_mpLiveStalledMs = 0;
 static uint32 s_mpLiveNextSample = 0;
 static uint32 s_mpLiveSampleStep = 300;
@@ -1394,6 +1399,7 @@ static void MpGame_Step(void)
 	char line[256];
 	uint32 due;
 	uint16 budget;
+	uint16 factor = GameLoop_GetSpeedFactor();
 
 	if (inside) return;
 	inside = true;
@@ -1411,7 +1417,21 @@ static void MpGame_Step(void)
 	 * turns, so a client asking for x2 simply reaches each turn boundary sooner
 	 * and waits there.  The slower player sets the pace, which is the only
 	 * answer that does not let one of them decide how fast the world runs. */
-	due = ((Timer_GetTime() - s_mpLiveStart) * 60 * GameLoop_GetSpeedFactor()) / 1000;
+	/* Rebased whenever the speed changes, because the schedule is elapsed time
+	 * times the speed and the ticks already taken were taken at the old one.
+	 * Multiplying the *whole* elapsed time by a new factor moves them too:
+	 * doubling the speed is invisible -- `due` jumps ahead and the catch-up
+	 * budget below absorbs it -- but halving it puts `due` behind the steps that
+	 * have already run, and then nothing simulates until the wall clock has
+	 * caught up, which after a minute at x4 is another minute.  Input, drawing
+	 * and scrolling carried on the whole time, so it read as a hang. */
+	if (factor != s_mpLiveFactor) {
+		s_mpLiveBase   = s_mpLiveSteps;
+		s_mpLiveStart  = Timer_GetTime();
+		s_mpLiveFactor = factor;
+	}
+
+	due = s_mpLiveBase + ((Timer_GetTime() - s_mpLiveStart) * 60 * factor) / 1000;
 
 	/* Bounded, so a client that fell behind catches up over several frames
 	 * instead of disappearing into one long one. */
@@ -1791,6 +1811,8 @@ static bool MpGame_Begin(void)
 
 	s_mpLiveStart      = Timer_GetTime();
 	s_mpLiveSteps      = 0;
+	s_mpLiveBase       = 0;
+	s_mpLiveFactor     = GameLoop_GetSpeedFactor();
 	s_mpLiveStalledMs  = 0;
 	s_mpLiveNextSample = s_mpLiveSampleStep;
 	s_mpLiveDesyncSeen = false;
