@@ -56,11 +56,22 @@ uint16 g_structureIndex;
 typedef struct UnitBuildQueue {
 	uint16 type;
 	uint8 pending;
+	uint8 ready;                                            /*!< Construction Yard: finished and waiting, beyond the one held in linkedID. */
+	uint16 readyType;                                       /*!< What those are.  The whole stack is one type; see Structure_Queue_Stash(). */
 } UnitBuildQueue;
 
-/* Queues contain repeat orders for one unit type only.  Buildings still need
- * manual placement and the Starport retains its separate order cart. */
+/* Queues contain repeat orders for one type only.  The Starport retains its
+ * separate order cart. */
 static UnitBuildQueue s_unitBuildQueue[STRUCTURE_INDEX_MAX_HARD];
+
+/* How many finished buildings the local player has already clicked a spot for
+ * whose placement command has not run yet.  Local presentation state and
+ * nothing else: it decides only whether the cursor stays in placement mode, so
+ * that a player with four slabs ready can put all four down with four clicks
+ * without the count going stale between the click and the turn that executes
+ * it.  Never read by the simulation -- on the other client it simply stays at
+ * zero. */
+static uint8 s_yardPlaceCommitted[STRUCTURE_INDEX_MAX_HARD];
 
 /* Where a factory sends what it produces, 0 for "just leave the bay".  Kept
  * out of the savegame deliberately: the original format has no room for a tile
@@ -91,6 +102,13 @@ static UnitBuildQueue *Structure_Queue_Get(const Structure *s)
 	return &s_unitBuildQueue[s->o.index];
 }
 
+static bool Structure_Queue_IsYard(const Structure *s)
+{
+	return s != NULL && s->o.type == STRUCTURE_CONSTRUCTION_YARD;
+}
+
+/** Drop the repeat orders.  What the structure has already finished is not
+ * touched: cancelling the sixth of six is not a reason to lose the first. */
 static void Structure_Queue_Clear(Structure *s)
 {
 	UnitBuildQueue *queue = Structure_Queue_Get(s);
@@ -100,20 +118,60 @@ static void Structure_Queue_Clear(Structure *s)
 	queue->pending = 0;
 }
 
+/** Everything, for a pool slot about to be handed to a different building. */
+static void Structure_Queue_Reset(Structure *s)
+{
+	UnitBuildQueue *queue = Structure_Queue_Get(s);
+
+	if (queue == NULL) return;
+	queue->type = UNIT_INVALID;
+	queue->pending = 0;
+	queue->ready = 0;
+	queue->readyType = 0xFFFF;
+	s_yardPlaceCommitted[s->o.index] = 0;
+}
+
 bool Structure_Queue_CanOrder(const Structure *s)
 {
 	const StructureInfo *si;
 
 	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT || !Match_IsHumanControlled(s->o.houseID)) return false;
-	if (s->o.type == STRUCTURE_CONSTRUCTION_YARD || s->o.type == STRUCTURE_REPAIR || s->o.type == STRUCTURE_STARPORT) return false;
+	if (s->o.type == STRUCTURE_REPAIR || s->o.type == STRUCTURE_STARPORT) return false;
 
 	si = &g_table_structureInfo[s->o.type];
-	return si->o.flags.factory && s->objectType < UNIT_MAX;
+	if (!si->o.flags.factory) return false;
+
+	/* The Construction Yard picks from the structure table, every other factory
+	 * from the unit table, and objectType indexes whichever of the two.  Reading
+	 * it against the wrong bound is how a yard set to build a Palace looked like
+	 * a factory building unit 12. */
+	return s->objectType < (Structure_Queue_IsYard(s) ? STRUCTURE_MAX : UNIT_MAX);
 }
 
+/**
+ * How many finished buildings a Construction Yard is holding, ready to be put
+ * down.  The head of the stack is the one in linkedID whenever the yard has not
+ * moved on to the next order; the rest are a count and a type, and are created
+ * at the moment they are placed.  See Structure_Queue_Stash().
+ */
+uint16 Structure_Queue_GetReadyCount(const Structure *s)
+{
+	const UnitBuildQueue *queue;
+
+	if (!Structure_Queue_CanOrder(s) || !Structure_Queue_IsYard(s)) return 0;
+
+	queue = Structure_Queue_Get(s);
+	return queue->ready + ((s->o.linkedID != 0xFF && s->countDown == 0) ? 1 : 0);
+}
+
+/**
+ * Everything the structure still owes the player: what is finished and waiting,
+ * what is on the bench right now, and what is queued behind it.  This is the
+ * number the +1/-1 clicks move.
+ */
 uint16 Structure_Queue_GetOrderCount(const Structure *s)
 {
-	UnitBuildQueue *queue;
+	const UnitBuildQueue *queue;
 	uint16 count;
 
 	if (!Structure_Queue_CanOrder(s)) return 0;
@@ -121,6 +179,7 @@ uint16 Structure_Queue_GetOrderCount(const Structure *s)
 	queue = Structure_Queue_Get(s);
 	count = queue->pending;
 	if (s->o.linkedID != 0xFF) count++;
+	if (Structure_Queue_IsYard(s)) count += queue->ready;
 
 	return count;
 }
@@ -148,6 +207,37 @@ bool Structure_Queue_AddOrder(Structure *s)
 	return true;
 }
 
+/**
+ * Give a finished building back to the treasury.  A completed structure is paid
+ * for in full, so the refund is the full price -- the same arithmetic
+ * Structure_CancelBuild() does with a countDown of zero.
+ */
+static void Structure_Queue_RefundOneReady(Structure *s)
+{
+	UnitBuildQueue *queue = Structure_Queue_Get(s);
+	House *h;
+
+	if (queue == NULL || queue->ready == 0 || queue->readyType >= STRUCTURE_MAX) return;
+
+	h = House_Get_ByIndex(s->o.houseID);
+	if (h != NULL) h->credits += g_table_structureInfo[queue->readyType].o.buildCredits;
+
+	queue->ready--;
+	if (queue->ready == 0) queue->readyType = 0xFFFF;
+}
+
+/** Empty the stack of finished buildings, refunding each.  Used when the yard
+ * is told to build something else, which is what already happened to the single
+ * finished building the original game could be holding. */
+void Structure_Queue_RefundReady(Structure *s)
+{
+	UnitBuildQueue *queue = Structure_Queue_Get(s);
+
+	if (queue == NULL) return;
+	while (queue->ready != 0) Structure_Queue_RefundOneReady(s);
+	s_yardPlaceCommitted[s->o.index] = 0;
+}
+
 bool Structure_Queue_RemoveOrder(Structure *s)
 {
 	UnitBuildQueue *queue;
@@ -155,27 +245,192 @@ bool Structure_Queue_RemoveOrder(Structure *s)
 	if (!Structure_Queue_CanOrder(s)) return false;
 
 	queue = Structure_Queue_Get(s);
+
+	/* Take the most recent order off first: what is queued, then what is on the
+	 * bench, and only then something already finished.  A player counting down
+	 * from six expects the sixth to go, not the first. */
 	if (queue->pending != 0) {
 		queue->pending--;
 		return true;
 	}
 
-	if (s->o.linkedID == 0xFF) return false;
+	if (s->o.linkedID != 0xFF) {
+		Structure_CancelBuild(s);
+		return true;
+	}
 
-	Structure_CancelBuild(s);
-	return true;
+	/* Nothing on the bench: the yard has moved everything it finished onto the
+	 * stack, so the last order left is one of those. */
+	if (Structure_Queue_IsYard(s) && queue->ready != 0) {
+		Structure_Queue_RefundOneReady(s);
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * A Construction Yard finishes one building and then stops, because linkedID is
+ * a single slot and the finished building sits in it until the player finds a
+ * spot.  That is the whole reason a queue of buildings needs more than a
+ * counter: to keep working, the yard has to hand the finished one somewhere
+ * else first.
+ *
+ * It goes nowhere.  The completed Structure is freed and remembered as a count
+ * and a type, and one is created again at the moment it is placed
+ * (Structure_Queue_PlaceReady).  Keeping N of them allocated instead would
+ * spend N slots of the structure pool on buildings that are not on the map, and
+ * would have to be written into the savegame, which has no room for it.
+ */
+static void Structure_Queue_Stash(Structure *s)
+{
+	UnitBuildQueue *queue;
+	Structure *done;
+
+	if (!Structure_Queue_CanOrder(s) || !Structure_Queue_IsYard(s)) return;
+
+	queue = Structure_Queue_Get(s);
+	if (queue->pending == 0 || queue->ready == 255) return;
+	if (s->o.linkedID == 0xFF || s->countDown != 0 || s->o.flags.s.onHold) return;
+
+	done = Structure_Get_ByIndex(s->o.linkedID);
+	if (done == NULL) return;
+
+	/* One stack, one type.  Choosing a different building cancels what the yard
+	 * is holding (Structure_BuildObject -> Structure_CancelBuild), so the two
+	 * can never disagree. */
+	queue->readyType = done->o.type;
+	Structure_Free(done);
+
+	queue->ready++;
+	s->o.linkedID = 0xFF;
+	Structure_SetState(s, STRUCTURE_STATE_IDLE);
 }
 
 static void Structure_Queue_StartNext(Structure *s)
 {
 	UnitBuildQueue *queue;
 
+	Structure_Queue_Stash(s);
+
 	if (!Structure_Queue_CanOrder(s) || s->o.linkedID != 0xFF || s->state != STRUCTURE_STATE_IDLE) return;
 
 	queue = Structure_Queue_Get(s);
-	if (queue->pending == 0 || queue->type >= UNIT_MAX) return;
+	if (queue->pending == 0) return;
+
+	if (Structure_Queue_IsYard(s)) {
+		if (queue->type >= STRUCTURE_MAX) return;
+		/* A tree change or a rival's capture can put the queued building out of
+		 * reach between two orders.  Nothing has been charged for it yet, so
+		 * dropping the queue is the whole of the cleanup. */
+		if ((Structure_GetBuildable(s) & (1 << queue->type)) == 0) {
+			queue->pending = 0;
+			return;
+		}
+	} else {
+		if (queue->type >= UNIT_MAX) return;
+	}
 
 	if (Structure_BuildObject(s, queue->type)) queue->pending--;
+}
+
+/**
+ * Put down the next building a Construction Yard has finished.
+ *
+ * Two shapes of "finished" arrive here.  Normally the building is the one in
+ * linkedID and this is what the original game did.  When the yard has already
+ * moved on to the next order the head of the stack is only a count and a type
+ * (Structure_Queue_Stash), and the Structure is created here -- and freed again
+ * if the spot is refused, so a refusal costs the player nothing and the pool
+ * ends where it began.
+ *
+ * @param yard The Construction Yard.
+ * @param packed Where the player clicked.
+ * @param type Out: what was placed.  Valid even for the types Structure_Place()
+ *        frees on the spot, which is every wall and slab.
+ * @return The placed structure, or NULL if nothing was ready or the spot was
+ *         refused.  Already freed for walls and slabs -- read only *type then.
+ */
+Structure *Structure_Queue_PlaceReady(Structure *yard, uint16 packed, uint16 *type)
+{
+	UnitBuildQueue *queue;
+	Structure *s;
+
+	if (type != NULL) *type = 0xFFFF;
+	if (yard == NULL || !Structure_Queue_IsYard(yard)) return NULL;
+
+	queue = Structure_Queue_Get(yard);
+
+	if (yard->o.linkedID != STRUCTURE_INVALID) {
+		/* Only what the yard has finished.  Placing a building still under
+		 * construction leaves the yard counting down towards an object it no
+		 * longer has, and it never builds anything again -- which is what the
+		 * first human-versus-AI run did for 40000 ticks. */
+		if (yard->countDown != 0) return NULL;
+
+		s = Structure_Get_ByIndex(yard->o.linkedID);
+		if (s == NULL) return NULL;
+
+		if (type != NULL) *type = s->o.type;
+
+		/* A refused spot leaves the building with the yard, so the player can
+		 * try somewhere else -- which is also what keeps a failed command
+		 * harmless. */
+		if (!Structure_Place(s, packed)) return NULL;
+
+		yard->o.linkedID = STRUCTURE_INVALID;
+		return s;
+	}
+
+	if (queue == NULL || queue->ready == 0 || queue->readyType >= STRUCTURE_MAX) return NULL;
+
+	if (type != NULL) *type = queue->readyType;
+
+	s = Structure_Create(STRUCTURE_INDEX_INVALID, (uint8)queue->readyType, yard->o.houseID, 0xFFFF);
+	if (s == NULL) return NULL;
+
+	if (!Structure_Place(s, packed)) {
+		Structure_Free(s);
+		return NULL;
+	}
+
+	queue->ready--;
+	if (queue->ready == 0) queue->readyType = 0xFFFF;
+
+	return s;
+}
+
+/**
+ * How many more spots the player may click before the cursor has to leave
+ * placement mode.  Live count less what has already been clicked for and not
+ * yet executed, so a player putting four slabs down in four quick clicks cannot
+ * order a fifth that does not exist.
+ */
+uint16 Structure_Queue_GetPlaceableCount(const Structure *s)
+{
+	uint16 ready;
+	uint16 committed;
+
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT) return 0;
+
+	ready = Structure_Queue_GetReadyCount(s);
+	committed = s_yardPlaceCommitted[s->o.index];
+
+	return (ready > committed) ? ready - committed : 0;
+}
+
+/** Note that a spot has been clicked for one of them.  @see Structure_Queue_GetPlaceableCount */
+void Structure_Queue_PlaceCommit(Structure *s)
+{
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT) return;
+	if (s_yardPlaceCommitted[s->o.index] < 255) s_yardPlaceCommitted[s->o.index]++;
+}
+
+/** The command has run, whether it placed anything or not. */
+void Structure_Queue_PlaceRelease(Structure *s)
+{
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_SOFT) return;
+	if (s_yardPlaceCommitted[s->o.index] != 0) s_yardPlaceCommitted[s->o.index]--;
 }
 
 /**
@@ -564,7 +819,7 @@ Structure *Structure_Create(uint16 index, uint8 typeID, uint8 houseID, uint16 po
 	si = &g_table_structureInfo[typeID];
 	s = Structure_Allocate(index, typeID);
 	if (s == NULL) return NULL;
-	Structure_Queue_Clear(s);
+	Structure_Queue_Reset(s);
 
 	s->o.houseID            = houseID;
 	s->creatorHouseID       = houseID;
@@ -2094,7 +2349,14 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 
 	if (s->o.type == STRUCTURE_STARPORT) return true;
 
-	if (s->objectType != objectType) Structure_CancelBuild(s);
+	if (s->objectType != objectType) {
+		/* Choosing a different building gives back what the yard is holding.
+		 * That is what the original game already did with the one finished
+		 * building it could be sitting on; a stack of them is the same bargain
+		 * repeated, and it is what keeps the stack a single type. */
+		Structure_Queue_RefundReady(s);
+		Structure_CancelBuild(s);
+	}
 
 	if (s->o.linkedID != 0xFF || objectType == 0xFFFF) return false;
 

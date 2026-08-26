@@ -166,8 +166,14 @@ extern void Structure_StarportOrder(Structure *s, const uint16 *items, uint16 co
 extern bool Structure_BuildObject(Structure *s, uint16 objectType);
 extern bool Structure_Queue_CanOrder(const Structure *s);
 extern uint16 Structure_Queue_GetOrderCount(const Structure *s);
+extern uint16 Structure_Queue_GetReadyCount(const Structure *s);
 extern bool Structure_Queue_AddOrder(Structure *s);
 extern bool Structure_Queue_RemoveOrder(Structure *s);
+extern void Structure_Queue_RefundReady(Structure *s);
+extern Structure *Structure_Queue_PlaceReady(Structure *yard, uint16 packed, uint16 *type);
+extern uint16 Structure_Queue_GetPlaceableCount(const Structure *s);
+extern void Structure_Queue_PlaceCommit(Structure *s);
+extern void Structure_Queue_PlaceRelease(Structure *s);
 extern bool Structure_SetUpgradingState(Structure *s, int8 value, struct Widget *w);
 extern bool Structure_SetRepairingState(Structure *s, int8 value, struct Widget *w);
 extern void Structure_UpdateMap(Structure *s);

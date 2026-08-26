@@ -392,6 +392,79 @@ directly and never asked this rule in the first place.
 
 `--build-rules-self-test` checks both halves against a generated map.
 
+## The build queue
+
+A factory takes repeat orders — left click on its picture in the action panel is
+one more, right click is one fewer, and the corner shows how many. The
+Construction Yard now takes them the same way, and everything that is different
+about it comes from one engine fact: **`Structure.linkedID` is a single slot.**
+A factory empties it by driving the unit out of the bay; a yard cannot, because
+the player has to find a spot first, so the original game simply stopped after
+one.
+
+`Structure_Queue_*` in [structure.c](src/structure.c) is the whole of it.
+
+* **The finished building goes nowhere.** `Structure_Queue_Stash()` frees the
+  completed `Structure` and remembers it as a count and a type, which vacates
+  `linkedID` so the next order can start. It is created again at the moment it
+  is placed (`Structure_Queue_PlaceReady()`), and freed again if the spot is
+  refused, so a refusal costs nothing and the pool ends where it began. Keeping
+  N of them allocated instead would spend N slots of the structure pool on
+  buildings that are not on the map — and would have to go into the savegame,
+  which has no room for it.
+* **One stack, one type.** Choosing a different building refunds the whole stack
+  (`Structure_Queue_RefundReady()` beside the `Structure_CancelBuild()` that was
+  already there). That is the same bargain the original game struck with the one
+  finished building it could be holding, and it is what lets the stack be a
+  count and a type rather than a list.
+* **The panel reads `N/M`** on the bottom row of the production widget — ready to
+  place, and everything still owed including what is on the bench. The clicks
+  move M. The corner where a factory writes `x3` is where a yard draws the
+  footprint grid of what it is making, which is why the count moved.
+* **"Place it" became a button of its own**, widget index 12, on the one free row
+  of the action panel (y=123; the panel ends at the radar, y=136). The picture
+  above it counts orders now, so it could not also start placement. The button
+  is there only while the yard is holding something finished.
+* **Placement stays open.** Four finished slabs go down in four clicks —
+  `GUI_Widget_Viewport_Click()` leaves `SELECTIONTYPE_PLACE` only when the last
+  is spoken for.
+
+That last point is the one that needed care in a match. The placement command is
+stamped for a later turn, so between the click and the turn that runs it the
+yard still says it is holding four. `Structure_Queue_GetPlaceableCount()` is the
+live count **less what has already been clicked for**
+(`Structure_Queue_PlaceCommit()` / `..._PlaceRelease()`), and that counter is
+local presentation state: it decides only whether the cursor stays in placement
+mode, is never read by the simulation, and on the other client simply stays at
+zero. Committing before `MpCommand_Submit()` rather than after is deliberate —
+outside a match a submitted command runs immediately.
+
+`g_structureActive` now points at the **yard** rather than at the building. With
+a stack there is no single `Structure` to point at, and the only thing anything
+ever read off that pointer was the house.
+
+**A slab takes a quarter of the time of a large slab**, which it did not.
+Westwood gave `Concrete` and `Concrete4` a `buildTime` of 16 apiece against
+build credits of 5 and 20 — invisible in a campaign where a slab is laid once,
+and plainly wrong in a match where concrete is a road ("Concrete on sand").
+`Concrete` is 4 now. It is folded into the lobby digest like every other table
+value, so two players are on the same number or they never meet.
+
+`--build-queue-self-test` is the guard, and it plays rather than asserts: a real
+match, the house's own yard, and the buildings finished by letting the clock run.
+Three orders must all finish (without the stash it waits out the limit at one),
+all three must go down on legal ground, the refunds must be the price to the
+credit, choosing another building must empty the stack, and a clicked spot must
+be a spent spot. Verified to fail: six deliberate breaks — stash disabled,
+refund withheld, `buildTime` back to 16, the commit counter stubbed, the
+type-change refund removed, and placement not taking one off the stack — produce
+six different named failures.
+
+The AI is untouched: it lays concrete straight into the map (`Skirmish_LaySlab()`)
+and never asks the yard, and `Structure_Queue_CanOrder()` requires
+`Match_IsHumanControlled()`. Measured — `--war-metrics` on and off the slab
+change is **bit-identical across all sixteen numbers**.
+
 ## Skirmish — the AI test bench
 
 `./opendune --skirmish` (optionally `--skirmish=ordos,harkonnen`) generates a
@@ -443,6 +516,7 @@ There is no test suite. These run headless and exit:
 cd bin
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-rules-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-queue-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --pathfinder-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --lobby-self-test

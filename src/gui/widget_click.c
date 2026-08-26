@@ -112,27 +112,6 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 	switch (g_productionStringID) {
 		default: break;
 
-		case STR_PLACE_IT:
-			if (s->o.type == STRUCTURE_CONSTRUCTION_YARD) {
-				Structure *ns;
-
-				ns = Structure_Get_ByIndex(s->o.linkedID);
-				g_structureActive = ns;
-				g_structureActiveType = s->objectType;
-				g_selectionState = Structure_IsValidBuildLocation(g_selectionRectanglePosition, g_structureActiveType, g_playerHouseID);
-				g_structureActivePosition = g_selectionPosition;
-
-				/* linkedID stays with the yard until the placement command runs:
-				 * entering placement mode is one player looking at their own
-				 * screen, and it may not move state the other client cannot see.
-				 * A yard destroyed mid-placement now takes the unplaced building
-				 * with it (Structure_Destroy), which is why Cancel below no
-				 * longer has to put anything back. */
-
-				GUI_ChangeSelectionType(SELECTIONTYPE_PLACE);
-			}
-			break;
-
 		case STR_ON_HOLD: {
 			MpCommand cmd;
 
@@ -170,6 +149,43 @@ bool GUI_Widget_SpriteTextButton_Click(Widget *w)
 			MpCommand_Submit(&cmd);
 		} break;
 	}
+	return false;
+}
+
+/**
+ * Handles Click event for the "Place it" button under the production widget.
+ *
+ * The picture above it counts orders now -- left click one more, right click
+ * one fewer, exactly as a factory does -- so entering placement mode needed a
+ * control of its own.  It appears only while the yard is actually holding
+ * something finished.
+ */
+bool GUI_Widget_PlaceIt_Click(Widget *w)
+{
+	Structure *s;
+
+	VARIABLE_NOT_USED(w);
+
+	s = Structure_Get_ByPackedTile(g_selectionPosition);
+	if (s == NULL || s->o.type != STRUCTURE_CONSTRUCTION_YARD) return false;
+	if (Structure_Queue_GetPlaceableCount(s) == 0) return false;
+
+	/* The yard, not the building.  With a stack of finished buildings there may
+	 * be no single Structure to point at -- all but the head are a count and a
+	 * type until the moment they are placed -- and the only thing anything read
+	 * off this pointer was the house.  @see Structure_Queue_PlaceReady */
+	g_structureActive = s;
+	g_structureActiveType = s->objectType;
+	g_selectionState = Structure_IsValidBuildLocation(g_selectionRectanglePosition, g_structureActiveType, g_playerHouseID);
+	g_structureActivePosition = g_selectionPosition;
+
+	/* linkedID stays with the yard until the placement command runs: entering
+	 * placement mode is one player looking at their own screen, and it may not
+	 * move state the other client cannot see.  A yard destroyed mid-placement
+	 * now takes the unplaced building with it (Structure_Destroy), which is why
+	 * Cancel no longer has to put anything back. */
+
+	GUI_ChangeSelectionType(SELECTIONTYPE_PLACE);
 	return false;
 }
 

@@ -36,7 +36,14 @@ StructureInfo g_table_structureInfo[STRUCTURE_MAX] = {
 		/* fogUncoverRadius     */ 1,
 		/* spriteID             */ 65,
 		/* buildCredits         */ 5,
-		/* buildTime            */ 16,
+		/* A quarter of the price of the 2x2 slab and, now, a quarter of its
+		 * time.  Westwood gave both 16, so paving a 2x2 area one tile at a time
+		 * cost four times as long for the same four tiles -- invisible in the
+		 * campaign, where a slab is laid once, and plainly wrong in a match
+		 * where concrete is a road (README.txt, "Concrete on sand").  This is
+		 * folded into the lobby digest like every other table value, so both
+		 * players are on the same number or they never meet. */
+		/* buildTime            */ 4,
 		/* availableCampaign    */ 1,
 		/* structuresRequired   */ FLAG_STRUCTURE_NONE,
 		/* sortPriority         */ 2,

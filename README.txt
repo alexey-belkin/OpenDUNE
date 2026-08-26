@@ -231,6 +231,31 @@ go up on open sand would fence off the desert. The "must touch something of your
 own" rule still applies to every slab, so a road grows outwards from the base one
 tile at a time.
 
+The build queue
+---------------
+A factory takes repeat orders: left click on its picture in the sidebar orders
+one more, right click one fewer. The Construction Yard does the same now, and
+because a finished building has to wait for you to find a spot, the yard can be
+holding several at once. The counter under the picture reads N/M -- N ready to
+put down, M still owed altogether, including the one on the bench. The clicks
+move M.
+
+When at least one is ready a "Place it" button appears on the row below. Press
+it once and you stay in placement mode until the last one is down, so ten slabs
+or five turrets go up in ten or five clicks rather than ten or five trips back to
+the sidebar. N counts them off as you go.
+
+Right clicking below one order gives the money back: a queued order was never
+charged for, an unfinished one is refunded for the part not yet built, and a
+finished one is refunded in full. Choosing a different building in the build
+list gives back everything the yard was holding, which is what the game always
+did with the single building it could hold before.
+
+A small concrete slab now takes a quarter of the time of the large one, matching
+its quarter of the price and its quarter of the area. The original game gave
+both the same build time, so paving a square one tile at a time took four times
+as long as paving it in one piece.
+
 Starport
 --------
 The Starport is a trader rather than a second factory: the goods come from

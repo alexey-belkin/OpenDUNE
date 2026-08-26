@@ -544,7 +544,7 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		Structure *s;
 		House *h;
 
-		s = g_structureActive;
+		s = NULL;
 		si = &g_table_structureInfo[g_structureActiveType];
 		h = g_playerHouse;
 
@@ -559,12 +559,30 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			/* g_structureActivePosition is the yard that built it. */
 			s = Structure_Get_ByPackedTile(g_structureActivePosition);
 
+			/* Counted before the command is submitted, because outside a match
+			 * a submitted command runs immediately -- and the count of what is
+			 * left to place has to be right in both cases.  @see
+			 * Structure_Queue_GetPlaceableCount */
+			Structure_Queue_PlaceCommit(s);
+
 			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_PLACE, g_structureActive->o.houseID);
 			cmd.object = (s != NULL) ? s->o.index : 0xFFFF;
 			cmd.packed = g_selectionPosition;
 			MpCommand_Submit(&cmd);
 
 			Voice_Play(20);
+
+			/* A yard holding four finished slabs puts all four down in four
+			 * clicks: the cursor only leaves placement mode when the last of
+			 * them is spoken for.  In a match the placement itself happens a
+			 * few turns later, which is exactly why the count subtracts what
+			 * has already been clicked for rather than reading the yard. */
+			if (Structure_Queue_GetPlaceableCount(s) != 0) {
+				g_selectionState = Structure_IsValidBuildLocation(g_selectionRectanglePosition, g_structureActiveType, g_playerHouseID);
+				GUI_Widget_ActionPanel_Draw(true);
+				GUI_DisplayHint(si->o.hintStringID, si->o.spriteID);
+				return true;
+			}
 
 			GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
 

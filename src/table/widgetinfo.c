@@ -9,7 +9,7 @@
 extern bool GUI_Widget_Mentat_Click(Widget *w);
 
 /* TODO : const */
-WidgetInfo g_table_gameWidgetInfo[23] = {
+WidgetInfo g_table_gameWidgetInfo[24] = {
 	{ /* 0 */
 		/* index       */ 1,
 		/* clickProc   */ &GUI_Widget_Mentat_Click,
@@ -275,6 +275,23 @@ WidgetInfo g_table_gameWidgetInfo[23] = {
 		/* stringID    */ STR_NULL,
 	},
 	{ /* 22 */
+		/* The row under the production widget, which ends at y=122; the panel
+		 * itself ends where the radar begins at y=136.  It is the only free
+		 * space on the panel, and it is what lets the picture above it become a
+		 * pair of +1/-1 buttons: the yard needs somewhere else to put "place
+		 * it". */
+		/* index       */ 12,
+		/* clickProc   */ &GUI_Widget_PlaceIt_Click,
+		/* shortcut    */ 0,
+		/* flags       */ 17605,
+		/* spriteID    */ -2,
+		/* offsetX     */ 258,
+		/* offsetY     */ 123,
+		/* width       */ 60,
+		/* height      */ 11,
+		/* stringID    */ STR_PLACE_IT,
+	},
+	{ /* 23 */
 		/* index       */ -1,
 		/* clickProc   */ NULL,
 		/* shortcut    */ 0,

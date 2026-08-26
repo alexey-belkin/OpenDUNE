@@ -128,6 +128,8 @@ static bool s_moveRulesSelfTest = false;
 static int s_moveRulesSelfTestResult = -1;
 static bool s_buildRulesSelfTest = false;
 static int s_buildRulesSelfTestResult = -1;
+static bool s_buildQueueSelfTest = false;
+static int s_buildQueueSelfTestResult = -1;
 static bool s_pathfinderSelfTest = false;
 static int s_pathfinderSelfTestResult = -1;
 static int s_pathfinderOverride = -1;
@@ -2489,6 +2491,177 @@ static int BuildRules_SelfTest(void)
 	return 1;
 }
 
+static int BuildQueue_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "build-queue-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+static Structure *BuildQueue_FindYard(uint8 houseID)
+{
+	PoolFindStruct find;
+
+	find.houseID = houseID;
+	find.type    = STRUCTURE_CONSTRUCTION_YARD;
+	find.index   = 0xFFFF;
+
+	return Structure_Find(&find);
+}
+
+/** Step the match until the yard is holding what the caller is waiting for. */
+static bool BuildQueue_RunUntilReady(Structure *yard, uint16 want, uint32 limit)
+{
+	uint32 i;
+
+	for (i = 0; i < limit; i++) {
+		if (Structure_Queue_GetReadyCount(yard) >= want) return true;
+		MpHarness_Step();
+	}
+
+	return (Structure_Queue_GetReadyCount(yard) >= want);
+}
+
+/**
+ * The Construction Yard order queue.
+ *
+ * Three claims, and the middle one is the whole change.  A yard can be told to
+ * make several of something; a finished building does not stop it making the
+ * next, even though linkedID is a single slot and holds exactly one; and every
+ * way of giving one back -- one order at a time, or all of them at once because
+ * the player chose a different building -- returns the money.
+ *
+ * Played rather than asserted: the match is real, the yard is the house's own,
+ * and the buildings are finished by letting the clock run rather than by
+ * writing countDown.  A slab is used throughout because it is the cheapest and
+ * fastest thing a yard makes, which is what keeps this test to a few hundred
+ * ticks.
+ */
+static int BuildQueue_SelfTest(void)
+{
+	Structure *yard;
+	House *h;
+	uint8 houseID;
+	uint16 spot[3];
+	uint16 found;
+	uint16 packed;
+	uint16 credits;
+	uint16 i;
+
+	/* The queue is offered to people, not to the AI: Structure_Queue_CanOrder()
+	 * asks Match_IsHumanControlled(), and a skirmish slot is an AI by default. */
+	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	houseID = Match_GetSlotHouse(0);
+	if (houseID == HOUSE_INVALID) return BuildQueue_Failed("no house in slot 0", 0);
+	if (!Match_IsHumanControlled(houseID)) return BuildQueue_Failed("slot 0 is not played by a person", houseID);
+
+	yard = BuildQueue_FindYard(houseID);
+	if (yard == NULL) return BuildQueue_Failed("the house has no construction yard", houseID);
+
+	h = House_Get_ByIndex(houseID);
+	if (h == NULL) return BuildQueue_Failed("the house is not there", houseID);
+	h->credits = 5000;
+
+	yard->objectType = STRUCTURE_SLAB_1x1;
+	if (!Structure_Queue_CanOrder(yard)) return BuildQueue_Failed("a yard played by a person will not take orders", yard->o.type);
+
+	/* Somewhere to put them.  Collected before anything is built because the
+	 * answer changes as the base grows, and three separate tiles cannot make
+	 * each other illegal: concrete refuses concrete, not its neighbours. */
+	found = 0;
+	for (packed = 0; packed < 64 * 64 && found < 3; packed++) {
+		if (!Map_IsValidPosition(packed)) continue;
+		if (Object_GetByPackedTile(packed) != NULL) continue;
+		if (Structure_IsValidBuildLocation(packed, STRUCTURE_SLAB_1x1, houseID) == 0) continue;
+		spot[found++] = packed;
+	}
+	if (found < 3) return BuildQueue_Failed("fewer than three legal slab spots around the base", found);
+
+	/* Ordering.  The first order starts the build, the rest queue behind it. */
+	for (i = 0; i < 3; i++) {
+		if (!Structure_Queue_AddOrder(yard)) return BuildQueue_Failed("an order was refused", i);
+	}
+	if (Structure_Queue_GetOrderCount(yard) != 3) return BuildQueue_Failed("three orders did not count as three", Structure_Queue_GetOrderCount(yard));
+	if (Structure_Queue_GetReadyCount(yard) != 0) return BuildQueue_Failed("something was ready before anything was built", Structure_Queue_GetReadyCount(yard));
+
+	/* And the point of it: the yard does not stop at the first one.  Without
+	 * Structure_Queue_Stash() this waits out the whole limit at a count of 1. */
+	if (!BuildQueue_RunUntilReady(yard, 3, 4000)) {
+		return BuildQueue_Failed("the yard stopped after the buildings it could hold", Structure_Queue_GetReadyCount(yard));
+	}
+	if (Structure_Queue_GetOrderCount(yard) != 3) return BuildQueue_Failed("finishing an order lost it", Structure_Queue_GetOrderCount(yard));
+	if (Structure_Queue_GetPlaceableCount(yard) != 3) return BuildQueue_Failed("three finished buildings are not three to place", Structure_Queue_GetPlaceableCount(yard));
+
+	/* A spot clicked for is a spot spoken for, whether or not the command that
+	 * places it has run yet.  This is what stops a player with three slabs from
+	 * ordering a fourth spot with a fourth quick click. */
+	Structure_Queue_PlaceCommit(yard);
+	if (Structure_Queue_GetPlaceableCount(yard) != 2) return BuildQueue_Failed("clicking a spot did not spend one", Structure_Queue_GetPlaceableCount(yard));
+	Structure_Queue_PlaceRelease(yard);
+	if (Structure_Queue_GetPlaceableCount(yard) != 3) return BuildQueue_Failed("releasing a spot did not give it back", Structure_Queue_GetPlaceableCount(yard));
+
+	/* Put all three down, which is three clicks and no trip back to the yard.
+	 * The first comes out of linkedID and the other two out of the stack, and
+	 * the caller cannot tell the difference -- which is the point. */
+	for (i = 0; i < 3; i++) {
+		uint16 type = 0xFFFF;
+
+		if (Structure_Queue_PlaceReady(yard, spot[i], &type) == NULL) {
+			return BuildQueue_Failed("a finished building refused a spot that was legal", spot[i]);
+		}
+		if (type != STRUCTURE_SLAB_1x1) return BuildQueue_Failed("something other than a slab came off the stack", type);
+		if (Map_GetLandscapeType(spot[i]) != LST_CONCRETE_SLAB) return BuildQueue_Failed("the slab did not reach the map", spot[i]);
+		if (Structure_Queue_GetReadyCount(yard) != (uint16)(2 - i)) {
+			return BuildQueue_Failed("placing one did not take one off the count", Structure_Queue_GetReadyCount(yard));
+		}
+	}
+	if (Structure_Queue_GetOrderCount(yard) != 0) return BuildQueue_Failed("the queue outlived the buildings in it", Structure_Queue_GetOrderCount(yard));
+
+	/* Giving them back.  Two finished slabs are two full refunds: a completed
+	 * building has been paid for down to the last credit. */
+	for (i = 0; i < 2; i++) {
+		if (!Structure_Queue_AddOrder(yard)) return BuildQueue_Failed("an order was refused the second time round", i);
+	}
+	if (!BuildQueue_RunUntilReady(yard, 2, 4000)) return BuildQueue_Failed("two more did not finish", Structure_Queue_GetReadyCount(yard));
+
+	credits = h->credits;
+	for (i = 0; i < 2; i++) {
+		if (!Structure_Queue_RemoveOrder(yard)) return BuildQueue_Failed("a finished building could not be given back", i);
+	}
+	if (Structure_Queue_GetOrderCount(yard) != 0) return BuildQueue_Failed("giving both back left something behind", Structure_Queue_GetOrderCount(yard));
+	if (h->credits != credits + 2 * g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildCredits) {
+		return BuildQueue_Failed("the refund was not the price", h->credits);
+	}
+
+	/* And all of them at once, which is what choosing a different building
+	 * does.  The original game already gave back the one finished building it
+	 * could be holding; a stack of them is that same bargain repeated. */
+	for (i = 0; i < 2; i++) {
+		if (!Structure_Queue_AddOrder(yard)) return BuildQueue_Failed("an order was refused the third time round", i);
+	}
+	if (!BuildQueue_RunUntilReady(yard, 2, 4000)) return BuildQueue_Failed("two more did not finish again", Structure_Queue_GetReadyCount(yard));
+
+	credits = h->credits;
+	Structure_BuildObject(yard, STRUCTURE_SLAB_2x2);
+	if (Structure_Queue_GetReadyCount(yard) != 0) return BuildQueue_Failed("choosing another building left the old ones standing", Structure_Queue_GetReadyCount(yard));
+	if (h->credits < credits + 2 * g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildCredits) {
+		return BuildQueue_Failed("choosing another building kept the money", h->credits);
+	}
+
+	/* The other thing this file claims about slabs: a quarter of the area for a
+	 * quarter of the price, and now for a quarter of the time.  Both were 16. */
+	if (g_table_structureInfo[STRUCTURE_SLAB_2x2].o.buildTime !=
+	    4 * g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildTime) {
+		return BuildQueue_Failed("one slab does not take a quarter of the time of four", g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildTime);
+	}
+
+	return 1;
+}
+
 static int Pathfinder_Failed(const char *why, uint32 detail)
 {
 	char line[192];
@@ -3153,6 +3326,16 @@ static void GameLoop_Main(void)
 		s_buildRulesSelfTestResult = BuildRules_SelfTest();
 		PrintToConsole((s_buildRulesSelfTestResult == 1) ? "build-rules-self-test: PASS"
 		                                                 : "build-rules-self-test: FAIL");
+		return;
+	}
+
+	if (s_buildQueueSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_buildQueueSelfTestResult = BuildQueue_SelfTest();
+		PrintToConsole((s_buildQueueSelfTestResult == 1) ? "build-queue-self-test: PASS"
+		                                                 : "build-queue-self-test: FAIL");
 		return;
 	}
 
@@ -4179,6 +4362,7 @@ int main(int argc, char **argv)
 		for (i = 1; i < argc; i++) {
 			if (strcmp(argv[i], "--selection-self-test") == 0) s_selectionSelfTest = true;
 			if (strcmp(argv[i], "--build-rules-self-test") == 0) s_buildRulesSelfTest = true;
+			if (strcmp(argv[i], "--build-queue-self-test") == 0) s_buildQueueSelfTest = true;
 			if (strcmp(argv[i], "--move-rules-self-test") == 0) s_moveRulesSelfTest = true;
 			if (strcmp(argv[i], "--lobby-self-test") == 0) s_lobbySelfTest = true;
 			if (strncmp(argv[i], "--lobby-play=", 13) == 0) {
@@ -4483,6 +4667,7 @@ int main(int argc, char **argv)
 	if (s_selectionSelfTest && s_selectionSelfTestResult != 1) return 1;
 	if (s_combatBalanceSelfTest && s_combatBalanceSelfTestResult == 0) return 1;
 	if (s_buildRulesSelfTest && s_buildRulesSelfTestResult != 1) return 1;
+	if (s_buildQueueSelfTest && s_buildQueueSelfTestResult != 1) return 1;
 	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;
 	if (s_moveRulesSelfTest && s_moveRulesSelfTestResult != 1) return 1;
 	if (s_lobbySelfTest && s_lobbySelfTestResult != 1) return 1;

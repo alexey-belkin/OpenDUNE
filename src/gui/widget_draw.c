@@ -247,7 +247,11 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 
 	if (spriteID != 0) GUI_DrawSprite(SCREEN_ACTIVE, g_sprites[spriteID], positionX + 2, positionY + 2, 0, DRAWSPRITE_FLAG_REMAP, g_paletteMapping1, buttonDown ? 1 : 0);
 
-	if (Structure_Queue_CanOrder(s)) {
+	/* A Construction Yard draws the grid of the building it is making across
+	 * this corner, so its count goes on the bottom row instead -- as N/M, since
+	 * a yard can be holding finished buildings and making more at the same time
+	 * and the two numbers are different questions. */
+	if (Structure_Queue_CanOrder(s) && s->o.type != STRUCTURE_CONSTRUCTION_YARD) {
 		uint16 orderCount = Structure_Queue_GetOrderCount(s);
 
 		if (orderCount != 0) GUI_DrawText_Wrapper("x%u", positionX + width - 8, positionY + 2, buttonDown ? 0xE : 0xF, 0, 0x121, orderCount);
@@ -280,7 +284,24 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 		percentDone = 100 * timeLeft / buildTime;
 	}
 
-	if (g_productionStringID == STR_UPGRADINGD_DONE) {
+	if (Structure_Queue_CanOrder(s) && s->o.type == STRUCTURE_CONSTRUCTION_YARD) {
+		/* Ready to place, and everything still owed: the second number is the
+		 * one the clicks on the picture above move.  The word goes to the left
+		 * and the count to the right so that neither has to be shortened -- at
+		 * 6p the widest pair, "100% done" beside "9/99", still fits the 60
+		 * pixels this widget has.
+		 *
+		 * "Place it" is left out because it is no longer true of this widget:
+		 * the button below does that now, and it says so itself. */
+		uint8 colour = buttonDown ? 0xE : 0xF;
+
+		if (g_productionStringID != STR_PLACE_IT && g_productionStringID != STR_COMPLETED) {
+			GUI_DrawText_Wrapper(String_Get_ByIndex(g_productionStringID), positionX + 1, positionY + height - 9, colour, 0, 0x021, percentDone);
+		}
+
+		GUI_DrawText_Wrapper("%u/%u", positionX + width - 1, positionY + height - 9, colour, 0, 0x221,
+		                     Structure_Queue_GetReadyCount(s), Structure_Queue_GetOrderCount(s));
+	} else if (g_productionStringID == STR_UPGRADINGD_DONE) {
 		percentDone = 100 - s->upgradeTimeLeft;
 
 		GUI_DrawText_Wrapper(
@@ -604,6 +625,7 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 	House *h;
 	Widget *buttons[8];
 	Widget *widget24, *widget28, *widget2C, *widget30, *widget34;
+	Widget *widgetPlaceIt;
 
 	o  = NULL;
 	u  = NULL;
@@ -716,6 +738,9 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 
 		widget34 = GUI_Widget_Get_ByIndex(w, 3);
 		GUI_Widget_MakeInvisible(widget34);
+
+		widgetPlaceIt = GUI_Widget_Get_ByIndex(w, 12);
+		GUI_Widget_MakeInvisible(widgetPlaceIt);
 
 		/* Create the command buttons, including the four compact group rows. */
 		for (i = 0; i < 8; i++) {
@@ -908,6 +933,18 @@ void GUI_Widget_ActionPanel_Draw(bool forceDraw)
 							GUI_Widget_MakeVisible(widget2C);
 							GUI_Widget_Draw(widget2C);
 						}
+					}
+
+					/* The row under the production widget, which nothing else
+					 * uses.  A yard that is holding nothing finished has nothing
+					 * to place, so the button is simply not there -- and its
+					 * absence is the only thing that says so, the picture above
+					 * having become a pair of +1/-1 buttons. */
+					if (o->type == STRUCTURE_CONSTRUCTION_YARD && !isNotPlayerOwned &&
+					    Structure_Queue_GetPlaceableCount(s) != 0) {
+						GUI_Widget_MakeVisible(widgetPlaceIt);
+						GUI_Widget_MakeNormal(widgetPlaceIt, false);
+						GUI_Widget_Draw(widgetPlaceIt);
 					}
 
 					switch (o->type) {

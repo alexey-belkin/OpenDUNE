@@ -95,24 +95,13 @@ static void MpCommand_ExecuteStructurePlace(Structure *yard, uint16 packed)
 	uint16 type;
 	House *h;
 
-	if (yard->o.linkedID == STRUCTURE_INVALID) return;
-
-	/* Only what the yard has finished.  Placing a building still under
-	 * construction leaves the yard counting down towards an object it no longer
-	 * has, and it never builds anything again -- which is what the first
-	 * human-versus-AI run did for 40000 ticks. */
-	if (yard->countDown != 0) return;
-
-	s = Structure_Get_ByIndex(yard->o.linkedID);
+	/* Whichever of the yard's finished buildings is next, and the whole of the
+	 * bookkeeping that goes with taking it: see Structure_Queue_PlaceReady().
+	 * The count of spots already clicked for is released whether or not this
+	 * one lands, so a refused spot does not strand the cursor. */
+	s = Structure_Queue_PlaceReady(yard, packed, &type);
+	Structure_Queue_PlaceRelease(yard);
 	if (s == NULL) return;
-
-	type = s->o.type;
-
-	/* A refused spot leaves the building with the yard, so the player can try
-	 * somewhere else -- which is also what keeps a failed command harmless. */
-	if (!Structure_Place(s, packed)) return;
-
-	yard->o.linkedID = STRUCTURE_INVALID;
 
 	h = House_Get_ByIndex(houseID);
 	if (h == NULL) return;
