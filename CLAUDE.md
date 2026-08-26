@@ -590,6 +590,57 @@ and never asks the yard, and `Structure_Queue_CanOrder()` requires
 `Match_IsHumanControlled()`. Measured — `--war-metrics` on and off the slab
 change is **bit-identical across all sixteen numbers**.
 
+## Whose army a player may command
+
+A match has two people in it, and every unit command names its recipients by
+pool index — an index that names anything on the map. Two separate rules have to
+hold, and both were missing.
+
+* **Local.** `UnitSelection_IsControllable()` asked
+  `Match_IsHumanControlled()` of the *unit's own house* — "is a person playing
+  that house". In a campaign that is the same question as "is it mine", because
+  there is one person and their house owns the screen. With two people it stops
+  being the same question, and the answer it gave let each player draw a box
+  round the opponent's army and order it about. It asks
+  `UnitSelection_ControllingHouse(unit) == g_playerHouseID` now — a deviated
+  unit answers to whoever deviated it.
+* **Authoritative.** Every `MP_CMD_UNIT_*` handler now drops what does not
+  belong to `cmd->houseID` (`UnitSelection_HouseMayOrder()`), which is the test
+  every `MP_CMD_STRUCTURE_*` handler already made. The local rule is only a
+  client being polite; this is the one that holds against a client that lies.
+  `MP_CMD_STRUCTURE_BUILD` was the one structure command without it, and
+  `MP_CMD_HOUSE_MISSILE` aims a single global, so it needed the owner asked
+  explicitly.
+
+**The two questions had to be split, and that is the whole of the design.**
+`UnitSelection_IsOrderable()` asks what kind of unit it is — alive, on the map,
+an ordinary unit, not a Carryall — and says nothing about whose it is, *because
+it runs inside the command handlers, on every client*. A question about the
+local player answered there gives two clients two different answers, which is a
+desync rather than a rule. `UnitSelection_UnitHasAction()` and
+`UnitSelection_CanAirTransit()` were both asking the local question from inside
+a command, and both now ask the house-agnostic one.
+
+**One AI behaviour rode along, and it is an improvement.**
+`Unit_Harvester_RetryLift()` books an airlift for any harvester, the AI's
+included, and `Unit_AirTransit_Update()` gated on `CanAirTransit()` — so in a
+match with no people in it the request was raised and never honoured, and AI
+harvesters walked everywhere. The gate was an accident of reusing a selection
+predicate in the autonomy layer, and splitting the two questions removed it.
+Measured on `--war-metrics`, before against after: `econ.spice/match` 71771 →
+73597, `turret.entries/match` 10 → 4, `result.points %` 91 → 87,
+`result.wipeouts %` unchanged at 8 — PASS with no regressions either way.
+
+`--ownership-self-test` is the guard. It puts one Trike down for each house in a
+match both slots play, then checks both halves in both directions: a click and a
+whole-map box must refuse the opponent's unit and must still take my own, and
+each of the five unit commands and `MP_CMD_STRUCTURE_BUILD` must change nothing
+when issued by the wrong house and must land when issued by the right one.
+Verified to fail: seven deliberate breaks produce seven different named
+failures. Two of them needed the probe fixing first — an order naming the tile a
+unit is already driving to changes nothing even when it lands, and so does
+choosing the building a yard is already set to.
+
 ## Skirmish — the AI test bench
 
 `./opendune --skirmish` (optionally `--skirmish=ordos,harkonnen`) generates a
@@ -642,6 +693,7 @@ cd bin
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-queue-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ownership-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --tech-tree-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --auto-repair-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test

@@ -130,6 +130,8 @@ static bool s_buildRulesSelfTest = false;
 static int s_buildRulesSelfTestResult = -1;
 static bool s_buildQueueSelfTest = false;
 static int s_buildQueueSelfTestResult = -1;
+static bool s_ownershipSelfTest = false;
+static int s_ownershipSelfTestResult = -1;
 static bool s_pathfinderSelfTest = false;
 static int s_pathfinderSelfTestResult = -1;
 static int s_pathfinderOverride = -1;
@@ -2808,6 +2810,264 @@ static int BuildQueue_SelfTest(void)
 	return 1;
 }
 
+static int Ownership_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "ownership-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/** Put one Trike of the given house on clear rock, starting the search where the
+ * caller left off so two of them do not land on the same tile. */
+static Unit *Ownership_SpawnUnit(uint8 houseID, uint16 *from)
+{
+	uint16 packed;
+
+	for (packed = *from; packed + 2 < 64 * 64; packed++) {
+		Unit *u;
+
+		if (!Map_IsValidPosition(packed)) continue;
+		if (Map_GetLandscapeType(packed) != LST_ENTIRELY_ROCK) continue;
+		if (Object_GetByPackedTile(packed) != NULL) continue;
+
+		u = Unit_Create(UNIT_INDEX_INVALID, UNIT_TRIKE, houseID, Tile_UnpackTile(packed), 0);
+		if (u == NULL) continue;
+
+		*from = (uint16)(packed + 1);
+		return u;
+	}
+
+	return NULL;
+}
+
+/** Order one unit, as the given house, through the command layer. */
+static void Ownership_Order(uint8 houseID, Unit *unit, uint16 packed)
+{
+	MpCommand cmd;
+
+	MpCommand_Init(&cmd, MP_CMD_UNIT_ORDER, houseID);
+	cmd.action  = ACTION_MOVE;
+	cmd.packed  = packed;
+	cmd.count   = 1;
+	cmd.unit[0] = unit->o.index;
+	MpCommand_Submit(&cmd);
+}
+
+/**
+ * Whose army a player may command.
+ *
+ * A match has two people in it, and every unit command names its recipients by
+ * pool index -- an index that names anything on the map.  Two separate rules
+ * have to hold, and until this test they both did not.
+ *
+ * The local one is what the player sees: a box drawn round the opponent's army
+ * must select nothing.  The authoritative one is what the simulation does: a
+ * command issued by one house naming another house's unit must change nothing,
+ * on every client, whatever the client that sent it believed.  The second is the
+ * one that matters, because the first is only a client being polite.
+ *
+ * Both halves are checked in both directions.  A filter that refused everything
+ * would satisfy "the enemy cannot order it" and break the game, so every case
+ * is followed by the same order from the rightful owner, which must land.
+ */
+static int Ownership_SelfTest(void)
+{
+	Unit *mine;
+	Unit *theirs;
+	uint8 myHouse;
+	uint8 theirHouse;
+	uint16 target;
+	uint16 wasAction;
+	uint16 wasTarget;
+
+	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
+	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	myHouse    = Match_GetSlotHouse(0);
+	theirHouse = Match_GetSlotHouse(1);
+	if (myHouse == HOUSE_INVALID || theirHouse == HOUSE_INVALID || myHouse == theirHouse) {
+		return Ownership_Failed("the match does not have two houses", myHouse);
+	}
+
+	/* This client is the first slot.  The viewpoint is what the local half of
+	 * the rule is written against, so it has to be pinned down before asking. */
+	g_playerHouseID = myHouse;
+
+	/* One unit each, put there rather than waited for: a house somebody plays
+	 * builds nothing on its own, and what the rule is about is two units of two
+	 * houses standing on one map. */
+	{
+		uint16 from = 0;
+
+		mine   = Ownership_SpawnUnit(myHouse, &from);
+		theirs = Ownership_SpawnUnit(theirHouse, &from);
+	}
+	if (mine == NULL)   return Ownership_Failed("could not put a trike down for this house", myHouse);
+	if (theirs == NULL) return Ownership_Failed("could not put a trike down for the other house", theirHouse);
+
+	/* Local: a click, and a box, must both refuse what is not mine. */
+	UnitSelection_Clear();
+	UnitSelection_SelectSingle(theirs);
+	if (g_unitSelectionCount != 0) return Ownership_Failed("the opponent's unit was selected by a click", g_unitSelectionCount);
+
+	UnitSelection_Clear();
+	UnitSelection_SelectBox(0, 64 * 64 - 1, false);
+	if (g_unitSelectionCount == 0) return Ownership_Failed("a box over the whole map selected nothing at all", 0);
+	{
+		uint16 i;
+
+		for (i = 0; i < g_unitSelectionCount; i++) {
+			Unit *u = Unit_Get_ByIndex(UnitSelection_GetIndex(i));
+
+			if (u == NULL) return Ownership_Failed("the selection holds an index that is not a unit", i);
+			if (UnitSelection_ControllingHouse(u) != myHouse) {
+				return Ownership_Failed("a box over the whole map caught somebody else's unit", u->o.houseID);
+			}
+		}
+	}
+
+	/* And it must still take my own. */
+	UnitSelection_Clear();
+	UnitSelection_SelectSingle(mine);
+	if (g_unitSelectionCount != 1) return Ownership_Failed("my own unit could not be selected", g_unitSelectionCount);
+	UnitSelection_Clear();
+
+	/* Authoritative: the command layer, which is what a client that lies about
+	 * its selection would reach anyway.  Somewhere to be sent that is not where
+	 * the unit already is. */
+	target = Tile_PackTile(mine->o.position);
+	target = (target + 5 < 64 * 64) ? (uint16)(target + 5) : (uint16)(target - 5);
+
+	/* Put their unit into a state a stolen order would visibly change, using an
+	 * order from the house that actually owns it.  A freshly created unit is
+	 * already standing guard, so "it is still guarding" would prove nothing. */
+	Ownership_Order(theirHouse, theirs, target);
+	if (theirs->targetMove == 0) return Ownership_Failed("the other house could not order its own unit", theirs->o.index);
+
+	wasAction = theirs->actionID;
+	wasTarget = theirs->targetMove;
+
+	Ownership_Order(myHouse, theirs, target);
+
+	if (theirs->actionID != wasAction || theirs->targetMove != wasTarget) {
+		return Ownership_Failed("one house ordered another house's unit", theirs->o.index);
+	}
+
+	/* The same order from the house that owns it has to land, or the rule is
+	 * not a rule but a wall. */
+	wasTarget = mine->targetMove;
+	Ownership_Order(myHouse, mine, target);
+	if (mine->targetMove == wasTarget && mine->actionID != ACTION_MOVE) {
+		return Ownership_Failed("a house could not order its own unit", mine->o.index);
+	}
+
+	/* The other four unit commands take the same filter.  Untargeted ones are
+	 * checked the same way: nothing about the unit may move. */
+	{
+		MpCommand cmd;
+
+		wasAction = theirs->actionID;
+		wasTarget = theirs->targetMove;
+
+		MpCommand_Init(&cmd, MP_CMD_UNIT_ACTION, myHouse);
+		cmd.action = ACTION_AREA_GUARD;
+		cmd.count = 1;
+		cmd.unit[0] = theirs->o.index;
+		MpCommand_Submit(&cmd);
+		if (theirs->actionID != wasAction) return Ownership_Failed("an untargeted order reached another house's unit", theirs->o.index);
+
+		MpCommand_Init(&cmd, MP_CMD_UNIT_HUNT, myHouse);
+		cmd.count = 1;
+		cmd.unit[0] = theirs->o.index;
+		MpCommand_Submit(&cmd);
+		if (theirs->actionID != wasAction) return Ownership_Failed("a hunt order reached another house's unit", theirs->o.index);
+
+		/* Somewhere other than where it is already going: an order that names
+		 * the tile a unit is already driving to changes nothing even when it
+		 * lands, and would make this check pass without proving anything. */
+		MpCommand_Init(&cmd, MP_CMD_UNIT_DEFAULT_ORDER, myHouse);
+		cmd.packed = (target + 9 < 64 * 64) ? (uint16)(target + 9) : (uint16)(target - 9);
+		cmd.count = 1;
+		cmd.unit[0] = theirs->o.index;
+		MpCommand_Submit(&cmd);
+		if (theirs->actionID != wasAction || theirs->targetMove != wasTarget) {
+			return Ownership_Failed("a right-click order reached another house's unit", theirs->o.index);
+		}
+
+		MpCommand_Init(&cmd, MP_CMD_UNIT_AIR_TRANSIT, myHouse);
+		cmd.packed = target;
+		cmd.count = 1;
+		cmd.unit[0] = theirs->o.index;
+		MpCommand_Submit(&cmd);
+		if (theirs->airTransitDestination != 0) {
+			return Ownership_Failed("a lift was called for another house's unit", theirs->o.index);
+		}
+	}
+
+	/* Structures were already guarded everywhere but one: choosing what a
+	 * factory builds.  Same shape, same test. */
+	{
+		MpCommand cmd;
+		Structure *yard = NULL;
+		PoolFindStruct find;
+		uint16 wasType;
+
+		find.houseID = theirHouse;
+		find.type    = STRUCTURE_CONSTRUCTION_YARD;
+		find.index   = 0xFFFF;
+		yard = Structure_Find(&find);
+		if (yard == NULL) return Ownership_Failed("the other house has no construction yard", theirHouse);
+
+		/* Something it is demonstrably not set to already, or the command has
+		 * nothing to change and the test cannot tell a guard from a no-op. */
+		wasType = yard->objectType;
+
+		MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, myHouse);
+		cmd.object = yard->o.index;
+		cmd.value  = (wasType == STRUCTURE_SLAB_2x2) ? STRUCTURE_SLAB_1x1 : STRUCTURE_SLAB_2x2;
+		MpCommand_Submit(&cmd);
+
+		if (yard->objectType != wasType) {
+			return Ownership_Failed("one house chose what another house's yard builds", yard->o.index);
+		}
+
+		/* And its own yard still answers it. */
+		MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, myHouse);
+		cmd.object = yard->o.index;
+		cmd.value  = wasType;
+		MpCommand_Submit(&cmd);
+	}
+
+	{
+		MpCommand cmd;
+		Structure *own = NULL;
+		PoolFindStruct find;
+		uint16 wasType;
+
+		find.houseID = myHouse;
+		find.type    = STRUCTURE_CONSTRUCTION_YARD;
+		find.index   = 0xFFFF;
+		own = Structure_Find(&find);
+		if (own == NULL) return Ownership_Failed("this house has no construction yard", myHouse);
+
+		wasType = own->objectType;
+
+		MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, myHouse);
+		cmd.object = own->o.index;
+		cmd.value  = (wasType == STRUCTURE_SLAB_2x2) ? STRUCTURE_SLAB_1x1 : STRUCTURE_SLAB_2x2;
+		MpCommand_Submit(&cmd);
+
+		if (own->objectType == wasType) {
+			return Ownership_Failed("a house could not choose what its own yard builds", own->o.index);
+		}
+	}
+
+	return 1;
+}
+
 static int Pathfinder_Failed(const char *why, uint32 detail)
 {
 	char line[192];
@@ -3473,6 +3733,16 @@ static void GameLoop_Main(void)
 		s_buildRulesSelfTestResult = BuildRules_SelfTest();
 		PrintToConsole((s_buildRulesSelfTestResult == 1) ? "build-rules-self-test: PASS"
 		                                                 : "build-rules-self-test: FAIL");
+		return;
+	}
+
+	if (s_ownershipSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_ownershipSelfTestResult = Ownership_SelfTest();
+		PrintToConsole((s_ownershipSelfTestResult == 1) ? "ownership-self-test: PASS"
+		                                                : "ownership-self-test: FAIL");
 		return;
 	}
 
@@ -4551,6 +4821,7 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--selection-self-test") == 0) s_selectionSelfTest = true;
 			if (strcmp(argv[i], "--build-rules-self-test") == 0) s_buildRulesSelfTest = true;
 			if (strcmp(argv[i], "--build-queue-self-test") == 0) s_buildQueueSelfTest = true;
+			if (strcmp(argv[i], "--ownership-self-test") == 0) s_ownershipSelfTest = true;
 			if (strcmp(argv[i], "--move-rules-self-test") == 0) s_moveRulesSelfTest = true;
 			if (strcmp(argv[i], "--lobby-self-test") == 0) s_lobbySelfTest = true;
 			if (strncmp(argv[i], "--lobby-play=", 13) == 0) {
@@ -4864,6 +5135,7 @@ int main(int argc, char **argv)
 	if (s_combatBalanceSelfTest && s_combatBalanceSelfTestResult == 0) return 1;
 	if (s_buildRulesSelfTest && s_buildRulesSelfTestResult != 1) return 1;
 	if (s_buildQueueSelfTest && s_buildQueueSelfTestResult != 1) return 1;
+	if (s_ownershipSelfTest && s_ownershipSelfTestResult != 1) return 1;
 	if (s_techTreeSelfTest && s_techTreeSelfTestResult != 1) return 1;
 	if (s_autoRepairSelfTest && s_autoRepairSelfTestResult != 1) return 1;
 	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;

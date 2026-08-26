@@ -136,8 +136,13 @@ void MpCommand_Execute(const MpCommand *cmd)
 	if (cmd == NULL) return;
 
 	switch (cmd->type) {
+		/* Every unit command names its recipients by index, and an index names
+		 * anything on the map.  The house that issued the order travels with it
+		 * and each handler drops what does not belong to that house -- the same
+		 * test every structure command already made.  Without it a client could
+		 * order the other player's army, which is exactly what it did. */
 		case MP_CMD_UNIT_ORDER:
-			UnitSelection_ApplyOrderToList(cmd->unit, cmd->count, (ActionType)cmd->action, cmd->packed);
+			UnitSelection_ApplyOrderToList(cmd->unit, cmd->count, cmd->houseID, (ActionType)cmd->action, cmd->packed);
 			break;
 
 		case MP_CMD_UNIT_DEFAULT_ORDER:
@@ -145,21 +150,22 @@ void MpCommand_Execute(const MpCommand *cmd)
 			break;
 
 		case MP_CMD_UNIT_ACTION:
-			UnitSelection_ApplyActionToList(cmd->unit, cmd->count, (ActionType)cmd->action);
+			UnitSelection_ApplyActionToList(cmd->unit, cmd->count, cmd->houseID, (ActionType)cmd->action);
 			break;
 
 		case MP_CMD_UNIT_HUNT:
-			UnitSelection_ApplyHuntToList(cmd->unit, cmd->count);
+			UnitSelection_ApplyHuntToList(cmd->unit, cmd->count, cmd->houseID);
 			break;
 
 		case MP_CMD_UNIT_AIR_TRANSIT:
-			UnitSelection_ApplyAirTransitToList(cmd->unit, cmd->count, cmd->packed);
+			UnitSelection_ApplyAirTransitToList(cmd->unit, cmd->count, cmd->houseID, cmd->packed);
 			break;
 
 		case MP_CMD_STRUCTURE_BUILD:
 			if (cmd->object >= STRUCTURE_INDEX_MAX_HARD) break;
 			s = Structure_Get_ByIndex(cmd->object);
 			if (s == NULL || !s->o.flags.s.used) break;
+			if (s->o.houseID != cmd->houseID) break;
 			Structure_BuildObject(s, cmd->value);
 			break;
 
@@ -250,7 +256,10 @@ void MpCommand_Execute(const MpCommand *cmd)
 
 		case MP_CMD_HOUSE_MISSILE:
 			/* Aiming draws randoms and frees a unit, so it happens on both
-			 * clients or neither. */
+			 * clients or neither.  The missile in flight is a single global, so
+			 * whose it is has to be asked here: without it one player could aim
+			 * the other player's Death Hand. */
+			if (g_unitHouseMissile == NULL || g_unitHouseMissile->o.houseID != cmd->houseID) break;
 			Unit_LaunchHouseMissile(cmd->packed);
 			break;
 

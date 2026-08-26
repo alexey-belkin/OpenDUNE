@@ -2778,15 +2778,70 @@ static void Unit_Harvester_Update(Unit *unit)
 }
 
 /** Is this a player unit that can take part in a box selection? */
-static bool UnitSelection_IsControllable(const Unit *unit)
+/** Whose unit this is right now.  A deviated one answers to whoever deviated it. */
+uint8 UnitSelection_ControllingHouse(const Unit *unit)
+{
+	if (unit == NULL) return HOUSE_INVALID;
+	if (unit->deviated != 0) return g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS;
+
+	return unit->o.houseID;
+}
+
+/**
+ * Whether a unit is the kind of thing an order can be given to at all: alive,
+ * on the map, an ordinary unit, and not a Carryall.
+ *
+ * It says nothing about whose it is, and it must not.  This runs inside the
+ * command handlers, which execute on every client, and a question about the
+ * local player would give the two clients two different answers -- which is a
+ * desync rather than a rule.  Ownership is asked separately, of the house that
+ * issued the order.
+ */
+static bool UnitSelection_IsOrderable(const Unit *unit)
 {
 	const UnitInfo *ui;
 
 	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
-	if (!Match_IsHumanControlled(unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID) || unit->o.type == UNIT_CARRYALL) return false;
+	if (unit->o.type == UNIT_CARRYALL) return false;
 
 	ui = &g_table_unitInfo[unit->o.type];
 	return ui->flags.isNormalUnit;
+}
+
+/**
+ * Whether a house may order a unit about.  The only ownership test the
+ * simulation makes, and the one every unit command filters on.
+ */
+bool UnitSelection_HouseMayOrder(const Unit *unit, uint8 houseID)
+{
+	return UnitSelection_IsOrderable(unit) && UnitSelection_ControllingHouse(unit) == houseID;
+}
+
+/**
+ * Whether the person at this keyboard may select it and command it.
+ *
+ * Mine, and not merely somebody's.  This asked Match_IsHumanControlled() of the
+ * unit's own house -- "is a person playing that house" -- which in a campaign is
+ * the same question, because there is one person and their house owns the
+ * screen.  With two people it stops being the same question, and the answer it
+ * gave let each player draw a box round the other one's army and order it
+ * about.  The same distinction match.c warns about, arrived at from the other
+ * end.
+ */
+static bool UnitSelection_IsControllable(const Unit *unit)
+{
+	if (!UnitSelection_HouseMayOrder(unit, g_playerHouseID)) return false;
+
+	return Match_IsHumanControlled(g_playerHouseID);
+}
+
+/** The pool index of one member of the current selection, for callers that have
+ * to look at the group rather than at its primary. */
+uint16 UnitSelection_GetIndex(uint16 slot)
+{
+	if (slot >= g_unitSelectionCount) return UNIT_INDEX_INVALID;
+
+	return s_unitSelection[slot];
 }
 
 static bool UnitSelection_Contains(const Unit *unit)
@@ -2839,7 +2894,9 @@ static bool UnitSelection_UnitHasAction(const Unit *unit, ActionType action)
 	const uint16 *actions;
 	uint16 i;
 
-	if (!UnitSelection_IsControllable(unit)) return false;
+	/* What kind of unit it is, not whose.  Its callers include the command
+	 * handlers; see UnitSelection_IsOrderable(). */
+	if (!UnitSelection_IsOrderable(unit)) return false;
 
 	actions = g_table_unitInfo[unit->o.type].o.actionsPlayer;
 	for (i = 0; i < 4; i++) {
@@ -5677,6 +5734,11 @@ void UnitSelection_ApplyDefaultOrderToList(const uint16 *list, uint16 count, uin
 		Unit *unit = Unit_Get_ByIndex(order[i]);
 		ActionType action;
 
+		/* The one ownership test the simulation makes.  Without it a client
+		 * could name any unit on the map and the other client would obey --
+		 * which is what let a player order the opponent's army. */
+		if (!UnitSelection_HouseMayOrder(unit, houseID)) continue;
+
 		/* Everything that can shoot attacks; a harvester right-clicked onto an
 		 * enemy still does the only thing it can, which is drive there. */
 		if (hostile && UnitSelection_UnitHasAction(unit, ACTION_ATTACK)) {
@@ -5806,7 +5868,7 @@ bool UnitSelection_RecallControlGroup(uint16 group)
 
 /* Hunt is intentionally a keyboard-only advanced order: it applies only to
  * normal combat units, leaving harvesters and special units untouched. */
-void UnitSelection_ApplyHuntToList(const uint16 *list, uint16 count)
+void UnitSelection_ApplyHuntToList(const uint16 *list, uint16 count, uint8 houseID)
 {
 	uint16 i;
 
@@ -5814,6 +5876,10 @@ void UnitSelection_ApplyHuntToList(const uint16 *list, uint16 count)
 	for (i = 0; i < count; i++) {
 		Unit *unit = Unit_Get_ByIndex(list[i]);
 
+		/* The one ownership test the simulation makes.  Without it a client
+		 * could name any unit on the map and the other client would obey --
+		 * which is what let a player order the opponent's army. */
+		if (!UnitSelection_HouseMayOrder(unit, houseID)) continue;
 		if (!UnitSelection_UnitHasAction(unit, ACTION_ATTACK)) continue;
 		Unit_SetManualHunt(unit, false);
 		Unit_AttackPosition_SetManual(unit, false);
@@ -5847,7 +5913,11 @@ static bool UnitSelection_CanAirTransit(const Unit *unit)
 {
 	const UnitInfo *ui;
 
-	if (!UnitSelection_IsControllable(unit)) return false;
+	/* What kind of unit it is, not whose: UnitSelection_ApplyAirTransitToList()
+	 * calls this inside a command, and IsControllable() is a question about the
+	 * local player -- two clients would answer it two different ways for the
+	 * same unit.  Ownership is the explicit filter beside this call. */
+	if (!UnitSelection_IsOrderable(unit)) return false;
 	ui = &g_table_unitInfo[unit->o.type];
 	return ui->o.flags.canBePickedUp && ui->flags.isGroundUnit;
 }
@@ -5875,7 +5945,7 @@ bool UnitSelection_BeginAirTransit(void)
  * ACTION_MAX means "whatever each unit's special action is", resolved here from
  * unit state so the command does not have to carry one entry per unit.
  */
-void UnitSelection_ApplyActionToList(const uint16 *list, uint16 count, ActionType action)
+void UnitSelection_ApplyActionToList(const uint16 *list, uint16 count, uint8 houseID, ActionType action)
 {
 	uint16 i;
 
@@ -5883,6 +5953,11 @@ void UnitSelection_ApplyActionToList(const uint16 *list, uint16 count, ActionTyp
 	for (i = 0; i < count; i++) {
 		Unit *unit = Unit_Get_ByIndex(list[i]);
 		ActionType unitAction;
+
+		/* The one ownership test the simulation makes.  Without it a client
+		 * could name any unit on the map and the other client would obey --
+		 * which is what let a player order the opponent's army. */
+		if (!UnitSelection_HouseMayOrder(unit, houseID)) continue;
 
 		/* Clicking an order at a deviated unit shakes the deviation loose
 		 * instead of ordering it, and shakes it loose whoever asked -- the
@@ -5953,7 +6028,7 @@ bool UnitSelection_HasPendingAction(void)
 }
 
 /** Ask for a lift to a tile, for a named set of units. */
-void UnitSelection_ApplyAirTransitToList(const uint16 *list, uint16 count, uint16 packed)
+void UnitSelection_ApplyAirTransitToList(const uint16 *list, uint16 count, uint8 houseID, uint16 packed)
 {
 	uint16 i;
 
@@ -5962,6 +6037,10 @@ void UnitSelection_ApplyAirTransitToList(const uint16 *list, uint16 count, uint1
 		for (i = 0; i < count; i++) {
 			Unit *unit = Unit_Get_ByIndex(list[i]);
 
+			/* The one ownership test the simulation makes.  Without it a client
+			 * could name any unit on the map and the other client would obey --
+			 * which is what let a player order the opponent's army. */
+			if (!UnitSelection_HouseMayOrder(unit, houseID)) continue;
 			if (!UnitSelection_CanAirTransit(unit)) continue;
 			Unit_SetManualHunt(unit, false);
 			Unit_AttackPosition_SetManual(unit, false);
@@ -5981,7 +6060,7 @@ void UnitSelection_ApplyAirTransitToList(const uint16 *list, uint16 count, uint1
 }
 
 /** Apply a targeted group order to a named set of units. */
-void UnitSelection_ApplyOrderToList(const uint16 *list, uint16 count, ActionType action, uint16 packed)
+void UnitSelection_ApplyOrderToList(const uint16 *list, uint16 count, uint8 houseID, ActionType action, uint16 packed)
 {
 	uint16 order[UNIT_SELECTION_MAX];
 	uint16 i;
@@ -6007,6 +6086,10 @@ void UnitSelection_ApplyOrderToList(const uint16 *list, uint16 count, ActionType
 	for (i = 0; i < count; i++) {
 		Unit *unit = Unit_Get_ByIndex(order[i]);
 
+		/* The one ownership test the simulation makes.  Without it a client
+		 * could name any unit on the map and the other client would obey --
+		 * which is what let a player order the opponent's army. */
+		if (!UnitSelection_HouseMayOrder(unit, houseID)) continue;
 		if (!UnitSelection_UnitHasAction(unit, action)) continue;
 		if (advance) {
 			UnitSelection_BeginAdvance(unit, UnitSelection_SpreadTake(unit, packed));
