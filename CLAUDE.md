@@ -541,6 +541,19 @@ one.
   `GUI_Widget_Viewport_Click()` leaves `SELECTIONTYPE_PLACE` only when the last
   is spoken for.
 
+**The placement click decides from its own tile**, which it did not. It used
+`g_selectionPosition` and `g_selectionState` — whatever the last *hover* left
+behind — while `packed` is the tile the click names, taken from `g_mouseClickX/Y`
+recorded when the button went down. A hover and a click are two different mouse
+positions, so a building could go somewhere the player had not clicked, or
+nowhere at all with the sound still playing, because the hover tile had just been
+built on and the stale state still said yes. Rare when buildings go down one at a
+time, common when ten go down in a row, which is how a queue found a bug that was
+always there. `Map_SetSelection(packed)` is the recompute — in placement mode it
+is exactly the test `Structure_Place()` will make, against the same tile. A yard
+that has since been destroyed now leaves placement mode rather than submitting a
+command naming no yard, which was the other way to get a sound and no building.
+
 That last point is the one that needed care in a match. The placement command is
 stamped for a later turn, so between the click and the turn that runs it the
 yard still says it is holding four. `Structure_Queue_GetPlaceableCount()` is the

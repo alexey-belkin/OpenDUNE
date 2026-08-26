@@ -548,16 +548,37 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 		si = &g_table_structureInfo[g_structureActiveType];
 		h = g_playerHouse;
 
-		/* Whether the spot is legal is decided here and the answer is used for
-		 * the feedback, because in a networked match the click cannot wait for
-		 * the placement: the command is stamped for a later turn and both
-		 * clients run it then.  g_selectionState is the same test Structure_Place
-		 * makes, kept up to date by the cursor. */
+		/* Decide from the tile this click names, and not from whatever the last
+		 * *hover* left in g_selectionPosition.  They are two different mouse
+		 * positions: a click carries g_mouseClickX/Y, recorded when the button
+		 * went down, while the hover ran on wherever the pointer had reached by
+		 * the time its frame was handled.  Placing at the hover tile is how a
+		 * building went somewhere the player had not clicked -- or nowhere at
+		 * all with the sound still playing, because that tile had just been
+		 * built on and the stale state still said yes.  Rare when buildings are
+		 * placed one at a time and common when ten are placed in a row.
+		 *
+		 * Map_SetSelection() is the recompute: in placement mode it is exactly
+		 * the test Structure_Place() will make, against the same tile. */
+		Map_SetSelection(packed);
+
+		/* g_structureActivePosition is the yard that built it. */
+		s = Structure_Get_ByPackedTile(g_structureActivePosition);
+
+		/* The yard is gone -- destroyed, or the player selected something else
+		 * that took its tile.  A placement command naming no yard is dropped
+		 * where it runs, which locally was a sound and no building; leaving
+		 * placement mode says so instead. */
+		if (s == NULL) {
+			GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
+			g_structureActiveType = 0xFFFF;
+			g_structureActive     = NULL;
+			g_selectionState      = 0;
+			return true;
+		}
+
 		if (g_selectionState != 0) {
 			MpCommand cmd;
-
-			/* g_structureActivePosition is the yard that built it. */
-			s = Structure_Get_ByPackedTile(g_structureActivePosition);
 
 			/* Counted before the command is submitted, because outside a match
 			 * a submitted command runs immediately -- and the count of what is
@@ -566,8 +587,8 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			Structure_Queue_PlaceCommit(s);
 
 			MpCommand_Init(&cmd, MP_CMD_STRUCTURE_PLACE, g_structureActive->o.houseID);
-			cmd.object = (s != NULL) ? s->o.index : 0xFFFF;
-			cmd.packed = g_selectionPosition;
+			cmd.object = s->o.index;
+			cmd.packed = packed;
 			MpCommand_Submit(&cmd);
 
 			Voice_Play(20);
@@ -578,7 +599,11 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 			 * few turns later, which is exactly why the count subtracts what
 			 * has already been clicked for rather than reading the yard. */
 			if (Structure_Queue_GetPlaceableCount(s) != 0) {
-				g_selectionState = Structure_IsValidBuildLocation(g_selectionRectanglePosition, g_structureActiveType, g_playerHouseID);
+				/* The spot just used, tested again: outside a match the building
+				 * is already standing there, so the cursor turns red until the
+				 * player moves it -- which is the right answer to clicking the
+				 * same tile twice. */
+				Map_SetSelection(packed);
 				GUI_Widget_ActionPanel_Draw(true);
 				GUI_DisplayHint(si->o.hintStringID, si->o.spriteID);
 				return true;
@@ -586,13 +611,11 @@ bool GUI_Widget_Viewport_Click(Widget *w)
 
 			GUI_ChangeSelectionType(SELECTIONTYPE_STRUCTURE);
 
-			if (s != NULL) {
-				if ((Structure_GetBuildable(s) & (1 << s->objectType)) == 0) {
-					MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
-					cmd.object = s->o.index;
-					cmd.value  = 0xFFFE;
-					MpCommand_Submit(&cmd);
-				}
+			if ((Structure_GetBuildable(s) & (1 << s->objectType)) == 0) {
+				MpCommand_Init(&cmd, MP_CMD_STRUCTURE_BUILD, s->o.houseID);
+				cmd.object = s->o.index;
+				cmd.value  = 0xFFFE;
+				MpCommand_Submit(&cmd);
 			}
 
 			g_structureActiveType = 0xFFFF;

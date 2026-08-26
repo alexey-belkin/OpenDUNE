@@ -284,24 +284,16 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 		percentDone = 100 * timeLeft / buildTime;
 	}
 
+	/* Ready to place, and everything still owed: the second number is the one
+	 * the clicks on the picture above move.  A row above the status line rather
+	 * than beside it -- "Build it" is nearly the full width of this widget at
+	 * 6p, so sharing the line meant the two texts drew over each other. */
 	if (Structure_Queue_CanOrder(s) && s->o.type == STRUCTURE_CONSTRUCTION_YARD) {
-		/* Ready to place, and everything still owed: the second number is the
-		 * one the clicks on the picture above move.  The word goes to the left
-		 * and the count to the right so that neither has to be shortened -- at
-		 * 6p the widest pair, "100% done" beside "9/99", still fits the 60
-		 * pixels this widget has.
-		 *
-		 * "Place it" is left out because it is no longer true of this widget:
-		 * the button below does that now, and it says so itself. */
-		uint8 colour = buttonDown ? 0xE : 0xF;
-
-		if (g_productionStringID != STR_PLACE_IT && g_productionStringID != STR_COMPLETED) {
-			GUI_DrawText_Wrapper(String_Get_ByIndex(g_productionStringID), positionX + 1, positionY + height - 9, colour, 0, 0x021, percentDone);
-		}
-
-		GUI_DrawText_Wrapper("%u/%u", positionX + width - 1, positionY + height - 9, colour, 0, 0x221,
+		GUI_DrawText_Wrapper("%u/%u", positionX + width - 1, positionY + height - 19, buttonDown ? 0xE : 0xF, 0, 0x221,
 		                     Structure_Queue_GetReadyCount(s), Structure_Queue_GetOrderCount(s));
-	} else if (g_productionStringID == STR_UPGRADINGD_DONE) {
+	}
+
+	if (g_productionStringID == STR_UPGRADINGD_DONE) {
 		percentDone = 100 - s->upgradeTimeLeft;
 
 		GUI_DrawText_Wrapper(
@@ -314,8 +306,16 @@ void GUI_Widget_SpriteTextButton_Draw(Widget *w)
 			percentDone
 		);
 	} else {
+		/* "Place it" is no longer true of this widget: for a yard the button
+		 * below does that, and clicking here orders one more.  What the row has
+		 * to say instead is that the building is finished. */
+		uint16 stringID = g_productionStringID;
+
+		if (stringID == STR_PLACE_IT && s->o.type == STRUCTURE_CONSTRUCTION_YARD &&
+		    Structure_Queue_CanOrder(s)) stringID = STR_COMPLETED;
+
 		GUI_DrawText_Wrapper(
-			String_Get_ByIndex(g_productionStringID),
+			String_Get_ByIndex(stringID),
 			positionX + width / 2,
 			positionY + height - 9,
 			(g_productionStringID == STR_PLACE_IT) ? 0xEF : (buttonDown ? 0xE : 0xF),

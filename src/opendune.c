@@ -2725,6 +2725,22 @@ static int BuildQueue_SelfTest(void)
 	Structure_Queue_PlaceRelease(yard);
 	if (Structure_Queue_GetPlaceableCount(yard) != 3) return BuildQueue_Failed("releasing a spot did not give it back", Structure_Queue_GetPlaceableCount(yard));
 
+	/* A refused spot costs nothing -- no building, no credit, and the count
+	 * unchanged.  That is what makes a mis-aimed click harmless, and a
+	 * mis-aimed click is the common case: the tile under the pointer when the
+	 * button went down is not always the tile the hover last measured. */
+	{
+		uint16 type = 0xFFFF;
+		uint16 before = Structure_Queue_GetReadyCount(yard);
+
+		if (Structure_Queue_PlaceReady(yard, Tile_PackTile(yard->o.position), &type) != NULL) {
+			return BuildQueue_Failed("a building went down on top of the yard", 0);
+		}
+		if (Structure_Queue_GetReadyCount(yard) != before) {
+			return BuildQueue_Failed("a refused spot still spent a building", Structure_Queue_GetReadyCount(yard));
+		}
+	}
+
 	/* Put all three down, which is three clicks and no trip back to the yard.
 	 * The first comes out of linkedID and the other two out of the stack, and
 	 * the caller cannot tell the difference -- which is the point. */
@@ -2738,6 +2754,15 @@ static int BuildQueue_SelfTest(void)
 		if (Map_GetLandscapeType(spot[i]) != LST_CONCRETE_SLAB) return BuildQueue_Failed("the slab did not reach the map", spot[i]);
 		if (Structure_Queue_GetReadyCount(yard) != (uint16)(2 - i)) {
 			return BuildQueue_Failed("placing one did not take one off the count", Structure_Queue_GetReadyCount(yard));
+		}
+
+		/* And the same spot again, which is what a second click on one tile is.
+		 * It is concrete now, so it must be refused and must cost nothing. */
+		if (Structure_Queue_PlaceReady(yard, spot[i], &type) != NULL) {
+			return BuildQueue_Failed("the same spot took a second building", spot[i]);
+		}
+		if (Structure_Queue_GetReadyCount(yard) != (uint16)(2 - i)) {
+			return BuildQueue_Failed("a second click on one spot spent a building", Structure_Queue_GetReadyCount(yard));
 		}
 	}
 	if (Structure_Queue_GetOrderCount(yard) != 0) return BuildQueue_Failed("the queue outlived the buildings in it", Structure_Queue_GetOrderCount(yard));
