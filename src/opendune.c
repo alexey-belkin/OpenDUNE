@@ -3649,6 +3649,7 @@ static void GameLoop_Main(void)
 	Unit_MoveRules_Init();
 	Structure_BuildRules_Init();
 	Structure_TechTree_Init();
+	Skirmish_Rules_Init();
 	Pathfinder_Init();
 	if (s_pathfinderOverride >= 0) Pathfinder_SetEnabled(s_pathfinderOverride != 0);
 	Starport_Init();

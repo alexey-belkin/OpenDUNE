@@ -128,6 +128,16 @@ starport_stock_ceiling=200
 ; the freighter never carried stays at zero.
 starport_restock_ticks=1800
 
+; --- The generated map -------------------------------------------------------
+; Whether each base is carved into a rectangle of solid rock before anything is
+; built on it.  Off by default: the AI paves every footprint before it builds on
+; it, so it does not need rock underneath, and two rectangles of flat rock in
+; opposite corners are the one thing on a generated map that could not have
+; grown there.  Turning it on restores the older, faster ground -- the numbers
+; in metrics.md were taken with it on, and --war-metrics reads econ.spice/match
+; 73597 with it against 62750 without.
+skirmish_base_rock=0
+
 ; Turning on the move.  Arriving on a tile a unit reads the next direction off
 ; its route and, if it differs from where it is pointing, stops and turns.  On a
 ; diagonal route that happens every other tile, for 45 degrees each time, which

@@ -231,6 +231,19 @@ go up on open sand would fence off the desert. The "must touch something of your
 own" rule still applies to every slab, so a road grows outwards from the base one
 tile at a time.
 
+The ground a base is built on
+----------------------------
+A generated map is now left as the generator drew it. Both bases used to be laid
+out inside a rectangle carved into solid rock, which is the one thing on such a
+map that could not have grown there -- and, since concrete may be poured on sand,
+no longer necessary: a base stands on the concrete it paves for itself. In a
+match that means the ground beyond your Construction Yard and its apron is
+whatever the desert put there, and building outwards is paving outwards.
+
+skirmish_base_rock=1 brings the old rock rectangles back. It is worth knowing
+that the AI plays measurably better on them -- rock is the fastest ground there
+is short of concrete, and an army leaves a base on rock sooner.
+
 The build queue
 ---------------
 A factory takes repeat orders: left click on its picture in the sidebar orders

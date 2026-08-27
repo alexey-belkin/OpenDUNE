@@ -393,6 +393,35 @@ directly and never asked this rule in the first place.
 
 `--build-rules-self-test` checks both halves against a generated map.
 
+## The map a match is played on
+
+`skirmish_base_rock` (default 0). Each base used to be laid out inside a 24x20
+rectangle that `Skirmish_CarveRock()` first turned into solid rock — the one
+thing on a generated map that could not have grown there, and the reason a
+skirmish map had two suspiciously flat corners. It is off now: the plan paves
+every footprint before it builds on it (`Skirmish_LaySlabs()` writes the ground
+tile directly and charges for the footprint), so a base stands on its own
+concrete wherever it landed, which is what `build_slab_on_sand` made possible.
+
+**It measures worse, and the key is why it still exists.** Rock is the fastest
+ground short of concrete, and 480 tiles of it per base is an army that leaves
+home sooner. Measured on `--war-metrics`, rock against natural ground:
+`econ.spice/match` 73597 → 62750, `result.points %` 87 → 58,
+`result.wipeouts %` 8 → 25, `wave.matches %` 91 → 75, `turret.entries/match`
+4 → 17. The suite still passes — no gate is crossed — but five numbers move a
+long way, and every recorded figure in [metrics.md](metrics.md) was taken with
+the plateau. `skirmish_base_rock=1` restores it *exactly*: all sixteen numbers
+come back bit-for-bit, which is the check that the key really is the only
+difference.
+
+Two things had to be said out loud once the rock was gone. Spice may not be
+seeded inside a base rectangle (`Skirmish_IsInsideBase()`) — rock used to refuse
+it for free, since `Map_ChangeSpiceAmount()` only writes sand, dune and spice,
+and without the rule a house sometimes started the match mining its own front
+yard. And levelling the mountains inside the rectangle was tried and **rejected
+on measurement**: it moved nothing in the right direction and took the suite to
+FAIL with 2 regressions, so a mountain in a base is left standing.
+
 ## Repair all
 
 `Structure_AutoRepair_*` in [structure.c](src/structure.c). A switch on the
