@@ -2553,6 +2553,19 @@ void Structure_StarportOrder(Structure *s, const uint16 *items, uint16 count, ui
 	h = House_Get_ByIndex(s->o.houseID);
 	if (h == NULL) return;
 
+	/* The shop rule again, where it is authoritative: the window only decides
+	 * what one player is shown, and this runs on both clients.  Checked before
+	 * anything is charged and refused whole rather than line by line -- the
+	 * order carries one total and no per-line price, so dropping a line would
+	 * charge for it.  A window that is telling the truth cannot produce such an
+	 * order in the first place. */
+	for (line = 0; line < count; line++) {
+		const uint16 objectType = items[line] >> 8;
+
+		if (objectType >= UNIT_MAX) continue;
+		if (!Starport_Sells(objectType)) return;
+	}
+
 	/* Both clients hold the same credits, so both reach the same verdict. */
 	if (h->credits < credits) return;
 	h->credits -= credits;
@@ -2680,6 +2693,14 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 						 * there.  Asked of the creator rather than the current
 						 * owner, which is how the factories decide it too. */
 						if ((g_table_unitInfo[i].o.availableHouse & (1 << s->creatorHouseID)) == 0) {
+							g_table_unitInfo[i].o.available = 0;
+							continue;
+						}
+
+						/* And only what the freighter carries as ordinary
+						 * merchandise: a House's own unit is that House's
+						 * building to produce, not a shortcut round it. */
+						if (!Starport_Sells(i)) {
 							g_table_unitInfo[i].o.available = 0;
 							continue;
 						}

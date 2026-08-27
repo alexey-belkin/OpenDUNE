@@ -141,6 +141,8 @@ static bool s_techTreeSelfTest = false;
 static int s_techTreeSelfTestResult = -1;
 static bool s_autoRepairSelfTest = false;
 static int s_autoRepairSelfTestResult = -1;
+static bool s_starportSelfTest = false;
+static int s_starportSelfTestResult = -1;
 /* Extra simulation passes per loop iteration, on top of whatever the Game
  * Controls speed setting already does.  Powers of two only: the '[' and ']'
  * keys halve and double it. */
@@ -3764,6 +3766,13 @@ static void GameLoop_Main(void)
 		return;
 	}
 
+	if (s_starportSelfTest) {
+		s_starportSelfTestResult = Starport_RunRegressionTest();
+		PrintToConsole((s_starportSelfTestResult == 1) ? "starport-self-test: PASS"
+		                                              : "starport-self-test: FAIL");
+		return;
+	}
+
 	if (s_autoRepairSelfTest) {
 		s_autoRepairSelfTestResult = Structure_AutoRepair_RunRegressionTest();
 		PrintToConsole((s_autoRepairSelfTestResult == 1) ? "auto-repair-self-test: PASS"
@@ -4840,6 +4849,7 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
 			if (strcmp(argv[i], "--tech-tree-self-test") == 0) s_techTreeSelfTest = true;
 			if (strcmp(argv[i], "--auto-repair-self-test") == 0) s_autoRepairSelfTest = true;
+			if (strcmp(argv[i], "--starport-self-test") == 0) s_starportSelfTest = true;
 			/* Same reason as --pathfinder=: opendune.ini is searched in the
 			 * player's Application Support directory first, so a copy there
 			 * shadows anything put next to the binary.  Both players must end up
@@ -5139,6 +5149,7 @@ int main(int argc, char **argv)
 	if (s_ownershipSelfTest && s_ownershipSelfTestResult != 1) return 1;
 	if (s_techTreeSelfTest && s_techTreeSelfTestResult != 1) return 1;
 	if (s_autoRepairSelfTest && s_autoRepairSelfTestResult != 1) return 1;
+	if (s_starportSelfTest && s_starportSelfTestResult != 1) return 1;
 	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;
 	if (s_moveRulesSelfTest && s_moveRulesSelfTestResult != 1) return 1;
 	if (s_lobbySelfTest && s_lobbySelfTestResult != 1) return 1;

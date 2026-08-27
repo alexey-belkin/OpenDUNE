@@ -349,6 +349,13 @@ A generated skirmish map has no scenario to stock the Starport from, so a match
 between people stocks it as described above. An AI-only skirmish deliberately
 leaves it empty.
 
+What is on the shelves is the common roster: what your own factories could have
+produced anyway. A House's own units are left to that House's own buildings --
+the Deviator, the Devastator, the Sonic Tank and the Ornithopter want the House
+of IX, and the Saboteur is what the Ordos Palace does. Sold off a freighter they
+were a tech tree with a hole in it: a Starport and eight hundred credits, and the
+House of IX never had to go up. starport_special_units=1 puts them back on sale.
+
 
 Playing somebody over the internet
 ----------------------------------

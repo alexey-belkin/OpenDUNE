@@ -442,6 +442,35 @@ window by adding to `g_timerGUI`, which a wall clock does not notice.
 alternative — sleeping the window out three times over five savegames — is four
 seconds of a headless test doing nothing.
 
+## The Starport sells the common roster
+
+`Starport_Sells()` in [house.c](src/house.c), key `starport_special_units`
+(default 0). The Starport used to sell whatever the buying house was allowed to
+field, which quietly made it a substitute for buildings the house had never
+built: eight hundred credits and a Starport bought a Devastator, and the House
+of IX — the thing that is supposed to cost — never had to go up.
+
+The rule is now *what a house could have built for itself with an ordinary
+factory*, which excludes exactly five types and no others: the Deviator, the
+Devastator, the Sonic Tank and the Ornithopter, all of which carry
+`structuresRequired = FLAG_STRUCTURE_HOUSE_OF_IX`, and the Saboteur, which no
+`buildableUnits` list anywhere contains because it is what the Ordos Palace
+does. The Raider Trike is not one of them and is a special case in the code:
+`Structure_GetBuildObject()` swaps a Light Factory's Trike for one when Ordos
+own the factory, so it has a factory by substitution rather than by table.
+
+Two places enforce it. The window (`Structure_BuildObject()`) hides what is not
+for sale, and `Structure_StarportOrder()` refuses it — **the whole order, before
+anything is charged**, because an order carries one total and no per-line price,
+so dropping a line would charge for it. The AI is unaffected: it only ever buys
+harvesters and carryalls (`Skirmish_AI_StarportOrder()`).
+
+`--starport-self-test` is the guard: the five refused, thirteen still sold, the
+priced-at-nothing types (projectiles, sandworm, frigate, Death Hand) never sold
+either way, every refused type still obtainable somewhere else, and the key
+selling them again. Verified to fail: dropping either half of the rule produces
+a different named failure.
+
 ## Repair all
 
 `Structure_AutoRepair_*` in [structure.c](src/structure.c). A switch on the
@@ -745,6 +774,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonne
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ownership-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --tech-tree-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --auto-repair-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --starport-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --pathfinder-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --lobby-self-test
