@@ -302,6 +302,18 @@ int Starport_RunRegressionTest(void)
 	return result;
 }
 
+/** Whether a House's own units are for sale.  Folded into the lobby digest. */
+bool Starport_SellsSpecialUnits(void)
+{
+	return s_starport.specialUnits;
+}
+
+/** For the tests; the player's own setting is starport_special_units. */
+void Starport_SetSpecialUnits(bool sold)
+{
+	s_starport.specialUnits = sold;
+}
+
 /** How long the freighter takes, in Starport ticks. */
 uint16 Starport_DeliveryTime(uint8 houseID)
 {

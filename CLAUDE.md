@@ -929,11 +929,17 @@ without knowing that it does.
 * The **game code** is the only thing anybody has to exchange. The map seed is
   `crc32(code) | 1`, so both sides derive the same map from it and no seed is
   ever sent.
-* The **config hash** is `crc32(revision + g_table_unitInfo + g_table_structureInfo)`.
-  Hashing the tables rather than the ini file is what makes it exact: the balance
-  module works by patching those tables, so a key written out at its default
-  value, a comment or a blank line changes nothing, and a real difference always
-  changes the hash.
+* The **config hash** is `crc32(revision + g_table_unitInfo + g_table_structureInfo
+  + the rules that are not table patches)`. Hashing the tables rather than the
+  ini file is what makes it exact: the balance module, the unit tuning and the
+  tech tree all work by patching those tables, so a key written out at its
+  default value, a comment or a blank line changes nothing, and a real
+  difference always changes the hash. A rule that is *not* a table patch has to
+  be named in `Lobby_ConfigHash()` one at a time — `pathfinder_astar`,
+  `move_rolling_turn`, `build_slab_on_sand`, `skirmish_base_rock` and
+  `starport_special_units` — and that is exactly the list that gets forgotten.
+  `--lobby-self-test` flips each of them and demands the digest move; removing
+  any one fold fails it by name.
 * The **house row** cycles the six *ordered* pairs, and the player row swaps which
   end of the pair is yours. Both players see the same pair — it is in the room
   name — and pick opposite seats.

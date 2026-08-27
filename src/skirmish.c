@@ -2190,6 +2190,19 @@ void Skirmish_Rules_Init(void)
 	s_baseRock = (IniFile_GetInteger("skirmish_base_rock", 0) != 0);
 }
 
+/** Whether a base is carved into rock.  Folded into the lobby digest: the map
+ *  is derived from it, so two players who disagree play two different maps. */
+bool Skirmish_Rules_BaseRock(void)
+{
+	return s_baseRock;
+}
+
+/** For the tests and the command line; the player's own setting is the key. */
+void Skirmish_Rules_SetBaseRock(bool carved)
+{
+	s_baseRock = carved;
+}
+
 /**
  * Stock the Starport for a match.
  *

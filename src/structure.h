@@ -148,6 +148,7 @@ extern Structure *Structure_Get_ByPackedTile(uint16 packed);
 extern uint32 Structure_GetStructuresBuilt(struct House *h);
 extern void Structure_BuildRules_Init(void);
 extern void Structure_BuildRules_SetSlabOnSand(bool allowed);
+extern bool Structure_BuildRules_SlabOnSand(void);
 extern void Structure_TechTree_Init(void);
 extern void Structure_TechTree_SetTree(const char *name);
 extern const char *Structure_TechTree_GetTree(void);

@@ -299,6 +299,12 @@ void Unit_MoveRules_Init(void)
 	s_rollingTurn = (IniFile_GetInteger("move_rolling_turn", 1) != 0);
 }
 
+/** Whether a 45 degree turn taken in motion is free.  Folded into the digest. */
+bool Unit_MoveRules_IsRollingTurn(void)
+{
+	return s_rollingTurn;
+}
+
 /** Both settings of the rule, for the self-test that has to see it refuse. */
 void Unit_MoveRules_SetRollingTurn(bool allowed)
 {

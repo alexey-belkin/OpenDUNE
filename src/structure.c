@@ -1218,6 +1218,12 @@ void Structure_BuildRules_SetSlabOnSand(bool allowed)
 	s_slabOnSand = allowed;
 }
 
+/** Whether concrete may be poured on sand.  Folded into the lobby digest. */
+bool Structure_BuildRules_SlabOnSand(void)
+{
+	return s_slabOnSand;
+}
+
 /**
  * The tech tree -- what has to stand before a building may be built.
  *
