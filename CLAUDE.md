@@ -422,6 +422,26 @@ yard. And levelling the mountains inside the rectangle was tried and **rejected
 on measurement**: it moved nothing in the right direction and took the suite to
 FAIL with 2 regressions, so a mountain in a base is left standing.
 
+## What a player may click twice
+
+The double-click window is wall-clock milliseconds (`GUI_DOUBLE_CLICK_MS` in
+[gui/gui.h](src/gui/gui.h)), and it has to be. It was counted in `g_timerGUI`,
+which outside a match is the 60 Hz ticker but **inside one is the simulation
+stepper**: `MpGame_Step()` calls `Timer_StepGUI()` once per simulation tick, so
+the counter runs at 60 x the speed multiplier and the window shrank with the
+speed — half a second at x1, a quarter at x2, an eighth at x4, a sixteenth at
+x8. At x4 nobody could click fast enough. Both double clicks were affected: a
+unit on the map (`GUI_Widget_Viewport_TakePair()`) and an item in the build list
+(`GUI_Production_List_Click()`).
+
+250 ms is what x2 gave, and every speed gives it now.
+
+`--selection-self-test` is what caught the consequence: it used to lapse the
+window by adding to `g_timerGUI`, which a wall clock does not notice.
+`GUI_Widget_Viewport_ResetDoubleClick()` says what that line meant, and the
+alternative — sleeping the window out three times over five savegames — is four
+seconds of a headless test doing nothing.
+
 ## Repair all
 
 `Structure_AutoRepair_*` in [structure.c](src/structure.c). A switch on the

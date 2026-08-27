@@ -245,6 +245,7 @@ extern void GUI_Widget_Viewport_RedrawMap(Screen screenID);
 extern bool GUI_Widget_SpriteTextButton_Click(Widget *w);
 extern bool GUI_Widget_PlaceIt_Click(Widget *w);
 extern bool GUI_Widget_AutoRepair_Click(Widget *w);
+extern void GUI_Widget_Viewport_ResetDoubleClick(void);
 extern bool GUI_Widget_Scrollbar_ArrowUp_Click(Widget *w);
 extern bool GUI_Widget_Scrollbar_ArrowDown_Click(Widget *w);
 extern bool GUI_Widget_Scrollbar_Click(Widget *w);

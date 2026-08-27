@@ -42,7 +42,7 @@
 char g_savegameDesc[5][51];                                 /*!< Array of savegame descriptions for the SaveLoad window. */
 static uint16 s_savegameIndexBase = 0;
 static uint16 s_savegameCountOnDisk = 0;                    /*!< Amount of savegames on disk. */
-static uint32 s_factoryListLastClick;                       /*!< GUI tick of the previous factory-list click. */
+static uint32 s_factoryListLastClick;                       /*!< Wall clock, in ms, of the previous factory-list click. */
 static uint16 s_factoryListLastIndex = 0xFFFF;              /*!< Previously clicked factory-list item. */
 
 void GUI_Production_List_ResetDoubleClick(void)
@@ -1338,7 +1338,9 @@ bool GUI_Widget_HOF_Resume_Click(Widget *w)
 bool GUI_Production_List_Click(Widget *w)
 {
 	uint16 selected = w->index - 46;
-	bool doubleClick = !g_factoryWindowStarport && selected == s_factoryListLastIndex && g_timerGUI - s_factoryListLastClick <= 30;
+	const uint32 now = Timer_GetTime();
+	bool doubleClick = !g_factoryWindowStarport && selected == s_factoryListLastIndex &&
+		now - s_factoryListLastClick <= GUI_DOUBLE_CLICK_MS;
 
 	GUI_FactoryWindow_B495_0F30();
 
@@ -1348,7 +1350,7 @@ bool GUI_Production_List_Click(Widget *w)
 
 	GUI_FactoryWindow_UpdateSelection(true);
 
-	s_factoryListLastClick = g_timerGUI;
+	s_factoryListLastClick = now;
 	s_factoryListLastIndex = selected;
 
 	/* A second click on the same available item confirms exactly the same

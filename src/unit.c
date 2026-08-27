@@ -5589,9 +5589,11 @@ int UnitSelection_RunRegressionTest(void)
 		 * first click on a fresh unit can swallow one, which is what made the
 		 * double click need a third click in the game. */
 		for (i = 0; i < 3; i++) {
-			/* Let the pairing window lapse between runs, so each starts clean.
-			 * Nothing else advances GUI time in a headless run. */
-			g_timerGUI += 64;
+			/* Each run starts clean.  The pairing window is wall-clock time --
+			 * see GUI_DOUBLE_CLICK_MS -- so it cannot be skipped forward by
+			 * advancing a counter, and waiting it out three times over five
+			 * savegames would be four seconds of a headless test sleeping. */
+			GUI_Widget_Viewport_ResetDoubleClick();
 
 			viewport.state.buttonState = 0x01;
 			GUI_Widget_Viewport_Click(&viewport);
