@@ -1309,6 +1309,19 @@ lands back in the menu now, with the lobby's rows still filled in.
 rule and the handoff, and the menu draws under the dummy video driver without
 crashing, but no human has seen the lobby window or clicked a row.
 
+The first human who did could not type a colon into the relay row, and
+therefore could not name a relay on the local network. Two keyboard bugs,
+both older than the lobby: `s_SDL_keymap` in
+[video/video_sdl2.c](src/video/video_sdl2.c) sent SDL's `;` and `:` to the
+`,` and `.` scancodes (the SDL1 table beside it had them right), and
+`Input_EventHandler()` in [input/input.c](src/input/input.c) read the shift
+state from the *right* Shift only, so Shift held on the left did nothing to
+any key. A relay typed as `192.168.0.100:31337` is the test; the ini route
+(`mp_relay=`) works too but is shadowed on this machine by the copy in
+`~/Library/Application Support/OpenDUNE/`, which is the one to edit here --
+and `package.sh` copies that copy into the package, so a local relay address
+left in it ships to the other player.
+
 **And a relay on 127.0.0.1 is not a relay**, which is how the lobby shipped
 unable to reach one. `MpNet_Connect()` dialled with a blocking `connect()`
 while the game has a 60 Hz `SIGALRM` armed with no `SA_RESTART`
