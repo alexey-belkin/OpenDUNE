@@ -232,6 +232,12 @@ static uint32 s_mpLiveSteps = 0;
 static uint32 s_mpLiveBase = 0;
 static uint16 s_mpLiveFactor = 0;
 static uint32 s_mpLiveStalledMs = 0;
+
+/* When the current wait for the other player's turn began, 0 while not
+ * waiting.  Presentation only: it is what the corner of the screen says while
+ * the world stands still with the link up, and what the log says afterwards. */
+static uint32 s_mpLiveWaitSince = 0;
+#define MP_LIVE_WAIT_SAY_MS 2000
 static uint32 s_mpLiveNextSample = 0;
 static uint32 s_mpLiveSampleStep = 300;
 /* Off by default until the squad stops desyncing: units created inside a live
@@ -271,7 +277,17 @@ static void MpGame_Log(const char *line)
 	if (f == NULL) return;
 	opened = true;
 
-	fprintf(f, "%s\n", line);
+	/* Wall-clock stamped, because this file is read next to the relay's
+	 * journal and the other player's copy of it, and "who dropped first" is a
+	 * question about seconds. */
+	{
+		char stamp[16] = "";
+		time_t now = time(NULL);
+		struct tm *local = localtime(&now);
+
+		if (local != NULL) strftime(stamp, sizeof(stamp), "%H:%M:%S ", local);
+		fprintf(f, "%s%s\n", stamp, line);
+	}
 	fclose(f);
 }
 
@@ -1486,6 +1502,8 @@ static void MpGame_Step(void)
 			uint32 stallStart = Timer_GetTime();
 			uint8 goneSlot = 0;
 
+			if (s_mpLiveWaitSince == 0) s_mpLiveWaitSince = stallStart;
+
 			/* The other player leaving ends the match rather than pausing it
 			 * for ever.  The turn loop stops; the simulation carries on locally
 			 * so the window stays alive and can be looked at and closed. */
@@ -1520,6 +1538,19 @@ static void MpGame_Step(void)
 			MpPurity_Begin(0);
 			inside = false;
 			return;
+		}
+
+		/* A wait long enough to have been shown is worth a line: "the game
+		 * lags" is what a player reports, and this is how long and how often. */
+		if (s_mpLiveWaitSince != 0) {
+			const uint32 waited = Timer_GetTime() - s_mpLiveWaitSince;
+
+			if (waited >= MP_LIVE_WAIT_SAY_MS) {
+				snprintf(line, sizeof(line), "mp-live: turn %u came after a %u ms wait",
+				         (unsigned)MpTurn_GetTurn(), (unsigned)waited);
+				MpGame_Log(line);
+			}
+			s_mpLiveWaitSince = 0;
 		}
 
 		Timer_StepGame();
@@ -1651,6 +1682,15 @@ const char *MpGame_GetSyncLine(uint8 *colour)
 
 			default:
 				break;
+		}
+
+		/* The link is up and the world is still standing: their turn has not
+		 * arrived.  Said after two seconds, so a hiccup does not flash and a
+		 * stall does not look like a hang. */
+		if (s_mpLiveWaitSince != 0 && Timer_GetTime() - s_mpLiveWaitSince >= MP_LIVE_WAIT_SAY_MS) {
+			if (colour != NULL) *colour = 8;
+			snprintf(line, sizeof(line), "WAITING FOR THEM %us", (unsigned)((Timer_GetTime() - s_mpLiveWaitSince) / 1000));
+			return line;
 		}
 
 		if (colour != NULL) *colour = 4;
@@ -1910,6 +1950,7 @@ static bool MpGame_Begin(void)
 	s_mpLiveDesyncSeen = false;
 	s_mpLiveEnded[0]   = '\0';
 	s_mpLiveEndedTurn  = 0;
+	s_mpLiveWaitSince  = 0;
 
 	/* Squad first, then the clock.  Placing units after the turn loop is running
 	 * -- and worse, after the pump is registered -- means the world can advance

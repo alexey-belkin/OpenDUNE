@@ -57,19 +57,34 @@ enum {
 	 * without a word, and the match froze on both sides for good. */
 	MP_NET_PAYLOAD = 16384,
 
-	/* Link recovery.  A dial every two seconds, for a little longer than the
-	 * relay's own idle timeout (120 s), because a link that died without a FIN
-	 * leaves a ghost in the slot until the relay gives up on it -- and a rejoin
-	 * before that is refused with "slot is taken". */
+	/* Link recovery.  A dial every two seconds, for as long as a player can
+	 * reasonably take to get a Wi-Fi or a VPN tunnel back.  A link that died
+	 * without a FIN leaves a ghost of us in the slot, and a rejoin over it is
+	 * refused with "slot is taken" -- but the relay forgets a silent client in
+	 * 12 s (see the keepalive below), which is sooner than we notice the
+	 * silence ourselves, so the seat is free by the time we ask for it. */
 	MP_NET_REDIAL_MS  = 2000,
 	MP_NET_RECOVER_MS = 150000,
 
 	/* A client waiting for the other one sends nothing, and the relay drops a
-	 * client it has not heard from in 120 s -- so the one who stayed was being
-	 * thrown out for waiting.  The relay accepts nothing but packets, so the
-	 * keepalive is our newest turn sent again: the other side, if present,
-	 * stores the same bytes over the same turn and nothing changes. */
-	MP_NET_KEEPALIVE_MS = 45000
+	 * client it has not heard from in 12 s -- so the one who stayed would be
+	 * thrown out for waiting.  Every 5 s of silence the newest own turn is sent
+	 * again: the other side, if present, stores the same bytes over the same
+	 * turn and nothing changes.  Before there is a turn to send, an empty frame
+	 * ("PKT 0") goes instead, which the relay forwards and the other side
+	 * ignores.  This is also what makes a dead link *noticeable*: with the
+	 * other player alive, something arrives at least every 5 s. */
+	MP_NET_KEEPALIVE_MS = 5000,
+
+	/* A full room that says nothing for this long has a dead link in it, and
+	 * TCP will not say so for minutes: a path that drops packets silently -- a
+	 * NAT that forgot the mapping, a VPN tunnel that went down -- leaves the
+	 * socket "connected" with every send disappearing into retransmission.
+	 * Measured over a flapping tunnel, the client learned of it 14 to 59 s
+	 * later.  Now it hangs up and dials again itself.  Longer than the relay's
+	 * 12 s, so that when it is *our* path that died the relay has already
+	 * told the other side and cleared our seat by the time we dial. */
+	MP_NET_SILENCE_MS = 15000
 };
 
 static struct {
@@ -105,6 +120,11 @@ static struct {
 	uint32 relinks;
 	bool resending;
 	uint32 lastSent;
+
+	/* Silence detection: the last time anything at all came down the socket,
+	 * and whether this connection has been answered by the relay yet. */
+	uint32 lastRecv;
+	bool welcomed;
 
 	/* --mp-drop-at: cut the link ourselves when our packet for this turn goes
 	 * out, so recovery can be tested without a cable to pull. */
@@ -379,8 +399,10 @@ static bool MpNet_DialFinish(void)
 	s_net.socket    = sock;
 	s_net.connected = true;
 	s_net.ready     = false;
+	s_net.welcomed  = false;
 	s_net.inUsed    = 0;
 	s_net.lastSent  = Timer_GetTime();
+	s_net.lastRecv  = s_net.lastSent;
 
 	return true;
 }
@@ -441,10 +463,15 @@ static void MpNet_LinkLost(const char *why)
 
 	MpNet_Fail(why);
 
+	/* An outage is measured from when the room last worked, not from the last
+	 * hang-up: a relink that never got as far as READY -- a relay that takes
+	 * the connection and says nothing -- is the same outage continuing, and
+	 * restarting the clock on it would make the wait endless. */
+	if (s_net.ready || s_net.lostAt == 0) s_net.lostAt = Timer_GetTime();
+
 	s_net.connected  = false;
 	s_net.recovering = true;
-	s_net.lostAt     = Timer_GetTime();
-	s_net.nextDial   = s_net.lostAt;
+	s_net.nextDial   = Timer_GetTime();
 	s_net.dials      = 0;
 	s_net.inUsed     = 0;
 
@@ -615,6 +642,14 @@ static uint32 MpNet_ParseBuffer(void)
 			 * buffer and try again after the next read. */
 			if (left < headerLength + length) break;
 
+			/* An empty frame is the other player's keepalive from before their
+			 * first turn: it fed the relay's idle clock, and it says they are
+			 * there.  There is nothing in it to store. */
+			if (length == 0) {
+				consumed += headerLength;
+				continue;
+			}
+
 			memcpy(body, start + headerLength, length);
 			body[length] = '\0';
 
@@ -671,9 +706,11 @@ static uint32 MpNet_ParseBuffer(void)
 		} else if (strncmp(start, "ERROR ", 6) == 0) {
 			snprintf(s_net.error, sizeof(s_net.error), "%.*s", (int)(headerLength - 7), start + 6);
 			MpNet_Log("mp-net: relay says: %s", s_net.error);
+		} else if (strncmp(start, "WELCOME", 7) == 0) {
+			/* The slot is what we asked for and the count only interests a
+			 * lobby; what matters is that the relay answered at all. */
+			s_net.welcomed = true;
 		}
-		/* WELCOME needs nothing: the slot is what we asked for, and the count is
-		 * only interesting to a lobby. */
 
 		consumed += headerLength;
 	}
@@ -703,7 +740,8 @@ void MpNet_Pump(void)
 			got = (int)recv(s_net.socket, s_net.in + s_net.inUsed, (int)(sizeof(s_net.in) - s_net.inUsed), 0);
 
 			if (got > 0) {
-				s_net.inUsed += (uint32)got;
+				s_net.inUsed  += (uint32)got;
+				s_net.lastRecv = Timer_GetTime();
 			} else if (got == 0) {
 				MpNet_LinkLost("the relay closed the connection");
 				return;
@@ -729,7 +767,22 @@ void MpNet_Pump(void)
 		if (!s_net.connected) break;
 	}
 
-	if (s_net.connected && Timer_GetTime() - s_net.lastSent > MP_NET_KEEPALIVE_MS) MpNet_Keepalive();
+	if (s_net.connected) {
+		const uint32 now = Timer_GetTime();
+
+		if (now - s_net.lastSent > MP_NET_KEEPALIVE_MS) MpNet_Keepalive();
+
+		/* Silence where there should be none.  With the room full and the other
+		 * player present their keepalive arrives every 5 s, so 15 s of nothing
+		 * means the link is dead whatever the socket says.  A room that is not
+		 * full yet is allowed its silence -- that is the lobby waiting for the
+		 * second player -- but a relay that has not even said WELCOME is not. */
+		if (s_net.connected && s_net.ready && !s_net.peerGone && now - s_net.lastRecv > MP_NET_SILENCE_MS) {
+			MpNet_LinkLost("nothing came from the relay for 15 s");
+		} else if (s_net.connected && !s_net.welcomed && now - s_net.lastRecv > MP_NET_SILENCE_MS) {
+			MpNet_LinkLost("the relay never answered the join");
+		}
+	}
 }
 
 /* -------------------------------------------------------------------------
@@ -796,6 +849,13 @@ static void MpNet_Keepalive(void)
 	}
 
 	if (newest == NULL) {
+		/* Nothing to say yet -- the lobby, before the first turn.  An empty
+		 * frame keeps the relay's idle clock from running out on a player who
+		 * is only waiting for the other one. */
+		if (!MpSocket_SendAll(s_net.socket, "PKT 0\n", 6)) {
+			MpNet_LinkLost("could not send a keepalive");
+			return;
+		}
 		s_net.lastSent = Timer_GetTime();
 		return;
 	}

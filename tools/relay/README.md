@@ -145,6 +145,23 @@ relay  -> client  PKT <slot> <length>\n<length bytes>
 The slot in an outgoing `PKT` is filled in from the connection it arrived on,
 never from what the sender claims: a client cannot speak for its opponent.
 
+A client the relay has not heard from in **12 s** is dropped, and the other
+member told `LEFT`. That is short on purpose: a connection that died without a
+FIN — a NAT that forgot it, a VPN tunnel that went down — is a ghost in its
+seat until this runs out, and the same player dialling again is refused with
+*slot is taken* for as long as it sits there. The game therefore keeps talking
+even when it has nothing to say: every 5 s of silence it sends its newest turn
+again, or an empty frame (`PKT 0`, forwarded as `PKT <slot> 0`) before it has
+one — and treats 15 s without a word from the relay as its own link being
+dead, so that by the time it dials again its ghost is gone.
+
+Once a client's socket dies its outbox is closed, and the other client's reader
+may at that instant be inside `broadcast()` with a frame for it. A send on a
+closed channel is a panic, not an error, and it took the whole relay down with
+both players — `client.mu` and the `closed` flag are what stand between those
+two goroutines. Found with the relay frozen (`kill -STOP`) under a running
+match and `go build -race`; keep building the test that way.
+
 ## What it deliberately does not do
 
 * **No authentication and no encryption.** A room name is a shared secret and

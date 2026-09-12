@@ -415,9 +415,21 @@ way. When the link is back both sides resend their last moves, the corner says
 when the wait runs out does it end, and then the corner says so in red -- ENDED
 with a reason -- and stays that way; the world keeps moving after that so the
 screen can be looked at, but it is no longer the match the other player is in.
+
+A connection can also die without saying so -- a VPN tunnel or a Wi-Fi link
+that drops packets silently -- and the game does not trust the socket about
+that: if nothing at all has come from the relay for fifteen seconds while the
+other player is supposed to be there, it hangs up and dials again by itself.
+Before that, while the world stands still because the other player's move has
+not arrived yet, the corner says WAITING FOR THEM with a count of seconds; a
+few of those in a row on one side means that side's connection is the one
+flapping, whatever the rest of its internet looks like.
+
 Everything a match says about its connection is also written to mp-live.log in
-~/Library/Application Support/OpenDUNE/ (the same folder as opendune.ini). If a
-match breaks, that file from both computers is what explains it.
+~/Library/Application Support/OpenDUNE/ (the same folder as opendune.ini), each
+line with the time of day. If a match breaks or lags, that file from both
+computers is what explains it -- it says which side lost the link, when, and
+how long every wait was.
 
 In the lobby, agree on one thing between you: the game code. Type the same code
 on both machines. The map is made from it, so you do not have to agree on a map

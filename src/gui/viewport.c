@@ -261,7 +261,11 @@ static void GUI_Widget_Viewport_DrawSync(void)
 	line = MpGame_GetSyncLine(&colour);
 	if (line == NULL) return;
 
-	GUI_DrawText_Wrapper("%s", 237, 50, colour, 0, 0x222, line);
+	/* The third row: the first two are the House lines of the status overlay
+	 * (Skirmish_DrawStatusOverlay(), y=42 and 50, left-aligned), and a line
+	 * as long as "THEY DROPPED -- WAITING 18s" drawn right-aligned on the
+	 * second of them lands on top of it, red over grey, neither readable. */
+	GUI_DrawText_Wrapper("%s", 237, 58, colour, 0, 0x222, line);
 }
 
 /** Scroll the tactical map while the pointer rests on a game-screen edge. */

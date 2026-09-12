@@ -973,15 +973,14 @@ anywhere — which is indistinguishable from a desync and is not one, because th
 checksum comparison needs the other client's packet and no packet ever came.
 `MpGame_GetSyncLine()` answers `ENDED t<turn>: THEY LEFT` or `RELAY LOST` in red
 where it used to answer nothing. Note that the relay's own `idleTimeout` is
-120 s ([tools/relay/relay.go](tools/relay/relay.go)), so a match nobody sends
-packets for that long is closed from under both of them.
+12 s ([tools/relay/relay.go](tools/relay/relay.go)), which is why a client
+that has nothing to send keeps sending (below).
 
 **A lost link is a stall, not the end.** `MpNet_*` in [mpnet.c](src/mpnet.c)
 recovers on its own, client-side, against the relay as deployed: when the
 socket dies the world stands still and the client dials again every 2 s for
-150 s — longer than the relay's 120 s idle timeout, because a link that died
-without a FIN leaves a ghost in the slot until the relay gives up on it, and a
-rejoin before that is refused with *slot is taken*. When the relay says `LEFT`
+150 s — long enough for a person to get their Wi-Fi or their VPN tunnel back,
+which measured on one evening took anything from 2 to 59 s. When the relay says `LEFT`
 the world stands still for the same 150 s waiting for them to come back. Each
 `READY` (the relay sends one every time the room is full again) makes both
 sides resend every turn of theirs the 64-turn window still holds: a match
@@ -999,16 +998,58 @@ this is tested without a cable to pull.
 
 Three things that came out of testing it, so nobody chases them again. **The
 side that waits has to keep talking**: it sends nothing while stalled, and the
-relay drops a client it has not heard from in 120 s, so the player who stayed
-was being thrown out for waiting; every 45 s of silence the newest own turn is
-sent again, which the relay counts as life and the other side stores over the
-same bytes. **A `LEFT` about our own seat is our previous incarnation** — after
+relay drops a client it has not heard from, so the player who stayed was being
+thrown out for waiting; every 5 s of silence the newest own turn is sent again
+(or an empty `PKT 0` frame before there is a turn — the lobby waiting for the
+second player), which the relay counts as life and the other side stores over
+the same bytes or ignores. **A `LEFT` about our own seat is our previous incarnation** — after
 a redial the old connection's farewell can reach the new one — and is logged
 and ignored rather than taken as the opponent leaving. And **a `LEFT` right
 before `DONE` is the other side finishing first**: the harness's two processes
 do not end in the same millisecond, so the last one standing logs "the other
 player dropped" as it writes its own last lines, which is the order of events
 and not a fault. Every line the relay sends is logged as `mp-net: relay: ...`.
+
+**A link that dies without a word is hung up on after 15 s.** The break that
+was actually observed was not a FIN or a reset at the client: one player's
+VPN tunnel flapped, and from the relay's side that connection was *reset by
+peer* twenty times in an evening while the other player's held (the relay's
+journal on the VPS says which slot, and the relay saw both players arrive from
+the tunnel's exit address, `46.151.28.246`). From the client's side a path
+that drops packets silently leaves the socket "connected" with every send
+disappearing into retransmission, and TCP does not give up for minutes —
+measured, that client learned of its own outage 14 to 59 s later. So the rule
+is about *silence*, not errors: with the room full and the other player
+present, their keepalive arrives every 5 s, and 15 s with nothing from the
+relay (`MP_NET_SILENCE_MS`) is treated as a lost link and dialled again,
+whatever the socket says. A relay that takes the connection and never says
+`WELCOME` gets the same 15 s. Two numbers are tied to this one. The relay's
+`idleTimeout` is **12 s**, shorter than the client's 15, so that when it is
+*our* path that died the relay has already dropped our ghost and told the
+other side `LEFT` by the time we dial — a rejoin over a ghost is refused with
+*slot is taken*, and before this the ghost lived 120 s. And an outage is
+measured from when the room last worked, not from the last hang-up: `lostAt`
+is kept across a relink that never reached `READY`, or a relay that accepts
+TCP and says nothing would restart the 150 s clock for ever.
+
+Two more things from testing that rule. `kill -STOP` on the relay is how a
+silent path is made on one machine — the kernel keeps completing handshakes
+into the listen backlog, so a redial "succeeds" and the never-`WELCOME`d case
+is exercised too — and the first time it was tried the relay **panicked** on
+`SIGCONT`: `send on closed channel`. `client.close()` closed the outbox the
+moment the reader's socket died, while the other client's reader was halfway
+into `broadcast()` with a frame for it; a window of microseconds that a match
+puts fifteen frames a second into. `client.mu` and a `closed` flag cover it
+now, and the freeze test runs under `go build -race`. The deployed relay had
+never hit it (its journal has no panic), which is luck, not evidence.
+
+And while the link is up but their turn has not come, the corner says
+`WAITING FOR THEM 3s` in red after two seconds, and the log gets
+`mp-live: turn N came after a 24827 ms wait` when it ends — "the game lags" is
+what a player reports, and that line is how long and how often. The sync line
+itself moved to y=58: the status overlay's two House lines sit at 42 and 50,
+left-aligned, and a line as long as `THEY DROPPED -- WAITING 18s` drawn
+right-aligned at 50 landed on top of the second one, red over grey.
 
 **A turn that did not fit on the wire was cut off in silence.** The wire buffer
 was 8192 bytes; the worst turn — 32 commands each naming 102 recipients — is a
@@ -1028,7 +1069,8 @@ where a match could freeze on both sides without a word, so it is closed.
 
 **Whatever a live match says goes to `mp-live.log`** in the personal data
 directory (`~/Library/Application Support/OpenDUNE/` on macOS) as well as to
-the console — the console of a windowed game goes nowhere, and the one time
+the console, each line stamped with the wall clock so it can be laid next to
+the relay's journal and the other player's copy — the console of a windowed game goes nowhere, and the one time
 the reason a match broke was needed it had been printed to a terminal nobody
 had open. The net layer's own lines (`mp-net: link lost ...`, `relinked after
 ...`, `the other player dropped ...`, `they are back ...`) go through the same
@@ -1104,6 +1146,20 @@ tools/relay/relay -listen 127.0.0.1:31337 &
 ./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=4000,500 --mp-relay=127.0.0.1:31337,r1,1 > a.log 2>&1 &
 ./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=4000,500 --mp-relay=127.0.0.1:31337,r1,2 --mp-drop-at=200 > b.log 2>&1
 diff <(grep '^mp-checksum' a.log) <(grep '^mp-checksum' b.log) && grep 'mp-net:' a.log b.log
+```
+
+A silent path — the case TCP does not report — is made with the relay frozen
+rather than killed, on the lobby's own road so the live loop and its corner
+messages are the code under test; both sides must say `nothing came from the
+relay for 15 s`, relink, and go on with identical checksums:
+
+```bash
+tools/relay/relay -listen 127.0.0.1:31338 -verbose & RP=$!
+HOME=/tmp/hA ./opendune --lobby-play=127.0.0.1:31338,frz,0,1 --mp-wait=20000 > a.log 2>&1 &
+HOME=/tmp/hB ./opendune --lobby-play=127.0.0.1:31338,frz,0,2 --mp-wait=20000 > b.log 2>&1 &
+sleep 12; kill -STOP $RP; sleep 25; kill -CONT $RP; sleep 45; pkill -f lobby-play
+diff <(grep '^mp-checksum' a.log) <(grep '^mp-checksum' b.log)
+cat /tmp/hA/Library/Application\ Support/OpenDUNE/mp-live.log
 ```
 
 `--mp-relay=host[:port],room[,slot]` is the same two processes over a real TCP

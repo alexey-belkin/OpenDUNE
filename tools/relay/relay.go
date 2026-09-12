@@ -50,32 +50,62 @@ const (
 	maxSlots      = 2
 	maxPacketSize = 64 * 1024
 	joinTimeout   = 60 * time.Second
-	idleTimeout   = 120 * time.Second
+
+	// A client sends a keepalive every 5 s while it has nothing else to say,
+	// so 12 s of silence is two of them missing.  Short on purpose: a client
+	// whose path died without a FIN is a ghost in its seat until this runs out,
+	// and the same client, dialling again once it notices (15 s), is refused
+	// with "slot is taken" for as long as the ghost sits there.
+	idleTimeout = 12 * time.Second
 )
 
 type client struct {
 	conn net.Conn
 	slot int
 	out  chan []byte
-	once sync.Once
+
+	// mu covers out's lifetime. A send on a closed channel is a panic, not an
+	// error, and the reader closes out the moment its socket dies -- while
+	// the other client's reader may be halfway into broadcast() with a frame
+	// for it. The window is a few microseconds and a match sends fifteen
+	// frames a second into it, so it was a matter of time: the whole relay
+	// went down, both players with it, on one player's disconnect.
+	mu     sync.Mutex
+	closed bool
 }
 
 // send never blocks the reader that calls it. A client too slow to drain its
 // own socket is a client that has already lost the match; dropping it is
 // better than letting it stall the writer for everybody else.
 func (c *client) send(b []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return
+	}
+
 	select {
 	case c.out <- b:
 	default:
-		c.close()
+		c.closeLocked()
 	}
 }
 
 func (c *client) close() {
-	c.once.Do(func() {
-		close(c.out)
-		c.conn.Close()
-	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.closeLocked()
+}
+
+func (c *client) closeLocked() {
+	if c.closed {
+		return
+	}
+	c.closed = true
+	close(c.out)
+	c.conn.Close()
 }
 
 type room struct {
