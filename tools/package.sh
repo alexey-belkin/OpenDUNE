@@ -111,6 +111,33 @@ fi
 # The one thing that decides whether the app opens a window on a machine that
 # is not this one.  otool tells us which dylib the linker actually chose; we
 # copy that file and rewrite the load command to look next to the executable.
+# -------------------------------------------------------------- settings ----
+# The config digest is folded from the balance tables, and opendune.ini patches
+# those tables -- so two players with different ini files ask the relay for
+# different rooms and each waits out the timeout for somebody who is in the
+# other one.  That is the design working (a disagreement cannot start a match),
+# but it is a cruel way to find out that one machine has a settings file and
+# the other does not.  Shipping the builder's effective ini inside the package
+# makes the digest a property of the package: both sides get the same tables by
+# unpacking the same zip.
+#
+# Beside the app rather than inside it -- that is the fourth place Load_IniFile
+# looks, and the only one a person can see.  A copy in
+# ~/Library/Application Support/OpenDUNE still wins over it, which is why the
+# one copied here is the one this machine actually plays with.
+step "Settings"
+INI=""
+for candidate in "$HOME/Library/Application Support/OpenDUNE/opendune.ini" "$ROOT/bin/opendune.ini"; do
+	if [ -f "$candidate" ]; then INI="$candidate"; break; fi
+done
+if [ -n "$INI" ]; then
+	cp -p "$INI" "$ROOT/bundle/opendune.ini"
+	chmod u+w "$ROOT/bundle/opendune.ini"
+	echo "    $(basename "$(dirname "$INI")")/opendune.ini -> beside the app"
+else
+	echo "    no opendune.ini on this machine, so the package plays the defaults"
+fi
+
 step "Vendoring SDL"
 SDL=$(otool -L "$MACOS/opendune" | awk '/libSDL2/ {print $1; exit}')
 if [ -n "$SDL" ] && [ "${SDL#@}" = "$SDL" ]; then
@@ -207,14 +234,27 @@ cat >> "$ROOT/bundle/INSTALL.txt" <<'EOF'
 
 Настройка баланса
 -----------------
-opendune.ini.sample — аннотированный шаблон. Чтобы что-то поменять,
-переименуйте его в opendune.ini и положите в
+opendune.ini (лежит рядом с приложением) — настройки, с которыми собран
+этот пакет. НЕ УДАЛЯЙТЕ его и не меняйте в одиночку: он задаёт таблицы
+баланса и дерево технологий, а оба игрока обязаны играть на одних и тех
+же. Расходятся настройки — расходятся комнаты на релее, и вы просто не
+найдёте друг друга («второй игрок так и не подключился»).
 
-    ~/Library/Application Support/OpenDUNE/
+Проверить, что настройки совпали, можно не начиная матч:
 
-Без этого файла игра идёт на вкомпилированных значениях по умолчанию;
-что именно они значат, написано в README.txt, раздел «Combat class
-balance».
+    OpenDUNE.app/Contents/MacOS/opendune --config-hash
+
+Первая строка — config-hash. У обоих игроков она должна быть одинаковой;
+строки под ней показывают, чем именно расходитесь, если нет.
+
+Внимание: копия в ~/Library/Application Support/OpenDUNE/ имеет
+приоритет над файлом рядом с приложением. Если вы там что-то держите,
+либо уберите её, либо положите туда ровно этот же файл.
+
+opendune.ini.sample — аннотированный шаблон со значениями по умолчанию.
+Он НЕ равен opendune.ini рядом с ним: переименовав шаблон, вы получите
+другой config-hash. Что значат ключи — в README.txt, раздел «Combat
+class balance».
 
 Сетевая игра
 ------------
@@ -228,7 +268,8 @@ relay (лежит рядом) — сервер-посредник: клиент�
 ----------
     OpenDUNE.app        игра
     relay               сервер-посредник для сетевой игры
-    opendune.ini.sample шаблон настроек
+    opendune.ini        настройки, с которыми собран пакет
+    opendune.ini.sample шаблон настроек со значениями по умолчанию
     README.txt          полное описание, включая боевой баланс
     COPYING             лицензия (GPL v2)
     enhancement.txt     отличия от оригинальной Dune II
@@ -274,6 +315,27 @@ if [ "$VERIFY" = 1 ]; then
 
 	BIN="$TMP/$NAME/OpenDUNE.app/Contents/MacOS/opendune"
 	[ -x "$BIN" ] || die "no executable inside the archive"
+
+	# The configuration the package will play on, against the one this machine
+	# plays on.  A difference here is exactly the "the other player never
+	# joined" that cannot be diagnosed from inside the lobby: the digest is
+	# folded from the balance tables, so an ini that did not travel puts the two
+	# players in different rooms.  The package is asked with HOME pointed
+	# somewhere empty, which is what a machine that has never run this has.
+	mkdir -p "$TMP/nohome"
+	printf '    %-32s' "config-hash"
+	MINE=$(SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy "$MACOS/opendune" --config-hash 2>/dev/null |
+	       awk '/^config-hash:/ {print $2; exit}')
+	THEIRS=$(HOME="$TMP/nohome" SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy "$BIN" --config-hash 2>/dev/null |
+	         awk '/^config-hash:/ {print $2; exit}')
+	if [ -n "$MINE" ] && [ "$MINE" = "$THEIRS" ]; then
+		echo "ok ($MINE)"
+	else
+		echo "FAILED"
+		echo "      this machine plays $MINE, the package plays $THEIRS" >&2
+		rm -f "$ZIP" "$ZIP.sha256"
+		die "the package would not play this machine's configuration; archive removed"
+	fi
 
 	# The signature decides whether the app opens at all, and the zip round
 	# trip is the last thing that could have broken it.  Asked of the unpacked
