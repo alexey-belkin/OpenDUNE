@@ -401,7 +401,10 @@ need the same build of the game, and both must reach the same relay: a small
 server that passes messages between the two of you, because the game does not
 connect the two computers directly. mp_relay in opendune.ini sets the address
 the lobby offers by default; it accepts "host" or "host:port" and the port is
-31337 unless you say otherwise. Anyone can run a relay -- it ships beside the
+31337 unless you say otherwise. mp_start_units=N gives each player N units
+beside the Construction Yard at the start (a Trike, a Soldier, a Quad and a
+Trooper, repeating, up to 32); it is part of the room digest, so both players
+need the same number or they will not find each other. Anyone can run a relay -- it ships beside the
 game -- and one relay is enough for both players:
 
     ./relay -listen 0.0.0.0:31337

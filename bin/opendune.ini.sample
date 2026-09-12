@@ -256,6 +256,11 @@ tech_tree=stock
 ; will be put in different rooms and never find each other.
 mp_relay=146.103.110.160:31337
 
+; How many units each player starts a match with, beside the Construction
+; Yard: a Trike, a Soldier, a Quad and a Trooper, repeating, 0 to 32.  Part of
+; the room digest like the balance keys -- both players need the same number.
+mp_start_units=0
+
 ; DEBUG options :
 ;debug_game=1
 ;debug_scenario=1

@@ -244,6 +244,34 @@ static uint32 s_mpLiveSampleStep = 300;
  * match start their bytecode in different places on the two clients, and a
  * match that breaks at tick 200 is worse than one with nothing to click. */
 static uint16 s_mpLiveUnits = 0;
+static bool s_mpLiveUnitsFromArgs = false;
+#define MP_START_UNITS_MAX 32
+
+/* `mp_start_units` in opendune.ini: how many units each player begins with,
+ * beside the Construction Yard.  A simulation input -- two players with
+ * different counts have different worlds from the first tick -- so it is
+ * folded into the lobby's room digest like every other rule that is not a
+ * table patch.  --mp-units=N on the command line overrides it, for the tests. */
+uint16 MpGame_GetStartUnits(void)
+{
+	return s_mpLiveUnits;
+}
+
+void MpGame_SetStartUnits(uint16 count)
+{
+	s_mpLiveUnits = (count > MP_START_UNITS_MAX) ? MP_START_UNITS_MAX : count;
+}
+
+static void MpGame_Rules_Init(void)
+{
+	int count;
+
+	if (s_mpLiveUnitsFromArgs) return;
+
+	count = IniFile_GetInteger("mp_start_units", 0);
+	if (count < 0) count = 0;
+	MpGame_SetStartUnits((uint16)count);
+}
 static uint8 s_mpViewpointOverride = 0;
 static bool s_mpLiveDesyncSeen = false;
 /* Why the turn loop stopped, kept for the screen rather than for the log.  The
@@ -4392,6 +4420,7 @@ static void GameLoop_Main(void)
 	Structure_TechTree_Init();
 	Skirmish_Rules_Init();
 	Pathfinder_Init();
+	MpGame_Rules_Init();
 	if (s_pathfinderOverride >= 0) Pathfinder_SetEnabled(s_pathfinderOverride != 0);
 	Starport_Init();
 
@@ -4564,6 +4593,8 @@ static void GameLoop_Main(void)
 		snprintf(line, sizeof(line), "  skirmish_base_rock  %u", Skirmish_Rules_BaseRock() ? 1 : 0);
 		PrintToConsole(line);
 		snprintf(line, sizeof(line), "  starport_special    %u", Starport_SellsSpecialUnits() ? 1 : 0);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  mp_start_units      %u", (unsigned)MpGame_GetStartUnits());
 		PrintToConsole(line);
 		return;
 	}
@@ -5765,7 +5796,8 @@ int main(int argc, char **argv)
 				unsigned units = 0;
 
 				sscanf(argv[i] + 11, "%u", &units);
-				s_mpLiveUnits = (uint16)units;
+				MpGame_SetStartUnits((uint16)units);
+				s_mpLiveUnitsFromArgs = true;
 			} else if (strncmp(argv[i], "--sim-purity", 12) == 0) {
 				/* Checksum the world around drawing and around input, and name
 				 * whatever changed it.  One machine, no network: the question

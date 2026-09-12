@@ -1243,8 +1243,10 @@ without knowing that it does.
   default value, a comment or a blank line changes nothing, and a real
   difference always changes the hash. A rule that is *not* a table patch has to
   be named in `Lobby_ConfigHash()` one at a time — `pathfinder_astar`,
-  `move_rolling_turn`, `build_slab_on_sand`, `skirmish_base_rock` and
-  `starport_special_units` — and that is exactly the list that gets forgotten.
+  `move_rolling_turn`, `build_slab_on_sand`, `skirmish_base_rock`,
+  `starport_special_units` and `mp_start_units` (the starting squad, read by
+  `MpGame_Rules_Init()` in opendune.c; `--mp-units=` overrides it) — and that
+  is exactly the list that gets forgotten.
   `--lobby-self-test` flips each of them and demands the digest move; removing
   any one fold fails it by name.
 * The **house row** cycles the six *ordered* pairs, and the player row swaps which

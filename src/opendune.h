@@ -49,6 +49,8 @@ extern uint16 GameLoop_GetSpeedFactor(void);
 extern void GameLoop_SetSpeed(uint16 factor, uint16 gameSpeed);
 extern uint16 GameLoop_GetSpeedStep(void);
 extern const char *MpGame_GetSyncLine(uint8 *colour);
+extern uint16 MpGame_GetStartUnits(void);
+extern void MpGame_SetStartUnits(uint16 count);
 extern void Game_Prepare(void);
 extern void Game_Init(void);
 extern void Game_LoadScenario(uint8 houseID, uint16 scenarioID);

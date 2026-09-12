@@ -40,6 +40,7 @@
 #include "../structure.h"
 #include "../table/strings.h"
 #include "../unit.h"
+#include "../opendune.h"
 
 /** The public relay, and the port the one in tools/relay listens on. */
 #define LOBBY_RELAY_DEFAULT "146.103.110.160"
@@ -249,6 +250,7 @@ static uint32 Lobby_ConfigHash(void)
 	crc = Lobby_Fold(crc, Structure_BuildRules_SlabOnSand() ? 1 : 0);
 	crc = Lobby_Fold(crc, Skirmish_Rules_BaseRock() ? 1 : 0);
 	crc = Lobby_Fold(crc, Starport_SellsSpecialUnits() ? 1 : 0);
+	crc = Lobby_Fold(crc, MpGame_GetStartUnits());
 
 	return crc;
 }
@@ -527,6 +529,14 @@ int GUI_Lobby_RunSelfTest(void)
 		Starport_SetSpecialUnits(!Starport_SellsSpecialUnits());
 		if (Lobby_ConfigHash() == before) ok = false;
 		Starport_SetSpecialUnits(!Starport_SellsSpecialUnits());
+
+		{
+			uint16 savedUnits = MpGame_GetStartUnits();
+
+			MpGame_SetStartUnits((uint16)(savedUnits + 1));
+			if (Lobby_ConfigHash() == before) ok = false;
+			MpGame_SetStartUnits(savedUnits);
+		}
 
 		if (!ok) return 0;
 		if (Lobby_ConfigHash() != before) return 0;
