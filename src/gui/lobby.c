@@ -27,6 +27,7 @@
 #include "widget.h"
 #include "../file.h"
 #include "../gfx.h"
+#include "font.h"
 #include "../house.h"
 #include "../inifile.h"
 #include "../input/input.h"
@@ -67,9 +68,14 @@ static char s_code[LOBBY_CODE_MAX] = "";
 static char s_relay[LOBBY_RELAY_MAX] = "";
 static uint8 s_pair = 0;
 static uint8 s_slot = 0;
+static uint8 s_opponent = LOBBY_OPPONENT_PERSON;
 
 /** Row labels, filled in by Lobby_Labels() and read back by the widget draw. */
-static char s_label[5][64];
+#define LOBBY_ROWS 6
+static char s_label[LOBBY_ROWS][64];
+
+/** The row is 224 wide and the text starts 3 in; what is left for a label. */
+#define LOBBY_LABEL_WIDTH_MAX 218
 static char s_entryTitle[64] = "";
 
 /**
@@ -299,26 +305,50 @@ static const char *Lobby_HouseName(uint8 houseID)
 }
 
 /**
- * Rebuild the five value rows.
+ * Rebuild the six value rows.
  *
  * They are rebuilt in one place and read from one place, because a lobby whose
  * rows can disagree with each other is a lobby that will eventually start a
  * match nobody asked for.
+ *
+ * Against the computer the relay is not used and the code is optional, and
+ * the rows say so rather than going blank: a row that vanishes looks like a
+ * bug, and a row that still says (TYPE ONE) is an instruction to do something
+ * that is not needed.
  */
-static void Lobby_Labels(void)
+static void Lobby_Labels(const char *relay, const char *code, uint8 pair, uint8 slot, uint8 opponent, char label[LOBBY_ROWS][64])
 {
-	snprintf(s_label[0], sizeof(s_label[0]), "RELAY  %s", (s_relay[0] != '\0') ? s_relay : "(NOT SET)");
-	snprintf(s_label[1], sizeof(s_label[1]), "GAME CODE  %s", (s_code[0] != '\0') ? s_code : "(TYPE ONE)");
-	snprintf(s_label[2], sizeof(s_label[2]), "PLAYER  %u OF 2", (unsigned)(s_slot + 1));
-	snprintf(s_label[3], sizeof(s_label[3]), "HOUSE  YOU %s, THEM %s",
-	         Lobby_HouseName(s_pairs[s_pair][s_slot]),
-	         Lobby_HouseName(s_pairs[s_pair][s_slot ^ 1]));
+	const bool computer = (opponent == LOBBY_OPPONENT_COMPUTER);
 
-	if (s_code[0] != '\0') {
-		snprintf(s_label[4], sizeof(s_label[4]), "MAP  #%u (FROM THE CODE)", (unsigned)(Lobby_Seed(s_code) % 100000));
+	snprintf(label[0], 64, "OPPONENT  %s", computer ? "THE COMPUTER" : "A PERSON, VIA A RELAY");
+
+	if (computer) {
+		snprintf(label[1], 64, "RELAY  (NOT USED VS THE COMPUTER)");
+		snprintf(label[2], 64, "GAME CODE  %s", (code[0] != '\0') ? code : "(OPTIONAL, NAMES THE MAP)");
+		snprintf(label[3], 64, "PLAYER  %u OF 2, THE COMPUTER IS %u", (unsigned)(slot + 1), (unsigned)((slot ^ 1) + 1));
 	} else {
-		snprintf(s_label[4], sizeof(s_label[4]), "MAP  (FROM THE CODE)");
+		snprintf(label[1], 64, "RELAY  %s", (relay[0] != '\0') ? relay : "(NOT SET)");
+		snprintf(label[2], 64, "GAME CODE  %s", (code[0] != '\0') ? code : "(TYPE ONE)");
+		snprintf(label[3], 64, "PLAYER  %u OF 2", (unsigned)(slot + 1));
 	}
+
+	snprintf(label[4], 64, "HOUSE  YOU %s, THEM %s",
+	         Lobby_HouseName(s_pairs[pair][slot]),
+	         Lobby_HouseName(s_pairs[pair][slot ^ 1]));
+
+	if (code[0] != '\0') {
+		snprintf(label[5], 64, "MAP  #%u (FROM THE CODE)", (unsigned)(Lobby_Seed(code) % 100000));
+	} else if (computer) {
+		snprintf(label[5], 64, "MAP  RANDOM (A CODE PICKS ONE)");
+	} else {
+		snprintf(label[5], 64, "MAP  (FROM THE CODE)");
+	}
+}
+
+/** The rows for what is chosen right now. */
+static void Lobby_RefreshLabels(void)
+{
+	Lobby_Labels(s_relay, s_code, s_pair, s_slot, s_opponent, s_label);
 }
 
 /** Resolve the negative stringIDs the lobby window uses.  See gui.c. */
@@ -326,7 +356,7 @@ char *GUI_Lobby_GetLabel(int16 stringID)
 {
 	int16 row = (int16)(-20 - stringID);
 
-	if (row < 0 || row >= 5) return NULL;
+	if (row < 0 || row >= LOBBY_ROWS) return NULL;
 
 	return s_label[row];
 }
@@ -555,6 +585,67 @@ int GUI_Lobby_RunSelfTest(void)
 	Lobby_SplitRelay("example.net:0", host, sizeof(host), &port);
 	if (port != LOBBY_PORT_DEFAULT) return 0;
 
+	/* The other chair.  Against a person nothing may be missing; against the
+	 * computer nothing is required, the relay is left out of it, an empty
+	 * code is a random map and a typed one is the same map as it would be
+	 * against a person -- so a map found against the computer can be played
+	 * against somebody. */
+	{
+		LobbyChoice c;
+
+		if (GUI_Lobby_Choose("", "dune42", 0, 0, LOBBY_OPPONENT_PERSON, &c)) return 0;
+		if (GUI_Lobby_Choose("example.net", "", 0, 0, LOBBY_OPPONENT_PERSON, &c)) return 0;
+		if (!GUI_Lobby_Choose("example.net", "dune42", 0, 0, LOBBY_OPPONENT_PERSON, &c)) return 0;
+		if (c.versusComputer || c.relayHost[0] == '\0' || c.room[0] == '\0') return 0;
+
+		if (!GUI_Lobby_Choose("", "", 2, 1, LOBBY_OPPONENT_COMPUTER, &c)) return 0;
+		if (!c.versusComputer) return 0;
+		if (c.relayHost[0] != '\0' || c.room[0] != '\0') return 0;
+		if (c.seed != 0) return 0;
+		if (c.slot != 1 || c.house[0] != s_pairs[2][0] || c.house[1] != s_pairs[2][1]) return 0;
+
+		if (!GUI_Lobby_Choose("example.net", "dune42", 0, 0, LOBBY_OPPONENT_COMPUTER, &c)) return 0;
+		if (c.seed != Lobby_Seed("dune42")) return 0;
+		if (c.relayHost[0] != '\0') return 0;
+
+		if (GUI_Lobby_Choose("", "", 6, 0, LOBBY_OPPONENT_COMPUTER, &c)) return 0;
+		if (GUI_Lobby_Choose("", "", 0, 2, LOBBY_OPPONENT_COMPUTER, &c)) return 0;
+	}
+
+	/* Every label the rows can show has to fit the row, in the font the row
+	 * is drawn with.  The longest House pair, the longest code, both
+	 * opponents, both seats and an empty code: a label that does not fit is
+	 * clipped on the screen and nowhere else, so this is where it is caught. */
+	{
+		static const char *codes[] = { "", "ABCDEFGHIJKLMNOP" };
+		Font *saved = g_fontCurrent;
+		uint8 pair, slot, opponent, ci;
+		bool ok = true;
+
+		Font_Select(g_fontNew8p);
+
+		for (opponent = 0; opponent <= 1 && ok; opponent++) {
+			for (pair = 0; pair < 6 && ok; pair++) {
+				for (slot = 0; slot < 2 && ok; slot++) {
+					for (ci = 0; ci < 2 && ok; ci++) {
+						char label[LOBBY_ROWS][64];
+						uint8 row;
+
+						Lobby_Labels("255.255.255.255:65535", codes[ci], pair, slot, opponent, label);
+
+						for (row = 0; row < LOBBY_ROWS; row++) {
+							if (Font_GetStringWidth(label[row]) > LOBBY_LABEL_WIDTH_MAX) ok = false;
+						}
+					}
+				}
+			}
+		}
+
+		Font_Select(saved);
+
+		if (!ok) return 0;
+	}
+
 	return 1;
 }
 
@@ -565,20 +656,36 @@ int GUI_Lobby_RunSelfTest(void)
  * flag has to exercise the same arithmetic a person's click does, or it guards
  * nothing.
  *
+ * Against the computer nothing has to be agreed, so nothing is required: the
+ * relay is ignored, and an empty code means a random map (seed 0, which the
+ * skirmish reads as "pick one").  A code still names the map, so a match can
+ * be played again on the same ground.
+ *
  * @return False when the choices are not enough to start a match.
  */
-bool GUI_Lobby_Choose(const char *relay, const char *code, uint8 pair, uint8 slot, LobbyChoice *out)
+bool GUI_Lobby_Choose(const char *relay, const char *code, uint8 pair, uint8 slot, uint8 opponent, LobbyChoice *out)
 {
 	if (relay == NULL || code == NULL || out == NULL) return false;
-	if (relay[0] == '\0' || code[0] == '\0') return false;
 	if (pair >= 6 || slot >= 2) return false;
+
+	out->slot           = slot;
+	out->house[0]       = s_pairs[pair][0];
+	out->house[1]       = s_pairs[pair][1];
+	out->versusComputer = (opponent == LOBBY_OPPONENT_COMPUTER);
+
+	if (out->versusComputer) {
+		out->relayHost[0] = '\0';
+		out->relayPort    = 0;
+		out->room[0]      = '\0';
+		out->seed         = (code[0] != '\0') ? Lobby_Seed(code) : 0;
+		return true;
+	}
+
+	if (relay[0] == '\0' || code[0] == '\0') return false;
 
 	Lobby_SplitRelay(relay, out->relayHost, sizeof(out->relayHost), &out->relayPort);
 	Lobby_BuildRoom(out->room, sizeof(out->room), code, pair);
-	out->slot     = slot;
-	out->house[0] = s_pairs[pair][0];
-	out->house[1] = s_pairs[pair][1];
-	out->seed     = Lobby_Seed(code);
+	out->seed = Lobby_Seed(code);
 
 	return true;
 }
@@ -607,7 +714,7 @@ bool GUI_Lobby_Show(LobbyChoice *out)
 		}
 	}
 
-	Lobby_Labels();
+	Lobby_RefreshLabels();
 
 	GUI_Window_BackupScreen(desc);
 	GUI_Window_Create(desc);
@@ -624,39 +731,47 @@ bool GUI_Lobby_Show(LobbyChoice *out)
 		GUI_Widget_MakeNormal(GUI_Widget_Get_ByIndex(g_widgetLinkedListTail, key & 0x7FFF), false);
 
 		switch ((key & 0x7FFF) - 0x1E) {
-			case 0: /* RELAY */
+			case 0: /* OPPONENT */
+				s_opponent = (uint8)((s_opponent == LOBBY_OPPONENT_PERSON) ? LOBBY_OPPONENT_COMPUTER : LOBBY_OPPONENT_PERSON);
+				redraw = true;
+				break;
+
+			case 1: /* RELAY -- not used against the computer, so not editable there */
+				if (s_opponent == LOBBY_OPPONENT_COMPUTER) break;
 				GUI_Window_RestoreScreen(desc);
 				Lobby_Edit("RELAY ADDRESS, HOST OR HOST:PORT", s_relay, sizeof(s_relay));
 				redraw = true;
 				break;
 
-			case 1: /* GAME CODE */
+			case 2: /* GAME CODE */
 				GUI_Window_RestoreScreen(desc);
-				Lobby_Edit("GAME CODE -- BOTH PLAYERS TYPE THE SAME ONE", s_code, sizeof(s_code));
+				Lobby_Edit((s_opponent == LOBBY_OPPONENT_COMPUTER)
+				           ? "GAME CODE -- NAMES THE MAP, OR LEAVE IT EMPTY"
+				           : "GAME CODE -- BOTH PLAYERS TYPE THE SAME ONE", s_code, sizeof(s_code));
 				redraw = true;
 				break;
 
-			case 2: /* PLAYER */
+			case 3: /* PLAYER */
 				s_slot ^= 1;
 				redraw = true;
 				break;
 
-			case 3: /* HOUSE */
+			case 4: /* HOUSE */
 				s_pair = (uint8)((s_pair + 1) % 6);
 				redraw = true;
 				break;
 
-			case 4: /* MAP -- derived, so the row only re-rolls by changing the code */
+			case 5: /* MAP -- derived, so the row only re-rolls by changing the code */
 				break;
 
-			case 5: /* BEGIN */
-				if (!GUI_Lobby_Choose(s_relay, s_code, s_pair, s_slot, out)) break;
+			case 6: /* BEGIN */
+				if (!GUI_Lobby_Choose(s_relay, s_code, s_pair, s_slot, s_opponent, out)) break;
 
 				loop = false;
 				ret = true;
 				break;
 
-			case 6: /* CANCEL */
+			case 7: /* CANCEL */
 				loop = false;
 				break;
 
@@ -664,7 +779,7 @@ bool GUI_Lobby_Show(LobbyChoice *out)
 		}
 
 		if (redraw && loop) {
-			Lobby_Labels();
+			Lobby_RefreshLabels();
 			GUI_Window_BackupScreen(desc);
 			GUI_Window_Create(desc);
 		}

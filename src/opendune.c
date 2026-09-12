@@ -122,7 +122,14 @@ static char s_lobbyPlayRelay[128] = "";
 static char s_lobbyPlayCode[32] = "";
 static uint8 s_lobbyPlayPair = 0;
 static uint8 s_lobbyPlaySlot = 0;
+static uint8 s_lobbyPlayOpponent = 0;
 static bool s_lobbyPlayEntered = false;
+static uint32 s_lobbyPlayUntil = 0;
+
+/* The lobby chose the computer for the other chair: a local match, no relay,
+ * no turn loop -- the skirmish with one of its two houses handed to a person.
+ * Cleared with s_mpRelayHost whenever the menu is reached. */
+static bool s_lobbyVersusComputer = false;
 static int s_lobbySelfTestResult = -1;
 static bool s_moveRulesSelfTest = false;
 static int s_moveRulesSelfTestResult = -1;
@@ -971,6 +978,7 @@ static void GameLoop_GameIntroAnimationMenu(void)
 	 * line never comes through here -- --mp-relay goes straight to GM_SKIRMISH
 	 * -- so it is not cleared out from under it. */
 	s_mpRelayHost[0] = '\0';
+	s_lobbyVersusComputer = false;
 
 	/* Nothing to draw for somebody who is leaving. */
 	if (!g_running) return;
@@ -1047,7 +1055,7 @@ static void GameLoop_GameIntroAnimationMenu(void)
 			bool agreed;
 
 			agreed = s_lobbyPlay
-			       ? GUI_Lobby_Choose(s_lobbyPlayRelay, s_lobbyPlayCode, s_lobbyPlayPair, s_lobbyPlaySlot, &choice)
+			       ? GUI_Lobby_Choose(s_lobbyPlayRelay, s_lobbyPlayCode, s_lobbyPlayPair, s_lobbyPlaySlot, s_lobbyPlayOpponent, &choice)
 			       : GUI_Lobby_Show(&choice);
 
 			if (agreed) {
@@ -1438,18 +1446,35 @@ static bool MpGame_IsLive(void)
  * on the two roads are one road: GM_SKIRMISH reaches MpGame_Begin() either way.
  * Both slots are people -- a lobby match is 1-v-1 by construction, and a house
  * left on the AI would be an opponent neither player agreed to.
+ *
+ * Unless the computer *is* the opponent agreed to.  Then there is no relay and
+ * nothing goes over a wire: the other chair is the skirmish AI, the match is
+ * the local one MpGame_BeginVersusComputer() starts, and the only thing kept
+ * from the networked road is the seat -- which house is yours, and which
+ * corner the camera opens on.
  */
 static void MpGame_TakeLobbyChoice(const LobbyChoice *choice)
 {
-	snprintf(s_mpRelayHost, sizeof(s_mpRelayHost), "%s", choice->relayHost);
-	snprintf(s_mpRelayRoom, sizeof(s_mpRelayRoom), "%s", choice->room);
-	s_mpRelayPort = choice->relayPort;
+	s_skirmishHouse[0] = choice->house[0];
+	s_skirmishHouse[1] = choice->house[1];
 	s_mpTurnSlot  = choice->slot;
 	s_mpLiveSeed  = choice->seed;
 	s_mpTurnLoop  = false;
 
-	s_skirmishHouse[0] = choice->house[0];
-	s_skirmishHouse[1] = choice->house[1];
+	if (choice->versusComputer) {
+		s_mpRelayHost[0] = '\0';
+		s_mpRelayRoom[0] = '\0';
+		s_lobbyVersusComputer = true;
+
+		Skirmish_SetController(choice->slot, MATCH_CONTROLLER_HUMAN_LOCAL);
+		Skirmish_SetController((uint8)(choice->slot ^ 1), MATCH_CONTROLLER_AI);
+		return;
+	}
+
+	snprintf(s_mpRelayHost, sizeof(s_mpRelayHost), "%s", choice->relayHost);
+	snprintf(s_mpRelayRoom, sizeof(s_mpRelayRoom), "%s", choice->room);
+	s_mpRelayPort = choice->relayPort;
+	s_lobbyVersusComputer = false;
 
 	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
 	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
@@ -2007,6 +2032,60 @@ static bool MpGame_Begin(void)
 	         (unsigned)s_mpTurnLength, (unsigned)MpTurn_GetDelay(),
 	         (unsigned)GameLoop_GetSpeedFactor(), (unsigned)(s_mpTurnSlot + 1));
 	MpGame_Log(line);
+
+	return true;
+}
+
+/**
+ * The lobby's other road: one person, the computer in the other chair.
+ *
+ * A local match, so none of what MpGame_Begin() does for the wire is done
+ * here: no relay, no turn loop, no claimed clock, no pump.  The world is
+ * stepped by the ordinary frame loop off the 60 Hz ticker, exactly as
+ * --skirmish has always been stepped, and a command submitted outside a turn
+ * loop runs at once.  What *is* shared with the networked road is the starting
+ * position: the same map from the same seed, the same two bases, the same
+ * squad from mp_start_units -- so a map found against the computer is the map
+ * the same code gives against a person.
+ *
+ * The AI gets the war plan, not the default blueprint: it is the opponent the
+ * war bench measures (war.md), and the one that actually builds an army.
+ */
+static bool MpGame_BeginVersusComputer(void)
+{
+	SkirmishEconomyPlan planA, planB;
+	char line[128];
+
+	WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
+	WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
+
+	/* Before the start, for the reason MpGame_Begin() gives: the viewpoint has
+	 * to name a house, and the houses are allocated during the start. */
+	Skirmish_SetViewpoint(s_mpTurnSlot);
+
+	if (!Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_mpLiveSeed, &planA, &planB)) {
+		PrintToConsole("lobby: FAIL (could not start a skirmish against the computer)");
+		return false;
+	}
+
+	/* Open on our own base rather than on slot 1's. */
+	{
+		uint16 origin = Skirmish_GetBaseOrigin(s_mpTurnSlot);
+
+		if (origin != 0xFFFF) {
+			Map_SetViewportPosition(origin);
+			g_minimapPosition = g_viewportPosition;
+			s_skirmishCameraBase = s_mpTurnSlot;
+		}
+	}
+
+	MpGame_PlaceStartingUnits(s_mpLiveUnits);
+
+	snprintf(line, sizeof(line), "lobby: playing the computer, seed %u, you %s (player %u), them %s",
+	         (unsigned)g_scenario.mapSeed,
+	         g_table_houseInfo[s_skirmishHouse[s_mpTurnSlot]].name, (unsigned)(s_mpTurnSlot + 1),
+	         g_table_houseInfo[s_skirmishHouse[s_mpTurnSlot ^ 1]].name);
+	PrintToConsole(line);
 
 	return true;
 }
@@ -5144,8 +5223,9 @@ static void GameLoop_Main(void)
 	/* Let players skip the intro immediately, including on their first launch. */
 	g_canSkipIntro = true;
 
-	/* --skirmish drops straight into a match: the mode has no menu entry, it
-	 * is a development tool rather than something to play. */
+	/* --skirmish drops straight into a match: the spectator mode has no menu
+	 * entry, it is a development tool rather than something to play.  A person
+	 * against the AI is reached from the lobby's OPPONENT row instead. */
 	if (s_skirmishDirect || s_ecoPlay || s_warPlay) g_gameMode = GM_SKIRMISH;
 
 	for (;; sleepIdle()) {
@@ -5223,6 +5303,9 @@ static void GameLoop_Main(void)
 				WarSearch_MakePlan(s_warPlayShare[0], s_warPlayShare[0], 0, &planA);
 				WarSearch_MakePlan(s_warPlayShare[1], s_warPlayShare[1], 0, &planB);
 				started = Skirmish_StartWar(s_skirmishHouse[0], s_skirmishHouse[1], s_warPlaySeed, &planA, &planB);
+			} else if (s_lobbyVersusComputer) {
+				/* One process, one person, the skirmish AI in the other chair. */
+				started = MpGame_BeginVersusComputer();
 			} else if (MpGame_IsLive()) {
 				/* Two processes, one match, seen from two chairs -- the same
 				 * thing --mp-turnloop proves headless, with the drawing left in. */
@@ -5247,7 +5330,48 @@ static void GameLoop_Main(void)
 
 				Music_Play(Tools_RandomUI_Range(0, 8) + 8);
 				l_timerNext = g_timerGUI + 300;
+
+				/* A match against the computer has no other side to end it,
+				 * so the flag ends it itself, after --mp-wait, with a line
+				 * that says who owned what -- the only way to see headless
+				 * that the person got their house and the AI built its base. */
+				s_lobbyPlayUntil = Timer_GetTime() + s_mpNetWaitMs;
 			}
+		}
+
+		if (s_lobbyPlay && s_lobbyVersusComputer && g_gameMode == GM_NORMAL && Timer_GetTime() > s_lobbyPlayUntil) {
+			char line[256];
+			uint8 slot;
+
+			for (slot = 0; slot < MATCH_SLOT_MAX; slot++) {
+				PoolFindStruct find;
+				uint8 houseID = Match_GetSlotHouse(slot);
+				uint16 structures = 0;
+				uint16 units = 0;
+
+				if (houseID == HOUSE_INVALID) continue;
+
+				find.houseID = houseID;
+				find.type    = 0xFFFF;
+				find.index   = 0xFFFF;
+				while (Structure_Find(&find) != NULL) structures++;
+
+				find.houseID = houseID;
+				find.type    = 0xFFFF;
+				find.index   = 0xFFFF;
+				while (Unit_Find(&find) != NULL) units++;
+
+				snprintf(line, sizeof(line), "lobby-play: slot %u %s %s, %u structures, %u units%s",
+				         (unsigned)(slot + 1), g_table_houseInfo[houseID].name,
+				         Match_IsHumanControlled(houseID) ? "(you)" : "(the computer)",
+				         (unsigned)structures, (unsigned)units,
+				         (houseID == g_playerHouseID) ? ", the screen is theirs" : "");
+				PrintToConsole(line);
+			}
+
+			PrintToConsole("lobby-play: DONE");
+			g_running = false;
+			break;
 		}
 
 		if (g_selectionTypeNew != g_selectionType) {
@@ -5673,15 +5797,23 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--move-rules-self-test") == 0) s_moveRulesSelfTest = true;
 			if (strcmp(argv[i], "--lobby-self-test") == 0) s_lobbySelfTest = true;
 			if (strncmp(argv[i], "--lobby-play=", 13) == 0) {
-				/* relay,code,pair,slot -- the four things the lobby's rows set. */
+				/* relay,code,pair,slot[,computer] -- the lobby's rows.  A
+				 * fifth field of "computer" is the OPPONENT row on its other
+				 * setting; the relay is then ignored and "-" will do for it,
+				 * and the code may be "-" too, which is the row left empty. */
 				unsigned pair = 0, slot = 1;
+				char opponent[16] = "";
 
 				s_lobbyPlayRelay[0] = '\0';
 				s_lobbyPlayCode[0] = '\0';
-				sscanf(argv[i] + 13, "%127[^,],%31[^,],%u,%u", s_lobbyPlayRelay, s_lobbyPlayCode, &pair, &slot);
+				sscanf(argv[i] + 13, "%127[^,],%31[^,],%u,%u,%15s", s_lobbyPlayRelay, s_lobbyPlayCode, &pair, &slot, opponent);
 				s_lobbyPlayPair = (uint8)(pair % 6);
 				s_lobbyPlaySlot = (uint8)((slot >= 2) ? 1 : 0);
-				s_lobbyPlay = (s_lobbyPlayRelay[0] != '\0' && s_lobbyPlayCode[0] != '\0');
+				s_lobbyPlayOpponent = (strcmp(opponent, "computer") == 0) ? LOBBY_OPPONENT_COMPUTER : LOBBY_OPPONENT_PERSON;
+				if (strcmp(s_lobbyPlayRelay, "-") == 0) s_lobbyPlayRelay[0] = '\0';
+				if (strcmp(s_lobbyPlayCode, "-") == 0) s_lobbyPlayCode[0] = '\0';
+				s_lobbyPlay = (s_lobbyPlayOpponent == LOBBY_OPPONENT_COMPUTER)
+				            || (s_lobbyPlayRelay[0] != '\0' && s_lobbyPlayCode[0] != '\0');
 			}
 			if (strcmp(argv[i], "--pathfinder-self-test") == 0) s_pathfinderSelfTest = true;
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;

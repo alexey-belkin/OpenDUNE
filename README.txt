@@ -450,6 +450,18 @@ back to the menu; otherwise it waits thirty seconds, tells you why it stopped,
 and returns to the menu with your settings still in the lobby.
 
 
+Playing the computer
+--------------------
+The same lobby starts a match against the computer: set the first row,
+"Opponent", to THE COMPUTER. No relay is needed and the relay row says so. The
+game code is optional there -- leave it empty for a random map, or type one to
+play a particular map again; a code names the same map it would against a
+person, so a map found against the computer can be played against somebody
+later. "Player" picks which of the two seats is yours (the computer takes the
+other), "House" picks the pair, and Begin starts at once. The computer plays
+the fork's skirmish AI; mp_start_units applies to both sides.
+
+
 Ingame
 ------
 The Game controls are the same as DUNE II. Usually, the first letter is a

@@ -3141,13 +3141,13 @@ char *GUI_String_Get_ByIndex(int16 stringID)
 		case -19:
 			return lobbyTitle;
 
-		case -20: case -21: case -22: case -23: case -24:
+		case -20: case -21: case -22: case -23: case -24: case -25:
 			return GUI_Lobby_GetLabel(stringID);
 
-		case -25:
+		case -26:
 			return lobbyBegin;
 
-		case -26:
+		case -27:
 			return GUI_Lobby_GetEntryTitle();
 
 		default: break;

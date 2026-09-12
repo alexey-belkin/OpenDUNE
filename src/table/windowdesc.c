@@ -387,9 +387,11 @@ WindowDesc g_lobbyWindowDesc = {
 	/* index       */ 22,
 	/* stringID    */ -19,
 	/* addArrows   */ false,
-	/* widgetCount */ 7,
+	/* widgetCount */ 8,
 	{ /* widgets */
-		{ /* 0 -- relay */
+		/* Six rows of 15 at a pitch of 17 and the two buttons under them end
+		 * at y=146, inside the panel's 150.  There is no room for a seventh. */
+		{ /* 0 -- opponent: a person through a relay, or the computer */
 		/* stringID      */ -20,
 		/* offsetX       */ 8,
 		/* offsetY       */ 23,
@@ -398,7 +400,7 @@ WindowDesc g_lobbyWindowDesc = {
 		/* labelStringID */ STR_NULL,
 		/* shortcut2     */ 0,
 		},
-		{ /* 1 -- game code */
+		{ /* 1 -- relay */
 		/* stringID      */ -21,
 		/* offsetX       */ 8,
 		/* offsetY       */ 40,
@@ -407,7 +409,7 @@ WindowDesc g_lobbyWindowDesc = {
 		/* labelStringID */ STR_NULL,
 		/* shortcut2     */ 0,
 		},
-		{ /* 2 -- which player */
+		{ /* 2 -- game code */
 		/* stringID      */ -22,
 		/* offsetX       */ 8,
 		/* offsetY       */ 57,
@@ -416,7 +418,7 @@ WindowDesc g_lobbyWindowDesc = {
 		/* labelStringID */ STR_NULL,
 		/* shortcut2     */ 0,
 		},
-		{ /* 3 -- houses */
+		{ /* 3 -- which player */
 		/* stringID      */ -23,
 		/* offsetX       */ 8,
 		/* offsetY       */ 74,
@@ -425,7 +427,7 @@ WindowDesc g_lobbyWindowDesc = {
 		/* labelStringID */ STR_NULL,
 		/* shortcut2     */ 0,
 		},
-		{ /* 4 -- map, derived from the code */
+		{ /* 4 -- houses */
 		/* stringID      */ -24,
 		/* offsetX       */ 8,
 		/* offsetY       */ 91,
@@ -434,19 +436,28 @@ WindowDesc g_lobbyWindowDesc = {
 		/* labelStringID */ STR_NULL,
 		/* shortcut2     */ 0,
 		},
-		{ /* 5 -- begin */
+		{ /* 5 -- map, derived from the code */
 		/* stringID      */ -25,
 		/* offsetX       */ 8,
-		/* offsetY       */ 114,
+		/* offsetY       */ 108,
+		/* width         */ 224,
+		/* height        */ 15,
+		/* labelStringID */ STR_NULL,
+		/* shortcut2     */ 0,
+		},
+		{ /* 6 -- begin */
+		/* stringID      */ -26,
+		/* offsetX       */ 8,
+		/* offsetY       */ 131,
 		/* width         */ 104,
 		/* height        */ 15,
 		/* labelStringID */ STR_NULL,
 		/* shortcut2     */ 0,
 		},
-		{ /* 6 -- cancel */
+		{ /* 7 -- cancel */
 		/* stringID      */ STR_CANCEL,
 		/* offsetX       */ 128,
-		/* offsetY       */ 114,
+		/* offsetY       */ 131,
 		/* width         */ 104,
 		/* height        */ 15,
 		/* labelStringID */ STR_NULL,
@@ -463,7 +474,7 @@ WindowDesc g_lobbyWindowDesc = {
  */
 WindowDesc g_lobbyEntryWindowDesc = {
 	/* index       */ 14,
-	/* stringID    */ -26,
+	/* stringID    */ -27,
 	/* addArrows   */ false,
 	/* widgetCount */ 2,
 	{ /* widgets */

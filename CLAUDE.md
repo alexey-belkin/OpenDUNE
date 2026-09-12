@@ -880,9 +880,11 @@ choosing the building a yard is already set to.
 a Construction Yard and a *plan* — the rest of its base as an ordered list of
 (type, position) it has to work through itself. It is how the AI is developed and
 judged in this fork, and the two AIs do fight: the default strategy spends nothing
-on an army until t35000 and most of its income after. There is deliberately no menu
-entry: the main menu list is sized by its first `STR_NULL`, so a sixth item makes
-the whole menu vanish on a profile that has both a savegame and a Hall of Fame.
+on an army until t35000 and most of its income after. The spectator mode has no
+menu entry of its own (the main menu list is sized by its first `STR_NULL`, so
+an extra item makes the whole menu vanish on a profile that has both a savegame
+and a Hall of Fame); a *person* against the AI is reached from the menu through
+the lobby's OPPONENT row — see "The lobby".
 
 → [skirmish.md](skirmish.md) — the spectator model, the plan hooks, and the
 engine facts (player-centric AI checks, the credit clamp, the truncated
@@ -1293,6 +1295,36 @@ sitting at.
 ./opendune --lobby-play=127.0.0.1:31337,dune42,0,1 &
 ./opendune --lobby-play=127.0.0.1:31337,dune42,0,2 &
 ```
+
+**The other chair can be the computer.** The first row of the lobby,
+OPPONENT, toggles between *a person, via a relay* and *the computer*; on the
+second setting the relay row is dead and says so, the code is optional (empty
+is a random map, typed is the same map that code gives against a person), and
+BEGIN starts the skirmish with the chosen seat handed to the person and the
+other to the AI, on the war plan (`WarSearch_MakePlan()`, the opponent the war
+bench measures). `MpGame_BeginVersusComputer()` in opendune.c is the whole of
+it: no relay, no turn loop, no claimed clock, no pump — the frame loop steps
+the world off the 60 Hz ticker as `--skirmish` always has, and a command
+submitted outside a turn loop runs at once. `LobbyChoice.versusComputer` is
+how the choice travels and `s_lobbyVersusComputer` is cleared with
+`s_mpRelayHost` on every return to the menu. The window grew a sixth row for
+it: 15-pixel rows at a pitch of 17 with the buttons at y=131 end at 146 inside
+window 22's 150, and there is no room for a seventh. The lobby's stringIDs
+shifted down one (rows -20..-25, BEGIN -26, the entry title -27) and
+`GUI_String_Get_ByIndex()` in gui/gui.c has to agree.
+
+`--lobby-play=-,code,pair,slot,computer` is the same road headless (`-` for an
+empty relay or code); with no other side to end the match it ends itself
+after `--mp-wait` ms and prints who owned what — measured, at x8 over 20 s the
+person still holds the yard and the `mp_start_units` squad and the AI has 7
+buildings and 8 units, and by 40 s the AI has come over and taken the idle
+person's base apart, which is the AI working. `--lobby-self-test` checks the
+rule: against a person nothing may be missing, against the computer nothing is
+required, the relay is left out, an empty code is seed 0 (random) and a typed
+one is the same seed as against a person; and it measures **every label the
+six rows can show** — both opponents, all six pairs, both seats, an empty and
+a longest code — in `g_fontNew8p` against the 218 pixels a row has, because a
+label that does not fit is clipped on the screen and nowhere else.
 
 It also prints the room name, which is the **only way to check the one claim no
 single-process test can reach**: that two builds of the same commit for two

@@ -9,6 +9,12 @@ enum {
 	LOBBY_ROOM_MAX  = 96                                    /*!< What is actually sent to the relay. */
 };
 
+/** Who the other chair is taken by. */
+enum {
+	LOBBY_OPPONENT_PERSON   = 0,                            /*!< Somebody else, through a relay. */
+	LOBBY_OPPONENT_COMPUTER = 1                             /*!< The skirmish AI, on this machine. */
+};
+
 /**
  * Everything the lobby settles before a match, and nothing else.
  *
@@ -17,6 +23,10 @@ enum {
  * about anything simply never meet, which is a failure a person can act on.  A
  * mismatch that let them meet would be a desync a few seconds later, which is
  * not.
+ *
+ * Against the computer there is nobody to agree with: relayHost and room are
+ * empty, and a seed of 0 asks the skirmish for a random map (the code is
+ * optional there and only names the map).
  */
 typedef struct LobbyChoice {
 	char   relayHost[LOBBY_RELAY_MAX];                      /*!< Host only; the port is separate. */
@@ -25,11 +35,12 @@ typedef struct LobbyChoice {
 	uint8  slot;                                            /*!< 0 or 1; which player this is. */
 	uint8  house[2];                                        /*!< HouseType per slot. */
 	uint32 seed;                                            /*!< Map seed, derived from the code. */
+	bool   versusComputer;                                  /*!< The other slot is the AI, no relay. */
 } LobbyChoice;
 
 extern bool GUI_Lobby_Show(LobbyChoice *out);
 extern uint32 GUI_Lobby_ConfigHash(void);
-extern bool GUI_Lobby_Choose(const char *relay, const char *code, uint8 pair, uint8 slot, LobbyChoice *out);
+extern bool GUI_Lobby_Choose(const char *relay, const char *code, uint8 pair, uint8 slot, uint8 opponent, LobbyChoice *out);
 extern int GUI_Lobby_RunSelfTest(void);
 
 /* Resolved by GUI_String_Get_ByIndex() for the window's negative stringIDs. */
