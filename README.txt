@@ -406,6 +406,19 @@ game -- and one relay is enough for both players:
 
     ./relay -listen 0.0.0.0:31337
 
+When the connection breaks, the match waits rather than ends. The world stands
+still, the corner of the screen says LINK LOST -- RECONNECTING or THEY DROPPED
+-- WAITING with a count of seconds, and the game dials the relay again every
+two seconds for two and a half minutes; the other player's game waits the same
+way. When the link is back both sides resend their last moves, the corner says
+"sync N, relinked 1", and the match carries on from where it stopped. Only
+when the wait runs out does it end, and then the corner says so in red -- ENDED
+with a reason -- and stays that way; the world keeps moving after that so the
+screen can be looked at, but it is no longer the match the other player is in.
+Everything a match says about its connection is also written to mp-live.log in
+~/Library/Application Support/OpenDUNE/ (the same folder as opendune.ini). If a
+match breaks, that file from both computers is what explains it.
+
 In the lobby, agree on one thing between you: the game code. Type the same code
 on both machines. The map is made from it, so you do not have to agree on a map
 as well. Then set the house pair to the same value on both machines, and set

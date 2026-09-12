@@ -1,5 +1,6 @@
 /** @file src/mpnet.c The socket that carries turn packets to the relay. */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,7 +50,26 @@
 enum {
 	MP_NET_WINDOW  = 64,
 	MP_NET_BUFFER  = 65536,
-	MP_NET_PAYLOAD = 8192
+	/* The worst turn on the wire -- MP_TURN_COMMANDS_MAX commands each naming
+	 * MP_COMMAND_UNITS_MAX recipients with three-digit indices -- is a little
+	 * over 14 KB.  This was 8192, and MpPacket_Format() cut the tail off in
+	 * silence: the receiver could not parse what was left, dropped the packet
+	 * without a word, and the match froze on both sides for good. */
+	MP_NET_PAYLOAD = 16384,
+
+	/* Link recovery.  A dial every two seconds, for a little longer than the
+	 * relay's own idle timeout (120 s), because a link that died without a FIN
+	 * leaves a ghost in the slot until the relay gives up on it -- and a rejoin
+	 * before that is refused with "slot is taken". */
+	MP_NET_REDIAL_MS  = 2000,
+	MP_NET_RECOVER_MS = 150000,
+
+	/* A client waiting for the other one sends nothing, and the relay drops a
+	 * client it has not heard from in 120 s -- so the one who stayed was being
+	 * thrown out for waiting.  The relay accepts nothing but packets, so the
+	 * keepalive is our newest turn sent again: the other side, if present,
+	 * stores the same bytes over the same turn and nothing changes. */
+	MP_NET_KEEPALIVE_MS = 45000
 };
 
 static struct {
@@ -60,6 +80,37 @@ static struct {
 	uint8 localSlot;
 	MpSocket socket;
 	char error[160];
+
+	/* What the last dial asked for, so the link can be made again. */
+	char host[64];
+	uint16 port;
+	char room[80];
+
+	/* A dial in flight, so a redial never blocks the frame that started it. */
+	MpSocket pending;
+	uint32 pendingSince;
+
+	/* Recovery.  The socket is gone and we are dialling again (recovering), or
+	 * the relay said LEFT and has not said READY since (peerGone).  Either way
+	 * the turn loop stalls -- Send and Poll answer false -- and the match ends
+	 * only when MP_NET_RECOVER_MS runs out.  MpNet_IsConnected() and
+	 * MpNet_HasLeft() are answered from this, which is what turns "the match
+	 * is over" into "the match is waiting" for every caller at once. */
+	bool recovering;
+	uint32 lostAt;
+	uint32 nextDial;
+	uint16 dials;
+	bool peerGone;
+	uint32 peerGoneAt;
+	uint32 relinks;
+	bool resending;
+	uint32 lastSent;
+
+	/* --mp-drop-at: cut the link ourselves when our packet for this turn goes
+	 * out, so recovery can be tested without a cable to pull. */
+	uint32 dropAt;
+
+	void (*log)(const char *line);
 
 	/* Everything read from the socket and not yet parsed.  TCP is a stream, so
 	 * a packet may arrive in pieces, and two may arrive as one read. */
@@ -86,75 +137,6 @@ static void MpSocket_SetNonBlocking(MpSocket sock)
 #else
 	fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
 #endif /* _WIN32 */
-}
-
-/**
- * Dial one address, waiting up to MP_NET_CONNECT_MS for the handshake.
- *
- * **This may not be a blocking connect(), and that is the whole of it.** The
- * game arms a 60 Hz SIGALRM -- Timer_InterruptResume() in timer.c, with
- * sa_flags 0, so no SA_RESTART -- which means every blocking system call in the
- * process is interrupted about every 16 ms and nothing restarts it for us. A
- * connect() to anything further away than loopback takes longer than that, so
- * it returned EINTR every single time, and the three retries above could not
- * help: an interrupted connect carries on in the background, and a fresh socket
- * is interrupted just the same. Reported to the player as "could not reach the
- * relay", which is a sentence about the server and was never true.
- *
- * It is also why no test could see it. A relay on 127.0.0.1 connects before the
- * first signal arrives, and that is what --lobby-play and tools/mpduel.sh have
- * always been pointed at. Only a real relay 57 ms away fails.
- *
- * select() is restarted here on EINTR, which is exactly what connect() cannot
- * be. The socket is left non-blocking afterwards, the way the rest of the
- * module wants it.
- */
-static bool MpSocket_ConnectWait(MpSocket sock, const struct sockaddr *addr, uint32 addrLen)
-{
-	const uint32 until = Timer_GetTime() + MP_NET_CONNECT_MS;
-	int err = 0;
-
-	MpSocket_SetNonBlocking(sock);
-
-	if (connect(sock, addr, (socklen_t)addrLen) == 0) return true;
-	if (!MpSocket_InProgress()) return false;
-
-	while (true) {
-		const uint32 now = Timer_GetTime();
-		struct timeval tv;
-		fd_set writable;
-		int ready;
-
-		if (now >= until) return false;
-
-		tv.tv_sec  = (long)((until - now) / 1000);
-		tv.tv_usec = (long)(((until - now) % 1000) * 1000);
-
-		FD_ZERO(&writable);
-		FD_SET(sock, &writable);
-
-		ready = select((int)sock + 1, NULL, &writable, NULL, &tv);
-
-		if (ready > 0) break;
-		if (ready == 0) return false;
-		if (!MpSocket_Interrupted()) return false;
-
-		/* The 60 Hz timer, not the network.  Wait out what is left of it. */
-	}
-
-	/* A socket that became writable may still have failed: the error is
-	 * collected here rather than reported by connect(). */
-	{
-#if defined(_WIN32)
-		int errLen = sizeof(err);
-#else
-		socklen_t errLen = sizeof(err);
-#endif /* _WIN32 */
-
-		if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &errLen) != 0) return false;
-	}
-
-	return err == 0;
 }
 
 /**
@@ -188,14 +170,39 @@ static void MpNet_Fail(const char *what)
 	snprintf(s_net.error, sizeof(s_net.error), "%s", what);
 }
 
+static void MpNet_Log(const char *fmt, ...)
+{
+	char line[200];
+	va_list ap;
+
+	if (s_net.log == NULL) return;
+
+	va_start(ap, fmt);
+	vsnprintf(line, sizeof(line), fmt, ap);
+	va_end(ap);
+
+	s_net.log(line);
+}
+
+void MpNet_SetLogger(void (*log)(const char *line))
+{
+	s_net.log = log;
+}
+
+void MpNet_SetDropAt(uint32 turn)
+{
+	s_net.dropAt = turn;
+}
+
 const char *MpNet_GetError(void)
 {
 	return s_net.error;
 }
 
+/* Connected, or still trying to be: a link in recovery is not a lost match. */
 bool MpNet_IsConnected(void)
 {
-	return s_net.connected;
+	return s_net.connected || s_net.recovering;
 }
 
 bool MpNet_IsReady(void)
@@ -203,31 +210,194 @@ bool MpNet_IsReady(void)
 	return s_net.ready;
 }
 
+/* Only once the wait for them is over.  While it runs, "left" is "dropped". */
 bool MpNet_HasLeft(uint8 *slot)
 {
 	if (slot != NULL) *slot = s_net.leftSlot;
+	if (!s_net.peerGone) return false;
 
-	return s_net.left;
+	return Timer_GetTime() - s_net.peerGoneAt > MP_NET_RECOVER_MS;
 }
 
-/**
- * Dial the relay and claim a slot in a room.
+MpLinkState MpNet_GetLinkState(uint32 *sinceMs, uint32 *relinks)
+{
+	const uint32 now = Timer_GetTime();
+
+	if (relinks != NULL) *relinks = s_net.relinks;
+	if (sinceMs != NULL) *sinceMs = 0;
+
+	if (s_net.recovering) {
+		if (sinceMs != NULL) *sinceMs = now - s_net.lostAt;
+		return MP_LINK_RECONNECTING;
+	}
+	if (!s_net.connected) return MP_LINK_DOWN;
+	if (s_net.peerGone) {
+		if (sinceMs != NULL) *sinceMs = now - s_net.peerGoneAt;
+		return MpNet_HasLeft(NULL) ? MP_LINK_DOWN : MP_LINK_PEER_GONE;
+	}
+
+	return MP_LINK_UP;
+}
+
+/* ---------------------------------------------------------------------------
+ * Dialling.
  *
- * The join is done with the socket still blocking, because there is nothing to
- * do until it succeeds and a half-open connection is worse than a slow one.
- * Everything after that is non-blocking: the game loop may never wait on the
- * network anywhere except the deliberate stall in MpTurn_Advance().
- */
-bool MpNet_Connect(const char *host, uint16 port, const char *room, uint8 slot)
+ * Split into a start and a poll so that a redial from inside the frame loop
+ * never blocks it: the SYN goes out in one frame and the answer is collected in
+ * a later one.  The first connect, before the match, wants to wait, and does so
+ * by polling in a loop.
+ * ------------------------------------------------------------------------- */
+
+static void MpSocket_SetNonBlockingSock(MpSocket sock)
+{
+	MpSocket_SetNonBlocking(sock);
+}
+
+/** Resolve and send the SYN.  True if a connect is now in flight (or done). */
+static bool MpNet_DialStart(void)
 {
 	struct addrinfo hints;
 	struct addrinfo *results = NULL;
 	struct addrinfo *entry;
 	char service[16];
-	char request[128];
 	MpSocket sock = MP_SOCKET_INVALID;
-	uint16 attempt;
+
+	if (s_net.pending != MP_SOCKET_INVALID) return true;
+
+	snprintf(service, sizeof(service), "%u", (unsigned)s_net.port);
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family   = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
+	if (getaddrinfo(s_net.host, service, &hints, &results) != 0 || results == NULL) {
+		MpNet_Fail("could not resolve the relay address");
+		return false;
+	}
+
+	for (entry = results; entry != NULL; entry = entry->ai_next) {
+		sock = socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
+		if (sock == MP_SOCKET_INVALID) continue;
+
+		MpSocket_SetNonBlockingSock(sock);
+
+		if (connect(sock, entry->ai_addr, (socklen_t)entry->ai_addrlen) == 0) break;
+		if (MpSocket_InProgress()) break;
+
+		MpSocket_Close(sock);
+		sock = MP_SOCKET_INVALID;
+	}
+
+	freeaddrinfo(results);
+
+	if (sock == MP_SOCKET_INVALID) {
+		MpNet_Fail("could not reach the relay");
+		return false;
+	}
+
+	s_net.pending      = sock;
+	s_net.pendingSince = Timer_GetTime();
+
+	return true;
+}
+
+/**
+ * Has the SYN been answered?  1 connected, 0 still waiting, -1 failed.
+ *
+ * select() is restarted on EINTR here, which is exactly what a blocking
+ * connect() cannot be: the game arms a 60 Hz SIGALRM with no SA_RESTART
+ * (Timer_InterruptResume() in timer.c), so every blocking system call in the
+ * process is interrupted about every 16 ms.  A connect() to anything further
+ * away than loopback therefore returned EINTR every single time, and was
+ * reported as "could not reach the relay" -- a sentence about the server that
+ * was never true, and one no test could see, because a relay on 127.0.0.1
+ * connects before the first signal arrives.
+ */
+static int MpNet_DialPoll(void)
+{
+	struct timeval tv;
+	fd_set writable;
+	int ready;
+	int err = 0;
+#if defined(_WIN32)
+	int errLen = sizeof(err);
+#else
+	socklen_t errLen = sizeof(err);
+#endif /* _WIN32 */
+
+	if (s_net.pending == MP_SOCKET_INVALID) return -1;
+
+	if (Timer_GetTime() - s_net.pendingSince > MP_NET_CONNECT_MS) {
+		MpSocket_Close(s_net.pending);
+		s_net.pending = MP_SOCKET_INVALID;
+		MpNet_Fail("could not reach the relay");
+		return -1;
+	}
+
+	tv.tv_sec  = 0;
+	tv.tv_usec = 0;
+	FD_ZERO(&writable);
+	FD_SET(s_net.pending, &writable);
+
+	ready = select((int)s_net.pending + 1, NULL, &writable, NULL, &tv);
+	if (ready == 0) return 0;
+	if (ready < 0) return MpSocket_Interrupted() ? 0 : -1;
+
+	if (getsockopt(s_net.pending, SOL_SOCKET, SO_ERROR, (char *)&err, &errLen) != 0 || err != 0) {
+		MpSocket_Close(s_net.pending);
+		s_net.pending = MP_SOCKET_INVALID;
+		MpNet_Fail("could not reach the relay");
+		return -1;
+	}
+
+	return 1;
+}
+
+/** The SYN was answered: claim the seat.  Leaves the socket non-blocking. */
+static bool MpNet_DialFinish(void)
+{
+	char request[128];
 	int one = 1;
+	MpSocket sock = s_net.pending;
+
+	s_net.pending = MP_SOCKET_INVALID;
+
+	/* Every turn is one small packet the other player is already waiting for, so
+	 * waiting to fill a segment is exactly the wrong trade. */
+	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
+
+	snprintf(request, sizeof(request), "JOIN %s %u\n", s_net.room, (unsigned)s_net.localSlot);
+
+	if (!MpSocket_SendAll(sock, request, (uint32)strlen(request))) {
+		MpSocket_Close(sock);
+		MpNet_Fail("could not send the join request");
+		return false;
+	}
+
+	if (s_net.socket != MP_SOCKET_INVALID) MpSocket_Close(s_net.socket);
+
+	s_net.socket    = sock;
+	s_net.connected = true;
+	s_net.ready     = false;
+	s_net.inUsed    = 0;
+	s_net.lastSent  = Timer_GetTime();
+
+	return true;
+}
+
+/**
+ * Dial the relay and claim a slot in a room, waiting for the answer.
+ *
+ * Three attempts, because a single refused connect is not evidence of
+ * anything: transparent proxies and carrier middleboxes drop the odd outbound
+ * SYN, and on this machine two clients dialling the same relay at the same
+ * moment lose one often enough to be annoying.
+ */
+bool MpNet_Connect(const char *host, uint16 port, const char *room, uint8 slot)
+{
+	uint16 attempt;
+	void (*log)(const char *) = s_net.log;
+	uint32 dropAt = s_net.dropAt;
 
 #if defined(_WIN32)
 	WSADATA wsa;
@@ -240,70 +410,149 @@ bool MpNet_Connect(const char *host, uint16 port, const char *room, uint8 slot)
 
 	memset(&s_net, 0, sizeof(s_net));
 	s_net.socket    = MP_SOCKET_INVALID;
+	s_net.pending   = MP_SOCKET_INVALID;
 	s_net.localSlot = slot;
+	s_net.port      = port;
+	s_net.log       = log;
+	s_net.dropAt    = dropAt;
+	snprintf(s_net.host, sizeof(s_net.host), "%s", host);
+	snprintf(s_net.room, sizeof(s_net.room), "%s", room);
 
-	snprintf(service, sizeof(service), "%u", (unsigned)port);
+	for (attempt = 0; attempt < 3; attempt++) {
+		int state;
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family   = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-
-	if (getaddrinfo(host, service, &hints, &results) != 0 || results == NULL) {
-		MpNet_Fail("could not resolve the relay address");
-		return false;
-	}
-
-	/* Three attempts, because a single refused connect is not evidence of
-	 * anything.  Transparent proxies and carrier middleboxes drop the odd
-	 * outbound SYN, and on this machine two clients dialling the same relay at
-	 * the same moment lose one often enough to be annoying -- reported to the
-	 * player as "could not reach the relay", which sends them looking at the
-	 * server instead of at their own network. */
-	for (attempt = 0; attempt < 3 && sock == MP_SOCKET_INVALID; attempt++) {
 		if (attempt != 0) msleep(250);
+		if (!MpNet_DialStart()) continue;
 
-		for (entry = results; entry != NULL; entry = entry->ai_next) {
-			sock = socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
-			if (sock == MP_SOCKET_INVALID) continue;
+		while ((state = MpNet_DialPoll()) == 0) msleep(5);
+		if (state < 0) continue;
 
-			if (MpSocket_ConnectWait(sock, entry->ai_addr, (uint32)entry->ai_addrlen)) break;
-
-			MpSocket_Close(sock);
-			sock = MP_SOCKET_INVALID;
-		}
+		return MpNet_DialFinish();
 	}
 
-	freeaddrinfo(results);
+	return false;
+}
 
-	if (sock == MP_SOCKET_INVALID) {
-		MpNet_Fail("could not reach the relay");
-		return false;
+/* The socket died under a running match.  Stall, and start dialling again. */
+static void MpNet_LinkLost(const char *why)
+{
+	if (s_net.socket != MP_SOCKET_INVALID) MpSocket_Close(s_net.socket);
+	s_net.socket = MP_SOCKET_INVALID;
+
+	MpNet_Fail(why);
+
+	s_net.connected  = false;
+	s_net.recovering = true;
+	s_net.lostAt     = Timer_GetTime();
+	s_net.nextDial   = s_net.lostAt;
+	s_net.dials      = 0;
+	s_net.inUsed     = 0;
+
+	MpNet_Log("mp-net: link lost (%s), dialling again for up to %u s",
+	          why, (unsigned)(MP_NET_RECOVER_MS / 1000));
+}
+
+/* Something that will not get better by dialling again. */
+static void MpNet_LinkDead(const char *why)
+{
+	if (s_net.socket != MP_SOCKET_INVALID) MpSocket_Close(s_net.socket);
+	s_net.socket = MP_SOCKET_INVALID;
+
+	MpNet_Fail(why);
+	s_net.connected  = false;
+	s_net.recovering = false;
+
+	MpNet_Log("mp-net: %s", why);
+}
+
+static bool MpNet_SendFrame(const MpPacket *packet, bool pumpWhileBlocked);
+static void MpNet_Keepalive(void);
+
+/**
+ * Send every turn of ours the window still holds, oldest first.
+ *
+ * Called when the relay says READY, which it does each time the room is full
+ * again -- so after either side has dropped and come back, both resend what the
+ * other may have missed in flight.  A packet the other side already has is
+ * stored again with the same content, which changes nothing; a match stalled
+ * on a lost link never advanced, so the gap is at most `delay` turns and the
+ * window is 64 deep.
+ */
+static void MpNet_ResendWindow(void)
+{
+	uint32 lo = 0xFFFFFFFF;
+	uint32 hi = 0;
+	uint32 turn;
+	uint32 i;
+	uint32 sent = 0;
+
+	if (s_net.resending) return;
+
+	for (i = 0; i < MP_NET_WINDOW; i++) {
+		if (!s_net.window[s_net.localSlot][i].used) continue;
+		if (s_net.window[s_net.localSlot][i].turn < lo) lo = s_net.window[s_net.localSlot][i].turn;
+		if (s_net.window[s_net.localSlot][i].turn > hi) hi = s_net.window[s_net.localSlot][i].turn;
+	}
+	if (lo > hi) return;
+
+	s_net.resending = true;
+	for (turn = lo; turn <= hi && s_net.connected; turn++) {
+		i = turn % MP_NET_WINDOW;
+		if (!s_net.window[s_net.localSlot][i].used || s_net.window[s_net.localSlot][i].turn != turn) continue;
+		if (!MpNet_SendFrame(&s_net.window[s_net.localSlot][i].packet, false)) break;
+		sent++;
+	}
+	s_net.resending = false;
+
+	MpNet_Log("mp-net: sent turns %u..%u again (%u packets)", (unsigned)lo, (unsigned)hi, (unsigned)sent);
+}
+
+static void MpNet_Recover(void)
+{
+	const uint32 now = Timer_GetTime();
+	int state;
+
+	if (now - s_net.lostAt > MP_NET_RECOVER_MS) {
+		char why[160];
+
+		if (s_net.pending != MP_SOCKET_INVALID) MpSocket_Close(s_net.pending);
+		s_net.pending = MP_SOCKET_INVALID;
+
+		snprintf(why, sizeof(why), "the relay could not be reached again in %u s (%u attempts)",
+		         (unsigned)(MP_NET_RECOVER_MS / 1000), (unsigned)s_net.dials);
+		MpNet_LinkDead(why);
+		return;
 	}
 
-	/* Every turn is one small packet the other player is already waiting for, so
-	 * waiting to fill a segment is exactly the wrong trade. */
-	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
-
-	snprintf(request, sizeof(request), "JOIN %s %u\n", room, (unsigned)slot);
-
-	if (!MpSocket_SendAll(sock, request, (uint32)strlen(request))) {
-		MpSocket_Close(sock);
-		MpNet_Fail("could not send the join request");
-		return false;
+	if (s_net.pending == MP_SOCKET_INVALID) {
+		if (now < s_net.nextDial) return;
+		s_net.nextDial = now + MP_NET_REDIAL_MS;
+		s_net.dials++;
+		if (!MpNet_DialStart()) return;
 	}
 
-	s_net.socket    = sock;
-	s_net.connected = true;
+	state = MpNet_DialPoll();
+	if (state == 0) return;
+	if (state < 0) return;
 
-	return true;
+	if (!MpNet_DialFinish()) return;
+
+	s_net.recovering = false;
+	s_net.relinks++;
+
+	MpNet_Log("mp-net: relinked after %u ms and %u attempt%s",
+	          (unsigned)(now - s_net.lostAt), (unsigned)s_net.dials, (s_net.dials == 1) ? "" : "s");
 }
 
 void MpNet_Disconnect(void)
 {
 	if (s_net.socket != MP_SOCKET_INVALID) MpSocket_Close(s_net.socket);
+	if (s_net.pending != MP_SOCKET_INVALID) MpSocket_Close(s_net.pending);
 
-	s_net.socket    = MP_SOCKET_INVALID;
-	s_net.connected = false;
+	s_net.socket     = MP_SOCKET_INVALID;
+	s_net.pending    = MP_SOCKET_INVALID;
+	s_net.connected  = false;
+	s_net.recovering = false;
 
 #if defined(_WIN32)
 	WSACleanup();
@@ -353,12 +602,12 @@ static uint32 MpNet_ParseBuffer(void)
 			char body[MP_NET_PAYLOAD + 1];
 
 			if (sscanf(start, "PKT %u %u", &slot, &length) != 2) {
-				MpNet_Fail("the relay sent a malformed packet header");
+				MpNet_LinkDead("the relay sent a malformed packet header");
 				return consumed + headerLength;
 			}
 
 			if (length > MP_NET_PAYLOAD) {
-				MpNet_Fail("the relay sent an oversized packet");
+				MpNet_LinkDead("the relay sent an oversized packet");
 				return consumed + headerLength;
 			}
 
@@ -369,21 +618,59 @@ static uint32 MpNet_ParseBuffer(void)
 			memcpy(body, start + headerLength, length);
 			body[length] = '\0';
 
-			if (MpPacket_Parse(body, &packet)) MpNet_Store((uint8)slot, &packet);
+			/* A packet this build cannot read is the end of the match, said
+			 * out loud.  It used to be dropped in silence, which left the turn
+			 * loop waiting for it for ever -- a frozen screen on both sides
+			 * with nothing on either of them to say why. */
+			if (MpPacket_Parse(body, &packet)) {
+				MpNet_Store((uint8)slot, &packet);
+			} else {
+				MpNet_LinkDead("the other player sent a turn this build cannot read");
+				return consumed + headerLength + length;
+			}
 
 			consumed += headerLength + length;
 			continue;
 		}
 
+		/* The relay's own lines are rare and short, and when a match breaks
+		 * they are the evidence: keep every one of them. */
+		MpNet_Log("mp-net: relay: %.*s", (int)(headerLength - 1), start);
+
 		if (strncmp(start, "READY", 5) == 0) {
 			s_net.ready = true;
+
+			/* The room is full again.  Whether it was us or them who dropped,
+			 * whatever was in flight at that moment is gone: send ours again. */
+			if (s_net.peerGone) {
+				MpNet_Log("mp-net: they are back after %u ms", (unsigned)(Timer_GetTime() - s_net.peerGoneAt));
+				s_net.peerGone = false;
+				s_net.left     = false;
+			}
+			consumed += headerLength;
+			MpNet_ResendWindow();
+			continue;
 		} else if (strncmp(start, "LEFT ", 5) == 0) {
-			if (sscanf(start, "LEFT %u", &slot) == 1) {
+			/* A LEFT naming our own seat is the relay reporting our previous
+			 * incarnation: after a redial the old connection's farewell can
+			 * reach the new one, the room being full again by then.  Taken at
+			 * face value it would have us waiting 150 s for an opponent who
+			 * is right there, and then ending the match. */
+			if (sscanf(start, "LEFT %u", &slot) == 1 && slot == s_net.localSlot) {
+				MpNet_Log("mp-net: the relay said our old seat was left, which it was");
+			} else if (sscanf(start, "LEFT %u", &slot) == 1) {
 				s_net.left     = true;
 				s_net.leftSlot = (uint8)slot;
+				if (!s_net.peerGone) {
+					s_net.peerGone   = true;
+					s_net.peerGoneAt = Timer_GetTime();
+					MpNet_Log("mp-net: the other player dropped, waiting up to %u s for them",
+					          (unsigned)(MP_NET_RECOVER_MS / 1000));
+				}
 			}
 		} else if (strncmp(start, "ERROR ", 6) == 0) {
 			snprintf(s_net.error, sizeof(s_net.error), "%.*s", (int)(headerLength - 7), start + 6);
+			MpNet_Log("mp-net: relay says: %s", s_net.error);
 		}
 		/* WELCOME needs nothing: the slot is what we asked for, and the count is
 		 * only interesting to a lobby. */
@@ -398,11 +685,15 @@ static uint32 MpNet_ParseBuffer(void)
  * Drain the socket.
  *
  * Called from both halves of the transport, so a client that is only sending
- * still notices packets, a disconnection and the relay's own messages.
+ * still notices packets, a disconnection and the relay's own messages.  While
+ * the link is being recovered this is also what drives the redial.
  */
 void MpNet_Pump(void)
 {
-	if (!s_net.connected) return;
+	if (!s_net.connected) {
+		if (s_net.recovering) MpNet_Recover();
+		if (!s_net.connected) return;
+	}
 
 	while (true) {
 		uint32 consumed;
@@ -414,31 +705,38 @@ void MpNet_Pump(void)
 			if (got > 0) {
 				s_net.inUsed += (uint32)got;
 			} else if (got == 0) {
-				MpNet_Fail("the relay closed the connection");
-				s_net.connected = false;
+				MpNet_LinkLost("the relay closed the connection");
 				return;
 			} else if (!MpSocket_WouldBlock() && !MpSocket_Interrupted()) {
-				MpNet_Fail("the connection to the relay broke");
-				s_net.connected = false;
+				MpNet_LinkLost("the connection to the relay broke");
 				return;
 			}
 		} else {
 			got = 0;
 		}
 
+		if (!s_net.connected) return;
+
 		consumed = MpNet_ParseBuffer();
 
-		if (consumed != 0) {
+		if (consumed != 0 && s_net.connected) {
 			memmove(s_net.in, s_net.in + consumed, s_net.inUsed - consumed);
 			s_net.inUsed -= consumed;
 		}
 
 		/* Nothing new to read and nothing left to parse. */
 		if (got <= 0 && consumed == 0) break;
+		if (!s_net.connected) break;
 	}
+
+	if (s_net.connected && Timer_GetTime() - s_net.lastSent > MP_NET_KEEPALIVE_MS) MpNet_Keepalive();
 }
 
-static bool MpTransport_Net_Send(uint8 slot, const MpPacket *packet)
+/* -------------------------------------------------------------------------
+ * The transport.
+ * ------------------------------------------------------------------------- */
+
+static bool MpNet_SendFrame(const MpPacket *packet, bool pumpWhileBlocked)
 {
 	char body[MP_NET_PAYLOAD];
 	char frame[MP_NET_PAYLOAD + 64];
@@ -446,18 +744,12 @@ static bool MpTransport_Net_Send(uint8 slot, const MpPacket *packet)
 	uint32 total;
 	uint32 sent = 0;
 
-	MpNet_Pump();
+	used = MpPacket_Format(body, sizeof(body), packet);
+	if (used == 0) {
+		MpNet_LinkDead("a turn did not fit on the wire");
+		return false;
+	}
 
-	if (!s_net.connected) return false;
-
-	/* Our own packets go straight into the window rather than round trip through
-	 * the relay: we are one of the players, and waiting to hear our own move
-	 * back would put a whole ping into every turn for no reason. */
-	MpNet_Store(slot, packet);
-
-	if (slot != s_net.localSlot) return true;
-
-	used  = MpPacket_Format(body, sizeof(body), packet);
 	total = (uint32)snprintf(frame, sizeof(frame), "PKT %u\n", (unsigned)used);
 
 	memcpy(frame + total, body, used);
@@ -474,16 +766,63 @@ static bool MpTransport_Net_Send(uint8 slot, const MpPacket *packet)
 		if (wrote < 0 && (MpSocket_WouldBlock() || MpSocket_Interrupted())) {
 			/* The relay is behind on reading.  There is nothing useful to do
 			 * with the time -- the turn cannot close until this is out. */
-			MpNet_Pump();
+			if (pumpWhileBlocked) MpNet_Pump(); else msleep(1);
+			if (!s_net.connected) return false;
 			continue;
 		}
 
-		MpNet_Fail("could not send a packet to the relay");
-		s_net.connected = false;
+		MpNet_LinkLost("could not send a packet to the relay");
 		return false;
 	}
 
+	s_net.lastSent = Timer_GetTime();
+
 	return true;
+}
+
+/* Our newest turn, sent again, so the relay hears from us while we wait. */
+static void MpNet_Keepalive(void)
+{
+	uint32 hi = 0;
+	uint32 i;
+	const MpPacket *newest = NULL;
+
+	for (i = 0; i < MP_NET_WINDOW; i++) {
+		if (!s_net.window[s_net.localSlot][i].used) continue;
+		if (newest == NULL || s_net.window[s_net.localSlot][i].turn >= hi) {
+			hi     = s_net.window[s_net.localSlot][i].turn;
+			newest = &s_net.window[s_net.localSlot][i].packet;
+		}
+	}
+
+	if (newest == NULL) {
+		s_net.lastSent = Timer_GetTime();
+		return;
+	}
+
+	MpNet_SendFrame(newest, false);
+}
+
+static bool MpTransport_Net_Send(uint8 slot, const MpPacket *packet)
+{
+	MpNet_Pump();
+
+	if (!s_net.connected) return false;
+
+	/* Our own packets go straight into the window rather than round trip through
+	 * the relay: we are one of the players, and waiting to hear our own move
+	 * back would put a whole ping into every turn for no reason. */
+	MpNet_Store(slot, packet);
+
+	if (slot != s_net.localSlot) return true;
+
+	if (s_net.dropAt != 0 && packet->turn >= s_net.dropAt) {
+		s_net.dropAt = 0;
+		MpNet_LinkLost("--mp-drop-at cut the link");
+		return false;
+	}
+
+	return MpNet_SendFrame(packet, true);
 }
 
 static bool MpTransport_Net_Poll(uint8 slot, uint32 turn, MpPacket *packet)

@@ -923,6 +923,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --auto-repair-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --starport-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --pathfinder-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --packet-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --lobby-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --selection-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish-self-test=200000
@@ -974,6 +975,64 @@ checksum comparison needs the other client's packet and no packet ever came.
 where it used to answer nothing. Note that the relay's own `idleTimeout` is
 120 s ([tools/relay/relay.go](tools/relay/relay.go)), so a match nobody sends
 packets for that long is closed from under both of them.
+
+**A lost link is a stall, not the end.** `MpNet_*` in [mpnet.c](src/mpnet.c)
+recovers on its own, client-side, against the relay as deployed: when the
+socket dies the world stands still and the client dials again every 2 s for
+150 s — longer than the relay's 120 s idle timeout, because a link that died
+without a FIN leaves a ghost in the slot until the relay gives up on it, and a
+rejoin before that is refused with *slot is taken*. When the relay says `LEFT`
+the world stands still for the same 150 s waiting for them to come back. Each
+`READY` (the relay sends one every time the room is full again) makes both
+sides resend every turn of theirs the 64-turn window still holds: a match
+stalled on a dead link never advanced, so the gap is at most `delay` turns, and
+a packet the other side already had is stored again with the same bytes. The
+redial is a non-blocking start/poll pair so a frame is never held for a SYN.
+`MpNet_IsConnected()` answers true *while recovering* and `MpNet_HasLeft()`
+answers true *only once the wait ran out*, which is what turns "the match is
+over" into "the match is waiting" for every caller — the live loop and the
+turnloop harness alike — without either being told. The corner of the screen
+says `LINK LOST -- RECONNECTING 12s` or `THEY DROPPED -- WAITING 12s` in red
+meanwhile, and `sync N, relinked 1` afterwards. `--mp-drop-at=TURN` makes a
+client cut its own link when its packet for that turn goes out, which is how
+this is tested without a cable to pull.
+
+Three things that came out of testing it, so nobody chases them again. **The
+side that waits has to keep talking**: it sends nothing while stalled, and the
+relay drops a client it has not heard from in 120 s, so the player who stayed
+was being thrown out for waiting; every 45 s of silence the newest own turn is
+sent again, which the relay counts as life and the other side stores over the
+same bytes. **A `LEFT` about our own seat is our previous incarnation** — after
+a redial the old connection's farewell can reach the new one — and is logged
+and ignored rather than taken as the opponent leaving. And **a `LEFT` right
+before `DONE` is the other side finishing first**: the harness's two processes
+do not end in the same millisecond, so the last one standing logs "the other
+player dropped" as it writes its own last lines, which is the order of events
+and not a fault. Every line the relay sends is logged as `mp-net: relay: ...`.
+
+**A turn that did not fit on the wire was cut off in silence.** The wire buffer
+was 8192 bytes; the worst turn — 32 commands each naming 102 recipients — is a
+little over 14 KB. `MpPacket_Format()` truncated (and, since `snprintf` reports
+the length it wanted, handed back a `used` past the end of the buffer for the
+sender to `memcpy` from), the receiver's `MpPacket_Parse()` refused the stump,
+and the packet was dropped without a word: the turn loop then waited for it
+for ever, on both sides, with nothing on either screen. The buffer is 16 KB,
+`Format` returns 0 for a packet that does not fit and the sender ends the match
+saying so, and a packet the receiver cannot read ends the match saying so.
+`--packet-self-test` is the guard: the largest packet must fit in 16 KB and must
+*not* fit in 8192 (so the constant can go back down when that stops being
+true), and the largest, an ordinary and an empty packet must all come back byte
+for byte. Whether this was the cause of any real break is not known — by hand,
+32 full commands in one 8-tick turn is not reachable — but it was the one place
+where a match could freeze on both sides without a word, so it is closed.
+
+**Whatever a live match says goes to `mp-live.log`** in the personal data
+directory (`~/Library/Application Support/OpenDUNE/` on macOS) as well as to
+the console — the console of a windowed game goes nowhere, and the one time
+the reason a match broke was needed it had been printed to a terminal nobody
+had open. The net layer's own lines (`mp-net: link lost ...`, `relinked after
+...`, `the other player dropped ...`, `they are back ...`) go through the same
+file. When a match breaks, that file, from both machines, is the evidence.
 
 **Guards on match-shared state key on `Match_IsActive()`, not `MpTurn_IsActive()`.**
 The turn loop starts several hundred milliseconds after the match is built, and
@@ -1034,6 +1093,17 @@ rather than re-addressing an outbox whose turn has already been sent.
 ```bash
 ./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=1,/tmp/net &
 ./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=8000,500 --mp-net=2,/tmp/net &
+```
+
+Link recovery is checked the same way, through a relay, with one side told to
+cut its own link mid-match; both must still reach `DONE` with identical
+checksum logs, and the log of the side that dropped must say `relinked`:
+
+```bash
+tools/relay/relay -listen 127.0.0.1:31337 &
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=4000,500 --mp-relay=127.0.0.1:31337,r1,1 > a.log 2>&1 &
+./opendune --skirmish=ordos,harkonnen --human=1,2 --mp-turnloop=4000,500 --mp-relay=127.0.0.1:31337,r1,2 --mp-drop-at=200 > b.log 2>&1
+diff <(grep '^mp-checksum' a.log) <(grep '^mp-checksum' b.log) && grep 'mp-net:' a.log b.log
 ```
 
 `--mp-relay=host[:port],room[,slot]` is the same two processes over a real TCP

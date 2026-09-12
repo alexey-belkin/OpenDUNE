@@ -149,6 +149,8 @@ static int s_techTreeSelfTestResult = -1;
 static bool s_autoRepairSelfTest = false;
 static int s_autoRepairSelfTestResult = -1;
 static bool s_configHash = false;
+static bool s_packetSelfTest = false;
+static int s_packetSelfTestResult = -1;
 static bool s_starportSelfTest = false;
 static int s_starportSelfTestResult = -1;
 /* Extra simulation passes per loop iteration, on top of whatever the Game
@@ -249,6 +251,29 @@ static uint32 s_mpLiveDumpTick = 0xFFFFFFFF;   /*!< Zero means the starting posi
 static bool s_mpDesyncDump = false;            /*!< Keep a rolling dump of recent turns. */
 
 static void PrintToConsole(const char *str);
+
+/**
+ * Everything a live match says, kept on disk as well.
+ *
+ * PrintToConsole() goes to stdout, and in a windowed game stdout goes nowhere:
+ * the one time the reason a match broke was needed, it had been printed to a
+ * terminal nobody had open.  mp-live.log in the personal data directory holds
+ * the same lines, appended, so the next such evening can be read afterwards.
+ */
+static void MpGame_Log(const char *line)
+{
+	static bool opened = false;
+	FILE *f;
+
+	PrintToConsole(line);
+
+	f = fopendatadir(SEARCHDIR_PERSONAL_DATA_DIR, "mp-live.log", opened ? "a" : "w");
+	if (f == NULL) return;
+	opened = true;
+
+	fprintf(f, "%s\n", line);
+	fclose(f);
+}
 
 uint16 g_validateStrictIfZero = 0; /*!< 0 = strict validation, basically: no-cheat-mode. */
 bool g_running = true; /*!< true if game needs to keep running; false to stop the game. */
@@ -1469,13 +1494,15 @@ static void MpGame_Step(void)
 				snprintf(line, sizeof(line), "mp-live: the match ended at turn %u (%s)",
 				         (unsigned)MpTurn_GetTurn(),
 				         MpNet_IsConnected() ? "the other player left" : MpNet_GetError());
-				PrintToConsole(line);
+				MpGame_Log(line);
 
 				/* Said on screen too, and permanently: this line is the only
 				 * thing between a dead match and a player who thinks the
 				 * opponent has gone quiet. */
+				/* "They never returned" rather than "they left": the wait for
+				 * them ran out, which is not the same as them quitting. */
 				snprintf(s_mpLiveEnded, sizeof(s_mpLiveEnded), "%s",
-				         MpNet_IsConnected() ? "THEY LEFT" : "RELAY LOST");
+				         MpNet_IsConnected() ? "THEY NEVER RETURNED" : "RELAY LOST");
 				s_mpLiveEndedTurn = MpTurn_GetTurn();
 				MpTurn_End();
 				Timer_ClaimAnimClock(false);
@@ -1537,7 +1564,7 @@ static void MpGame_Step(void)
 			snprintf(line, sizeof(line), "mp-live: tick %u turn %u, %u ms stalled so far, rng %08x lcg %08x",
 			         (unsigned)s_mpLiveSteps, (unsigned)MpTurn_GetTurn(), (unsigned)s_mpLiveStalledMs,
 			         (unsigned)Tools_Random_GetSeed(), (unsigned)Tools_RandomLCG_GetSeed());
-			PrintToConsole(line);
+			MpGame_Log(line);
 
 			s_mpLiveNextSample += s_mpLiveSampleStep;
 		}
@@ -1552,12 +1579,12 @@ static void MpGame_Step(void)
 			snprintf(line, sizeof(line), "mp-live: DESYNC at turn %u (tick %u), about: %s",
 			         (unsigned)desyncTurn, (unsigned)(desyncTurn * MP_TURN_LENGTH_DEFAULT),
 			         MpTurn_GetDesyncChunks());
-			PrintToConsole(line);
+			MpGame_Log(line);
 
 			if (s_mpDesyncDump) {
 				snprintf(line, sizeof(line), "mp-live: both players' turn %u is in mpdesync-s*-turn%u.bin",
 				         (unsigned)desyncTurn, (unsigned)desyncTurn);
-				PrintToConsole(line);
+				MpGame_Log(line);
 			}
 
 			/* Said once, then played on.  Stopping here would be the honest
@@ -1604,9 +1631,36 @@ const char *MpGame_GetSyncLine(uint8 *colour)
 		return line;
 	}
 
-	if (colour != NULL) *colour = 4;
-	snprintf(line, sizeof(line), "sync %u", (unsigned)MpTurn_GetTurn());
-	return line;
+	{
+		uint32 sinceMs = 0;
+		uint32 relinks = 0;
+
+		/* The link, while it is being put back.  The world stands still for
+		 * this, and a player watching a frozen screen deserves to know it is
+		 * being worked on rather than that it is over. */
+		switch (MpNet_GetLinkState(&sinceMs, &relinks)) {
+			case MP_LINK_RECONNECTING:
+				if (colour != NULL) *colour = 8;
+				snprintf(line, sizeof(line), "LINK LOST -- RECONNECTING %us", (unsigned)(sinceMs / 1000));
+				return line;
+
+			case MP_LINK_PEER_GONE:
+				if (colour != NULL) *colour = 8;
+				snprintf(line, sizeof(line), "THEY DROPPED -- WAITING %us", (unsigned)(sinceMs / 1000));
+				return line;
+
+			default:
+				break;
+		}
+
+		if (colour != NULL) *colour = 4;
+		if (relinks != 0) {
+			snprintf(line, sizeof(line), "sync %u, relinked %u", (unsigned)MpTurn_GetTurn(), (unsigned)relinks);
+		} else {
+			snprintf(line, sizeof(line), "sync %u", (unsigned)MpTurn_GetTurn());
+		}
+		return line;
+	}
 }
 
 /**
@@ -1769,16 +1823,17 @@ static bool MpGame_Begin(void)
 
 	MpGame_Notice("CONNECTING TO THE RELAY", s_mpRelayHost, NULL);
 
+	MpNet_SetLogger(&MpGame_Log);
 	if (!MpNet_Connect(s_mpRelayHost, s_mpRelayPort, s_mpRelayRoom, s_mpTurnSlot)) {
 		snprintf(line, sizeof(line), "mp-live: FAIL (%s)", MpNet_GetError());
-		PrintToConsole(line);
+		MpGame_Log(line);
 		MpGame_Failed(MpNet_GetError());
 		return false;
 	}
 
 	snprintf(line, sizeof(line), "mp-live: room %s, slot %u, seed %u -- waiting for the other player",
 	         s_mpRelayRoom, (unsigned)(s_mpTurnSlot + 1), (unsigned)s_mpLiveSeed);
-	PrintToConsole(line);
+	MpGame_Log(line);
 
 	snprintf(waiting, sizeof(waiting), "YOU ARE PLAYER %u -- THEY MUST BE THE OTHER ONE",
 	         (unsigned)(s_mpTurnSlot + 1));
@@ -1796,7 +1851,7 @@ static bool MpGame_Begin(void)
 
 			snprintf(line, sizeof(line), "mp-live: FAIL (%s)",
 			         MpNet_IsConnected() ? "the other player never joined" : MpNet_GetError());
-			PrintToConsole(line);
+			MpGame_Log(line);
 			MpNet_Disconnect();
 			MpGame_Failed(reason);
 			return false;
@@ -1882,7 +1937,7 @@ static bool MpGame_Begin(void)
 	snprintf(line, sizeof(line), "mp-live: playing, tl%u d%u at x%u, viewpoint slot %u",
 	         (unsigned)s_mpTurnLength, (unsigned)MpTurn_GetDelay(),
 	         (unsigned)GameLoop_GetSpeedFactor(), (unsigned)(s_mpTurnSlot + 1));
-	PrintToConsole(line);
+	MpGame_Log(line);
 
 	return true;
 }
@@ -4417,6 +4472,13 @@ static void GameLoop_Main(void)
 		return;
 	}
 
+	if (s_packetSelfTest) {
+		s_packetSelfTestResult = MpPacket_RunRegressionTest();
+		PrintToConsole((s_packetSelfTestResult == 1) ? "packet-self-test: PASS"
+		                                             : "packet-self-test: FAIL");
+		return;
+	}
+
 	/* Everything two players must agree about, in one screen, without a relay
 	 * and without an opponent.  A digest that differs is why they never met;
 	 * the lines under it are where to look, since each of them is an
@@ -4558,7 +4620,8 @@ static void GameLoop_Main(void)
 		if (s_mpRelayHost[0] != '\0') {
 			uint32 until;
 
-			if (!MpNet_Connect(s_mpRelayHost, s_mpRelayPort, s_mpRelayRoom, s_mpTurnSlot)) {
+			MpNet_SetLogger(&MpGame_Log);
+	if (!MpNet_Connect(s_mpRelayHost, s_mpRelayPort, s_mpRelayRoom, s_mpTurnSlot)) {
 				snprintf(line, sizeof(line), "mp-turnloop: FAIL (%s)", MpNet_GetError());
 				PrintToConsole(line);
 				return;
@@ -5531,6 +5594,7 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--tech-tree-self-test") == 0) s_techTreeSelfTest = true;
 			if (strcmp(argv[i], "--auto-repair-self-test") == 0) s_autoRepairSelfTest = true;
 			if (strcmp(argv[i], "--config-hash") == 0) s_configHash = true;
+			if (strcmp(argv[i], "--packet-self-test") == 0) s_packetSelfTest = true;
 			if (strcmp(argv[i], "--starport-self-test") == 0) s_starportSelfTest = true;
 			/* Same reason as --pathfinder=: opendune.ini is searched in the
 			 * player's Application Support directory first, so a copy there
@@ -5665,6 +5729,10 @@ int main(int argc, char **argv)
 
 				sscanf(argv[i] + 12, "%u", &step);
 				if (step != 0) s_mpLiveSampleStep = step;
+			} else if (strncmp(argv[i], "--mp-drop-at=", 13) == 0) {
+				/* Cut our own link when our packet for this turn goes out, so
+				 * link recovery can be tested without a cable to pull. */
+				MpNet_SetDropAt((uint32)strtoul(argv[i] + 13, NULL, 10));
 			} else if (strncmp(argv[i], "--mp-wait=", 10) == 0) {
 				/* How long either transport waits for a packet that has not
 				 * come, and how long the lobby waits for the second player. */
@@ -5835,6 +5903,7 @@ int main(int argc, char **argv)
 	if (s_techTreeSelfTest && s_techTreeSelfTestResult != 1) return 1;
 	if (s_autoRepairSelfTest && s_autoRepairSelfTestResult != 1) return 1;
 	if (s_starportSelfTest && s_starportSelfTestResult != 1) return 1;
+	if (s_packetSelfTest && s_packetSelfTestResult != 1) return 1;
 	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;
 	if (s_moveRulesSelfTest && s_moveRulesSelfTestResult != 1) return 1;
 	if (s_lobbySelfTest && s_lobbySelfTestResult != 1) return 1;
