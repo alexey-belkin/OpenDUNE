@@ -2798,7 +2798,7 @@ static int BuildQueue_SelfTest(void)
 	Structure *yard;
 	House *h;
 	uint8 houseID;
-	uint16 spot[3];
+	uint16 spot[4];
 	uint16 found;
 	uint16 packed;
 	uint16 credits;
@@ -2827,20 +2827,42 @@ static int BuildQueue_SelfTest(void)
 	 * answer changes as the base grows, and three separate tiles cannot make
 	 * each other illegal: concrete refuses concrete, not its neighbours. */
 	found = 0;
-	for (packed = 0; packed < 64 * 64 && found < 3; packed++) {
+	for (packed = 0; packed < 64 * 64 && found < 4; packed++) {
 		if (!Map_IsValidPosition(packed)) continue;
 		if (Object_GetByPackedTile(packed) != NULL) continue;
 		if (Structure_IsValidBuildLocation(packed, STRUCTURE_SLAB_1x1, houseID) == 0) continue;
 		spot[found++] = packed;
 	}
-	if (found < 3) return BuildQueue_Failed("fewer than three legal slab spots around the base", found);
+	if (found < 4) return BuildQueue_Failed("fewer than four legal slab spots around the base", found);
 
 	/* Ordering.  The first order starts the build, the rest queue behind it. */
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < 4; i++) {
 		if (!Structure_Queue_AddOrder(yard)) return BuildQueue_Failed("an order was refused", i);
 	}
-	if (Structure_Queue_GetOrderCount(yard) != 3) return BuildQueue_Failed("three orders did not count as three", Structure_Queue_GetOrderCount(yard));
+	if (Structure_Queue_GetOrderCount(yard) != 4) return BuildQueue_Failed("four orders did not count as four", Structure_Queue_GetOrderCount(yard));
 	if (Structure_Queue_GetReadyCount(yard) != 0) return BuildQueue_Failed("something was ready before anything was built", Structure_Queue_GetReadyCount(yard));
+
+	/* The one that was reported from a real match: the first building is
+	 * finished and on the shelf, the yard is already at work on the second,
+	 * the panel offers the first for placing -- and the click gave a sound and
+	 * no building, because the placement looked at the bench before the shelf
+	 * and found the bench busy.  A finished building must go down while the
+	 * next one is being built; that is the whole point of a shelf. */
+	for (i = 0; i < 4000; i++) {
+		if (Structure_Queue_GetReadyCount(yard) == 1 && yard->o.linkedID != 0xFF && yard->countDown != 0) break;
+		MpHarness_Step();
+	}
+	if (i == 4000) return BuildQueue_Failed("the yard never had one on the shelf and one on the bench at once", Structure_Queue_GetReadyCount(yard));
+	{
+		uint16 type = 0xFFFF;
+
+		if (Structure_Queue_PlaceReady(yard, spot[3], &type) == NULL) {
+			return BuildQueue_Failed("a finished building could not be placed while the next was being built", spot[3]);
+		}
+		if (type != STRUCTURE_SLAB_1x1) return BuildQueue_Failed("something other than a slab came off the shelf", type);
+		if (yard->o.linkedID == 0xFF || yard->countDown == 0) return BuildQueue_Failed("placing from the shelf disturbed the bench", yard->countDown);
+		if (Structure_Queue_GetOrderCount(yard) != 3) return BuildQueue_Failed("placing from the shelf did not take one order off", Structure_Queue_GetOrderCount(yard));
+	}
 
 	/* And the point of it: the yard does not stop at the first one.  Without
 	 * Structure_Queue_Stash() this waits out the whole limit at a count of 1. */

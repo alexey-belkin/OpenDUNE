@@ -678,6 +678,17 @@ outside a match a submitted command runs immediately.
 a stack there is no single `Structure` to point at, and the only thing anything
 ever read off that pointer was the house.
 
+**The shelf is looked at before the bench.** `Structure_Queue_PlaceReady()`
+checked `linkedID` first and refused when the yard was still counting down --
+right for the one building a yard used to hold, and wrong the moment there was
+a stack: the usual state of a queue is one building finished and stashed and
+the next one on the bench, and the panel offered the stashed one while the
+placement refused it. In a match that was the placement sound and no building
+on a spot that was plainly legal, until the whole stack was done. The
+self-test now orders four, waits for exactly that state (one on the shelf,
+`countDown != 0` on the bench) and places from it; the old order fails it by
+name.
+
 **A slab takes a quarter of the time of a large slab**, which it did not.
 Westwood gave `Concrete` and `Concrete4` a `buildTime` of 16 apiece against
 build credits of 5 and 20 — invisible in a campaign where a slab is laid once,

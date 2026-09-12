@@ -365,42 +365,49 @@ Structure *Structure_Queue_PlaceReady(Structure *yard, uint16 packed, uint16 *ty
 
 	queue = Structure_Queue_Get(yard);
 
-	if (yard->o.linkedID != STRUCTURE_INVALID) {
-		/* Only what the yard has finished.  Placing a building still under
-		 * construction leaves the yard counting down towards an object it no
-		 * longer has, and it never builds anything again -- which is what the
-		 * first human-versus-AI run did for 40000 ticks. */
-		if (yard->countDown != 0) return NULL;
+	/* The shelf first.  The usual state of a yard with a queue is one building
+	 * finished and stashed and the next one on the bench, and the bench being
+	 * busy is no reason to keep the finished one: that is what the shelf is
+	 * for.  Looked at the other way round -- bench first, and a busy bench a
+	 * refusal -- a player heard the placement sound and got no building until
+	 * the whole stack was done, which in a match read as a spot that was fine
+	 * and would not take. */
+	if (queue != NULL && queue->ready != 0 && queue->readyType < STRUCTURE_MAX) {
+		if (type != NULL) *type = queue->readyType;
 
-		s = Structure_Get_ByIndex(yard->o.linkedID);
+		s = Structure_Create(STRUCTURE_INDEX_INVALID, (uint8)queue->readyType, yard->o.houseID, 0xFFFF);
 		if (s == NULL) return NULL;
-
-		if (type != NULL) *type = s->o.type;
 
 		/* A refused spot leaves the building with the yard, so the player can
 		 * try somewhere else -- which is also what keeps a failed command
 		 * harmless. */
-		if (!Structure_Place(s, packed)) return NULL;
+		if (!Structure_Place(s, packed)) {
+			Structure_Free(s);
+			return NULL;
+		}
 
-		yard->o.linkedID = STRUCTURE_INVALID;
+		queue->ready--;
+		if (queue->ready == 0) queue->readyType = 0xFFFF;
+
 		return s;
 	}
 
-	if (queue == NULL || queue->ready == 0 || queue->readyType >= STRUCTURE_MAX) return NULL;
+	if (yard->o.linkedID == STRUCTURE_INVALID) return NULL;
 
-	if (type != NULL) *type = queue->readyType;
+	/* Only what the yard has finished.  Placing a building still under
+	 * construction leaves the yard counting down towards an object it no
+	 * longer has, and it never builds anything again -- which is what the
+	 * first human-versus-AI run did for 40000 ticks. */
+	if (yard->countDown != 0) return NULL;
 
-	s = Structure_Create(STRUCTURE_INDEX_INVALID, (uint8)queue->readyType, yard->o.houseID, 0xFFFF);
+	s = Structure_Get_ByIndex(yard->o.linkedID);
 	if (s == NULL) return NULL;
 
-	if (!Structure_Place(s, packed)) {
-		Structure_Free(s);
-		return NULL;
-	}
+	if (type != NULL) *type = s->o.type;
 
-	queue->ready--;
-	if (queue->ready == 0) queue->readyType = 0xFFFF;
+	if (!Structure_Place(s, packed)) return NULL;
 
+	yard->o.linkedID = STRUCTURE_INVALID;
 	return s;
 }
 
