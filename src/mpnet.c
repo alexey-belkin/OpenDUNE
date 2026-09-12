@@ -11,6 +11,8 @@
 	#define MP_SOCKET_INVALID INVALID_SOCKET
 	#define MpSocket_Close(s) closesocket(s)
 	#define MpSocket_WouldBlock() (WSAGetLastError() == WSAEWOULDBLOCK)
+	#define MpSocket_Interrupted() (WSAGetLastError() == WSAEINTR)
+	#define MpSocket_InProgress() (WSAGetLastError() == WSAEWOULDBLOCK)
 #else
 	#include <errno.h>
 	#include <fcntl.h>
@@ -22,7 +24,11 @@
 	typedef int MpSocket;
 	#define MP_SOCKET_INVALID (-1)
 	#define MpSocket_Close(s) close(s)
+	#include <sys/select.h>
+	#include <sys/time.h>
 	#define MpSocket_WouldBlock() (errno == EAGAIN || errno == EWOULDBLOCK)
+	#define MpSocket_Interrupted() (errno == EINTR)
+	#define MpSocket_InProgress() (errno == EINPROGRESS)
 #endif /* _WIN32 */
 
 #include "types.h"
@@ -30,6 +36,8 @@
 #include "os/sleep.h"
 
 #include "mpnet.h"
+
+#include "timer.h"
 
 #include "house.h"
 #include "match.h"
@@ -64,6 +72,116 @@ static struct {
 		MpPacket packet;
 	} window[MATCH_SLOT_MAX][MP_NET_WINDOW];
 } s_net;
+
+/* Long enough for a relay on the other side of the country, short enough that a
+ * player who typed the address wrong is told so rather than left watching. */
+#define MP_NET_CONNECT_MS 5000
+
+static void MpSocket_SetNonBlocking(MpSocket sock)
+{
+#if defined(_WIN32)
+	u_long mode = 1;
+
+	ioctlsocket(sock, FIONBIO, &mode);
+#else
+	fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
+#endif /* _WIN32 */
+}
+
+/**
+ * Dial one address, waiting up to MP_NET_CONNECT_MS for the handshake.
+ *
+ * **This may not be a blocking connect(), and that is the whole of it.** The
+ * game arms a 60 Hz SIGALRM -- Timer_InterruptResume() in timer.c, with
+ * sa_flags 0, so no SA_RESTART -- which means every blocking system call in the
+ * process is interrupted about every 16 ms and nothing restarts it for us. A
+ * connect() to anything further away than loopback takes longer than that, so
+ * it returned EINTR every single time, and the three retries above could not
+ * help: an interrupted connect carries on in the background, and a fresh socket
+ * is interrupted just the same. Reported to the player as "could not reach the
+ * relay", which is a sentence about the server and was never true.
+ *
+ * It is also why no test could see it. A relay on 127.0.0.1 connects before the
+ * first signal arrives, and that is what --lobby-play and tools/mpduel.sh have
+ * always been pointed at. Only a real relay 57 ms away fails.
+ *
+ * select() is restarted here on EINTR, which is exactly what connect() cannot
+ * be. The socket is left non-blocking afterwards, the way the rest of the
+ * module wants it.
+ */
+static bool MpSocket_ConnectWait(MpSocket sock, const struct sockaddr *addr, uint32 addrLen)
+{
+	const uint32 until = Timer_GetTime() + MP_NET_CONNECT_MS;
+	int err = 0;
+
+	MpSocket_SetNonBlocking(sock);
+
+	if (connect(sock, addr, (socklen_t)addrLen) == 0) return true;
+	if (!MpSocket_InProgress()) return false;
+
+	while (true) {
+		const uint32 now = Timer_GetTime();
+		struct timeval tv;
+		fd_set writable;
+		int ready;
+
+		if (now >= until) return false;
+
+		tv.tv_sec  = (long)((until - now) / 1000);
+		tv.tv_usec = (long)(((until - now) % 1000) * 1000);
+
+		FD_ZERO(&writable);
+		FD_SET(sock, &writable);
+
+		ready = select((int)sock + 1, NULL, &writable, NULL, &tv);
+
+		if (ready > 0) break;
+		if (ready == 0) return false;
+		if (!MpSocket_Interrupted()) return false;
+
+		/* The 60 Hz timer, not the network.  Wait out what is left of it. */
+	}
+
+	/* A socket that became writable may still have failed: the error is
+	 * collected here rather than reported by connect(). */
+	{
+#if defined(_WIN32)
+		int errLen = sizeof(err);
+#else
+		socklen_t errLen = sizeof(err);
+#endif /* _WIN32 */
+
+		if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char *)&err, &errLen) != 0) return false;
+	}
+
+	return err == 0;
+}
+
+/**
+ * Put a whole request on the socket, which is already non-blocking.
+ */
+static bool MpSocket_SendAll(MpSocket sock, const char *data, uint32 total)
+{
+	uint32 sent = 0;
+
+	while (sent < total) {
+		const int wrote = (int)send(sock, data + sent, (int)(total - sent), 0);
+
+		if (wrote > 0) {
+			sent += (uint32)wrote;
+			continue;
+		}
+
+		if (wrote < 0 && (MpSocket_WouldBlock() || MpSocket_Interrupted())) {
+			msleep(1);
+			continue;
+		}
+
+		return false;
+	}
+
+	return true;
+}
 
 static void MpNet_Fail(const char *what)
 {
@@ -148,7 +266,7 @@ bool MpNet_Connect(const char *host, uint16 port, const char *room, uint8 slot)
 			sock = socket(entry->ai_family, entry->ai_socktype, entry->ai_protocol);
 			if (sock == MP_SOCKET_INVALID) continue;
 
-			if (connect(sock, entry->ai_addr, (int)entry->ai_addrlen) == 0) break;
+			if (MpSocket_ConnectWait(sock, entry->ai_addr, (uint32)entry->ai_addrlen)) break;
 
 			MpSocket_Close(sock);
 			sock = MP_SOCKET_INVALID;
@@ -168,20 +286,11 @@ bool MpNet_Connect(const char *host, uint16 port, const char *room, uint8 slot)
 
 	snprintf(request, sizeof(request), "JOIN %s %u\n", room, (unsigned)slot);
 
-	if (send(sock, request, (int)strlen(request), 0) < 0) {
+	if (!MpSocket_SendAll(sock, request, (uint32)strlen(request))) {
 		MpSocket_Close(sock);
 		MpNet_Fail("could not send the join request");
 		return false;
 	}
-
-#if defined(_WIN32)
-	{
-		u_long mode = 1;
-		ioctlsocket(sock, FIONBIO, &mode);
-	}
-#else
-	fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
-#endif /* _WIN32 */
 
 	s_net.socket    = sock;
 	s_net.connected = true;
@@ -308,7 +417,7 @@ void MpNet_Pump(void)
 				MpNet_Fail("the relay closed the connection");
 				s_net.connected = false;
 				return;
-			} else if (!MpSocket_WouldBlock()) {
+			} else if (!MpSocket_WouldBlock() && !MpSocket_Interrupted()) {
 				MpNet_Fail("the connection to the relay broke");
 				s_net.connected = false;
 				return;
@@ -362,7 +471,7 @@ static bool MpTransport_Net_Send(uint8 slot, const MpPacket *packet)
 			continue;
 		}
 
-		if (wrote < 0 && MpSocket_WouldBlock()) {
+		if (wrote < 0 && (MpSocket_WouldBlock() || MpSocket_Interrupted())) {
 			/* The relay is behind on reading.  There is nothing useful to do
 			 * with the time -- the turn cannot close until this is out. */
 			MpNet_Pump();

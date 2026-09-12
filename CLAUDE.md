@@ -66,6 +66,18 @@ command to `@executable_path/../Frameworks/`, re-signs ad-hoc (an
 image whose signature does not match), and refuses to write the archive if
 anything is still linked outside the bundle.
 
+**It signs the bundle ad-hoc**, and that is not cosmetic: an unsigned app does
+not open on a machine that did not build it. The signing used to live inside
+the SDL-vendoring branch — there because `install_name_tool` invalidates the
+linker's signature — so the statically linked Intel package, which vendors
+nothing, went out unsigned every single time and the person on the other end
+saw a refusal rather than a game. It is its own step now, after the data and
+the load-command rewrite, and the archive is verified to still carry it.
+Ad-hoc is not a developer identity and does not make the app trusted: the
+receiving machine still has to be told to allow it, which INSTALL.txt explains.
+What it buys is a code identity and a sealed resource directory — the
+difference between "allow this developer?" and "the app is damaged".
+
 Then it verifies what it is about to hand over rather than the tree it came
 from: the zip is unpacked into a scratch directory and
 `--combat-balance-self-test`, `--selection-self-test` and `--mp-replay` are run
@@ -1146,6 +1158,24 @@ lands back in the menu now, with the lobby's rows still filled in.
 **Only the logic is verified.** `--lobby-self-test` and `--lobby-play` cover the
 rule and the handoff, and the menu draws under the dummy video driver without
 crashing, but no human has seen the lobby window or clicked a row.
+
+**And a relay on 127.0.0.1 is not a relay**, which is how the lobby shipped
+unable to reach one. `MpNet_Connect()` dialled with a blocking `connect()`
+while the game has a 60 Hz `SIGALRM` armed with no `SA_RESTART`
+(`Timer_InterruptResume()` in [timer.c](src/timer.c)) — so every call to it was
+interrupted about 16 ms in, returned `EINTR`, and was reported as *could not
+reach the relay*: a sentence about the server that was never true. Retrying
+could not help either, because an interrupted `connect()` carries on in the
+background and a fresh socket is interrupted just the same. A loopback connect
+returns before the first signal arrives, so every local test passed and only a
+real relay 57 ms away failed. It connects non-blocking now and waits on
+`select()`, which *is* restartable; `MpSocket_Interrupted()` is also accepted
+in the recv and send loops, where an `EINTR` had the same two names, *the
+connection to the relay broke* and *could not send a packet*. The lesson for
+anything else that blocks: **on Unix this process has no uninterrupted system
+calls**, and Windows does not share the problem because its timer is a thread.
+Check a network change against a real relay — `tools/mpduel.sh` and
+`--lobby-play` both point at loopback by default.
 
 ## Conventions
 
