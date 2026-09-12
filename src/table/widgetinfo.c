@@ -321,7 +321,11 @@ WidgetInfo g_table_gameWidgetInfo[25] = {
 	}
 };
 
-WidgetInfo g_table_factoryWidgetInfo[13] = {
+WidgetInfo g_table_factoryWidgetInfo[10] = {
+	/* One list cell.  Position and shortcut are filled in per cell by
+	 * GUI_FactoryWindow_CreateWidgets(), which lays the grid out from the number
+	 * of items there turn out to be; what is kept here is the flag word, so that
+	 * a cell goes on behaving exactly as a row of the old strip did. */
 	{ /* 0 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Production_List_Click,
@@ -334,67 +338,34 @@ WidgetInfo g_table_factoryWidgetInfo[13] = {
 		/* height      */ 24,
 		/* stringID    */ STR_NULL,
 	},
+	/* Previous and next item.  These two scrolled the strip; there is no strip
+	 * to scroll any more, so they step the selection instead -- and they move
+	 * out from under the list, which has taken that corner of the window. */
 	{ /* 1 */
-		/* index       */ -1,
-		/* clickProc   */ &GUI_Production_List_Click,
-		/* shortcut    */ -3,
-		/* flags       */ 4544,
-		/* spriteID    */ -1,
-		/* offsetX     */ 72,
-		/* offsetY     */ 56,
-		/* width       */ 32,
-		/* height      */ 24,
-		/* stringID    */ STR_NULL,
-	},
-	{ /* 2 */
-		/* index       */ -1,
-		/* clickProc   */ &GUI_Production_List_Click,
-		/* shortcut    */ -4,
-		/* flags       */ 4544,
-		/* spriteID    */ -1,
-		/* offsetX     */ 72,
-		/* offsetY     */ 88,
-		/* width       */ 32,
-		/* height      */ 24,
-		/* stringID    */ STR_NULL,
-	},
-	{ /* 3 */
-		/* index       */ -1,
-		/* clickProc   */ &GUI_Production_List_Click,
-		/* shortcut    */ -5,
-		/* flags       */ 4544,
-		/* spriteID    */ -1,
-		/* offsetX     */ 72,
-		/* offsetY     */ 120,
-		/* width       */ 32,
-		/* height      */ 24,
-		/* stringID    */ STR_NULL,
-	},
-	{ /* 4 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Production_Up_Click,
 		/* shortcut    */ -1120,
 		/* flags       */ 4548,
 		/* spriteID    */ 355,
-		/* offsetX     */ 64,
+		/* offsetX     */ 112,
 		/* offsetY     */ 168,
 		/* width       */ 48,
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 5 */
+	{ /* 2 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Production_Down_Click,
 		/* shortcut    */ -1122,
 		/* flags       */ 4548,
 		/* spriteID    */ 357,
-		/* offsetX     */ 64,
+		/* offsetX     */ 112,
 		/* offsetY     */ 184,
 		/* width       */ 48,
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 6 */
+	{ /* 3 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Production_ResumeGame_Click,
 		/* shortcut    */ 188,
@@ -406,7 +377,7 @@ WidgetInfo g_table_factoryWidgetInfo[13] = {
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 7 */
+	{ /* 4 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Production_Upgrade_Click,
 		/* shortcut    */ 189,
@@ -418,31 +389,36 @@ WidgetInfo g_table_factoryWidgetInfo[13] = {
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 8 */
+	/* How many of the selected unit to order.  These stood at x=8, halfway down
+	 * the left-hand edge -- which is inside the band the list now spreads into
+	 * when it needs more than one column.  Moved to the free strip right of
+	 * "send order" and "resume", which puts the whole of the Starport's controls
+	 * along the bottom of the window. */
+	{ /* 5 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Purchase_Plus_Click,
 		/* shortcut    */ -13,
 		/* flags       */ 17607,
 		/* spriteID    */ 367,
-		/* offsetX     */ 8,
-		/* offsetY     */ 80,
+		/* offsetX     */ 280,
+		/* offsetY     */ 168,
 		/* width       */ 40,
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 9 */
+	{ /* 6 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Purchase_Minus_Click,
 		/* shortcut    */ -12,
 		/* flags       */ 17607,
 		/* spriteID    */ 369,
-		/* offsetX     */ 8,
-		/* offsetY     */ 104,
+		/* offsetX     */ 280,
+		/* offsetY     */ 184,
 		/* width       */ 40,
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 10 */
+	{ /* 7 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Purchase_Invoice_Click,
 		/* shortcut    */ 192,
@@ -454,7 +430,7 @@ WidgetInfo g_table_factoryWidgetInfo[13] = {
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 11 */
+	{ /* 8 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Production_BuildThis_Click,
 		/* shortcut    */ 191,
@@ -466,7 +442,7 @@ WidgetInfo g_table_factoryWidgetInfo[13] = {
 		/* height      */ 16,
 		/* stringID    */ STR_NULL,
 	},
-	{ /* 12 */
+	{ /* 9 */
 		/* index       */ -1,
 		/* clickProc   */ &GUI_Production_BuildThis_Click,
 		/* shortcut    */ 190,

@@ -236,6 +236,11 @@ before this session; it is kept out.)
 `RefineryAccepts()` rejected a refinery whose `var4` pointed at the *asking*
 harvester, i.e. its own door reservation, which then fed straight into bug C.
 
+**That fix was written but never reached.** See §6: the `state != IDLE` test
+above it answered first, and a booked door is a `BUSY` door, so the `var4` line
+was unreachable in the normal case and bug E went on happening under a different
+name for the whole of §5.
+
 ### 3.6 Smaller defects
 
 * `s_harvester*[UNIT_INDEX_MAX]` were never reset when a pool index was reused.
@@ -375,10 +380,9 @@ standoff was luck, which is exactly why it looked patternless. With the cooldown
 the sweep is flat within 4% and both collapses are gone — see
 [economy.md](economy.md).
 
-### What is still broken
+### What was still broken, and what it turned out to be
 
-The cooldown treats the symptom. Underneath it there is a refinery that gets
-stuck, and it is worth fixing next:
+The cooldown treats the symptom. §6 is the cause.
 
 ```
 ref#3 state1 linked255 var4=4016
@@ -400,3 +404,89 @@ Baseline 1 (three refineries, one harvester, no Heavy Factory) freezes at around
 t30000 and refines nothing for the remaining 50000 ticks. `--economy-trace` prints
 the state of every harvester and every refinery at each sample, which is what
 found it.
+
+## 6. The tug of war was with itself
+
+§5 blames the script for re-aiming the unit back at its choice. It does not, and
+measuring that is what found the real bug: in the steady state the script sits in
+the `ACTION_MOVE` branch and only recomputes a route. **The C layer was flipping
+on its own, unassisted.**
+
+Aiming at a refinery books it, and booking it marks it busy:
+
+```
+Unit_SetDestination(u, refinery)
+  -> Object_Script_Variable4_Link(unit, refinery)     unit.c:4162
+     -> Object_Script_Variable4_Set(refinery, unit)   object.c:63
+        -> Structure_SetState(s, STRUCTURE_STATE_BUSY)   /* busyStateIsIncoming */
+```
+
+`Unit_Harvester_RefineryAccepts()` then asked `state != STRUCTURE_STATE_IDLE`
+**before** it asked whose booking had put it there, so every homebound harvester
+read its own destination as one that refused it. With one refinery that is
+harmless — `FindAvailableRefinery(unit, refinery)` excludes the current target
+and returns `NULL`, so nothing happens, which is why the bug hid for so long.
+With two it is a loop:
+
+1. `RefineryAccepts(A)` is false, because *we* made A busy.
+2. `HARVESTER_RETARGET_COOLDOWN` expires; the alternate is B, which is idle.
+3. `Unit_Harvester_ClearOrder()` releases A — A goes back to `IDLE` —
+   and `Unit_SetDestination(B)` books B, so B goes `BUSY`.
+4. Sixty ticks later, with A and B swapped. For ever.
+
+Each flip calls `Unit_Harvester_StopRoute()`, so the harvester tears up its route
+about as often as it recomputes one and gets nowhere. `refineryStalledSince` is
+rewritten on every flip, so the 180-tick stall path below it never runs either.
+
+**The fix is to read the booking before the state.** `BUSY` with `linkedID ==
+0xFF` and `var4 == me` is a door this harvester is expected at, and it accepts.
+`READY` still refuses (somebody is unloading inside) and somebody else's booking
+still refuses. The three script-side pickers — `Script_Unit_FindStructure`,
+`Script_Unit_GoToClosestStructure`, `Script_Unit_Pickup` — are deliberately left
+alone: for *them* a booked refinery genuinely is taken.
+
+Two things fall out of it, both of which were the same bug wearing a different
+hat. `Unit_Harvester_IsQueued()` is `!RefineryAccepts(...)`, so it used to answer
+"queueing" for every harvester merely driving home — contradicting its own doc
+comment, showing `WAIT REF` in the trace where `TO REF` belonged, and feeding the
+AI's "build another refinery" rule at [skirmish.c](src/skirmish.c). And
+`Unit_FindClosestRefinery()`'s "a choice already made is kept" guard was dead for
+the same reason; it works now.
+
+Measured on `--economy-baseline=80000,3`, before against after:
+
+| baseline | refineries | before | after |
+|---|---|---|---|
+| 0 | one | 11963 | 12134 |
+| 1 | three | 4730 | 5495 |
+| 2 | two | 1723 | 5228 |
+
+The one-refinery case barely moves, which is the diagnosis confirming itself: it
+is the only shape that cannot ping-pong. On `--war-metrics`, `econ.spice/match`
+73597 → 83309 and `result.points %` 87 → 91, PASS with no regressions.
+
+`--harvester-self-test` is the guard, and it plays rather than asserts: two
+refineries as far apart as the map allows, one loaded harvester aimed at one of
+them, and thirty seconds of the real game loop. What is counted is how often the
+destination changes — a loop is what is being ruled out, so the gate is on the
+count and not on the final answer. Before the fix it counts exactly 30, one per
+sixty-tick cooldown.
+
+### What is still broken
+
+The refinery state that §5 called stuck is not stuck any more — `state1
+linked255 var4=<harvester>` now resolves to `state2 linked<harvester>` as the
+harvester arrives, rather than standing for the rest of the match. But the leak
+underneath it is real and untouched: `sub@877` words 906-910 do
+
+```
+906: PUSHVAR 4 / CALL 36 ClearCarryallLink / STACKREWIND 1 / PUSH2 0 / POPVAR 4
+```
+
+and `Script_Unit_Unknown2552()` ([script/unit.c](src/script/unit.c)) returns
+without doing anything unless `variables[4]` is a **carryall**. When it is a
+refinery — a door booking — the `POPVAR 4` blanks the harvester's side directly,
+bypassing `Object_Script_Variable4_Clear()`, and the refinery keeps pointing at a
+harvester that has forgotten about it. With the fix above that no longer refuses
+the whole house, because only *other* harvesters are turned away; but if the
+holder dies still holding it, the door stays booked to nobody.

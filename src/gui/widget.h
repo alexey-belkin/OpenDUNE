@@ -181,7 +181,7 @@ typedef struct WidgetProperties {
 } WidgetProperties;
 
 extern WidgetInfo g_table_gameWidgetInfo[25];
-extern WidgetInfo g_table_factoryWidgetInfo[13];
+extern WidgetInfo g_table_factoryWidgetInfo[10];
 
 extern WindowDesc g_lobbyWindowDesc;
 extern WindowDesc g_lobbyEntryWindowDesc;

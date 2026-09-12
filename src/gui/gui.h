@@ -46,6 +46,33 @@ typedef struct HallOfFameStruct {
 assert_compile(sizeof(HallOfFameStruct) == 16);
 
 /**
+ * The build list is a grid, and every buildable thing is on it at once.
+ *
+ * The original showed four items of a scrolling strip with an arrow at each
+ * end, which for a Construction Yard meant paging through eighteen buildings
+ * four at a time to find the one you wanted.  Three columns of seven is
+ * twenty-one cells, against a worst case of eighteen -- STRUCTURE_MAX is
+ * nineteen and the Construction Yard is the one no yard can build.  A Starport
+ * is smaller still.  FactoryWindow_SelfTest() is the guard on that arithmetic;
+ * it is the claim that goes stale if a building is ever added.
+ *
+ * Fewer items use fewer columns, and the columns are anchored to the right so
+ * that a short list stands exactly where the original strip stood, beside the
+ * picture it describes, and a long one grows leftwards into the empty half of
+ * the window.
+ */
+#define FACTORY_LIST_ROWS_MAX     7
+#define FACTORY_LIST_COLUMNS_MAX  3
+#define FACTORY_LIST_CELLS        (FACTORY_LIST_ROWS_MAX * FACTORY_LIST_COLUMNS_MAX)
+
+/** Widget index of the first list cell; one widget per cell, in reading order. */
+#define FACTORY_WIDGET_LIST_BASE  46
+/** Widget index of the first of the buttons around the list. */
+#define FACTORY_WIDGET_OTHER_BASE (FACTORY_WIDGET_LIST_BASE + FACTORY_LIST_CELLS)
+/** The Starport's "send order", which is hidden while the basket is unaffordable. */
+#define FACTORY_WIDGET_SEND_ORDER (FACTORY_WIDGET_OTHER_BASE + 8)
+
+/**
  * Factory Window Item struct.
  */
 typedef struct FactoryWindowItem {
@@ -74,7 +101,6 @@ extern uint8 *g_palette_998A;
 extern uint8 g_remap[256];
 extern FactoryWindowItem g_factoryWindowItems[25];
 extern uint16 g_factoryWindowOrdered;
-extern uint16 g_factoryWindowBase;
 extern uint16 g_factoryWindowTotal;
 extern uint16 g_factoryWindowSelected;
 extern uint16 g_factoryWindowUpgradeCost;
@@ -178,7 +204,13 @@ extern void GUI_FactoryWindow_DrawDetails(void);
 extern void GUI_FactoryWindow_DrawCaption(const char *caption);
 extern void GUI_FactoryWindow_UpdateDetails(const FactoryWindowItem *item);
 extern void GUI_FactoryWindow_UpdateSelection(bool selectionChanged);
-extern void GUI_FactoryWindow_PrepareScrollList(void);
+extern void GUI_FactoryWindow_CellPosition(uint16 cell, uint16 *x, uint16 *y);
+/* Exported for FactoryWindow_SelfTest(), which builds a real window and measures
+ * the widgets it produced rather than re-deriving where they ought to be. */
+extern void GUI_FactoryWindow_Layout(void);
+extern void GUI_FactoryWindow_InitItems(void);
+extern void GUI_FactoryWindow_Init(void);
+extern uint16 GUI_FactoryWindow_GetColumns(void);
 extern void GUI_Mouse_Show(void);
 extern void GUI_Mouse_Hide(void);
 extern void GUI_Mouse_Show_Safe(void);

@@ -1337,7 +1337,7 @@ bool GUI_Widget_HOF_Resume_Click(Widget *w)
  */
 bool GUI_Production_List_Click(Widget *w)
 {
-	uint16 selected = w->index - 46;
+	uint16 selected = w->index - FACTORY_WIDGET_LIST_BASE;
 	bool doubleClick = !g_factoryWindowStarport && selected == s_factoryListLastIndex && g_timerGUI - s_factoryListLastClick <= 30;
 
 	GUI_FactoryWindow_B495_0F30();
@@ -1410,51 +1410,43 @@ bool GUI_Production_Upgrade_Click(Widget *w)
 	return true;
 }
 
-static void GUI_FactoryWindow_ScrollList(int16 step)
+/**
+ * Step the selection one item along the list.
+ *
+ * These two buttons scrolled the strip, and moved the selection only as far as
+ * the four rows they could see.  The whole list is on screen now, so there is
+ * nothing to scroll and the step is the whole of what they do -- one item in
+ * reading order, which reaches every cell whatever shape the grid took.  At
+ * either end they do nothing rather than bouncing the strip, which is what the
+ * bounce was telling the player.
+ */
+static bool GUI_FactoryWindow_StepSelection(Widget *w, int16 step)
 {
-	uint16 i;
-	uint16 y = 32;
+	uint16 next;
 
-	GUI_FactoryWindow_B495_0F30();
+	if (g_factoryWindowTotal == 0) return true;
 
-	GUI_Mouse_Hide_Safe();
+	next = (uint16)((int16)g_factoryWindowSelected + step);
 
-	for (i = 0; i < 32; i++) {
-		y += step;
-		GFX_Screen_Copy2(72, y, 72, 16, 32, 136, SCREEN_1, SCREEN_0, false);
+	if ((int16)g_factoryWindowSelected + step < 0 || next >= g_factoryWindowTotal) {
+		GUI_Widget_MakeNormal(w, false);
+		return true;
 	}
 
-	GUI_Mouse_Show_Safe();
+	g_timerTimeout = 10;
 
-	GUI_FactoryWindow_PrepareScrollList();
-
+	GUI_FactoryWindow_B495_0F30();
+	g_factoryWindowSelected = next;
 	GUI_FactoryWindow_UpdateSelection(true);
-}
 
-static void GUI_FactoryWindow_FailScrollList(int16 step)
-{
-	uint16 i;
-	uint16 y = 32;
-
-	GUI_FactoryWindow_B495_0F30();
-
-	GUI_Mouse_Hide_Safe();
-
-	GUI_FactoryWindow_B495_0F30();
-
-	for (i = 0; i < 6; i++) {
-		y += step;
-		GFX_Screen_Copy2(72, y, 72, 16, 32, 136, SCREEN_1, SCREEN_0, false);
+	for (; g_timerTimeout != 0; sleepIdle()) {
+		GUI_FactoryWindow_UpdateSelection(false);
 	}
 
-	for (i = 0; i < 6; i++) {
-		y -= step;
-		GFX_Screen_Copy2(72, y, 72, 16, 32, 136, SCREEN_1, SCREEN_0, false);
-	}
+	GUI_FactoryWindow_DrawDetails();
+	GUI_Widget_MakeNormal(w, false);
 
-	GUI_Mouse_Show_Safe();
-
-	GUI_FactoryWindow_UpdateSelection(true);
+	return true;
 }
 
 /**
@@ -1464,41 +1456,7 @@ static void GUI_FactoryWindow_FailScrollList(int16 step)
  */
 bool GUI_Production_Down_Click(Widget *w)
 {
-	bool drawDetails = false;
-
-	if (g_factoryWindowSelected < 3 && (g_factoryWindowSelected + 1) < g_factoryWindowTotal) {
-		g_timerTimeout = 10;
-		GUI_FactoryWindow_B495_0F30();
-		g_factoryWindowSelected++;
-
-		GUI_FactoryWindow_UpdateSelection(true);
-
-		drawDetails = true;
-	} else {
-		if (g_factoryWindowBase + 4 < g_factoryWindowTotal) {
-			g_timerTimeout = 10;
-			g_factoryWindowBase++;
-			drawDetails = true;
-
-			GUI_FactoryWindow_ScrollList(1);
-
-			GUI_FactoryWindow_UpdateSelection(true);
-		} else {
-			GUI_FactoryWindow_DrawDetails();
-
-			GUI_FactoryWindow_FailScrollList(1);
-		}
-	}
-
-	for (; g_timerTimeout != 0; sleepIdle()) {
-		GUI_FactoryWindow_UpdateSelection(false);
-	}
-
-	if (drawDetails) GUI_FactoryWindow_DrawDetails();
-
-	GUI_Widget_MakeNormal(w, false);
-
-	return true;
+	return GUI_FactoryWindow_StepSelection(w, 1);
 }
 
 /**
@@ -1508,41 +1466,7 @@ bool GUI_Production_Down_Click(Widget *w)
  */
 bool GUI_Production_Up_Click(Widget *w)
 {
-	bool drawDetails = false;
-
-	if (g_factoryWindowSelected != 0) {
-		g_timerTimeout = 10;
-		GUI_FactoryWindow_B495_0F30();
-		g_factoryWindowSelected--;
-
-		GUI_FactoryWindow_UpdateSelection(true);
-
-		drawDetails = true;
-	} else {
-		if (g_factoryWindowBase != 0) {
-			g_timerTimeout = 10;
-			g_factoryWindowBase--;
-			drawDetails = true;
-
-			GUI_FactoryWindow_ScrollList(-1);
-
-			GUI_FactoryWindow_UpdateSelection(true);
-		} else {
-			GUI_FactoryWindow_DrawDetails();
-
-			GUI_FactoryWindow_FailScrollList(-1);
-		}
-	}
-
-	for (; g_timerTimeout != 0; sleepIdle()) {
-		GUI_FactoryWindow_UpdateSelection(false);
-	}
-
-	if (drawDetails) GUI_FactoryWindow_DrawDetails();
-
-	GUI_Widget_MakeNormal(w, false);
-
-	return true;
+	return GUI_FactoryWindow_StepSelection(w, -1);
 }
 
 static bool GUI_Purchase_CanAfford(void);
@@ -1666,7 +1590,7 @@ void GUI_Purchase_UpdateOrderButton(void)
 
 	if (!g_factoryWindowStarport) return;
 
-	w = GUI_Widget_Get_ByIndex(g_widgetInvoiceTail, 58);
+	w = GUI_Widget_Get_ByIndex(g_widgetInvoiceTail, FACTORY_WIDGET_SEND_ORDER);
 	if (w == NULL) return;
 
 	if (g_factoryWindowOrdered != 0 && !GUI_Purchase_CanAfford()) {

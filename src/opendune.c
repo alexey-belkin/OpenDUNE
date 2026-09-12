@@ -132,6 +132,13 @@ static bool s_buildQueueSelfTest = false;
 static int s_buildQueueSelfTestResult = -1;
 static bool s_ownershipSelfTest = false;
 static int s_ownershipSelfTestResult = -1;
+static bool s_deviatorSelfTest = false;
+static int s_deviatorSelfTestResult = -1;
+static bool s_harvesterSelfTest = false;
+static int s_harvesterSelfTestResult = -1;
+static bool s_buildListSelfTest = false;
+static int s_buildListSelfTestResult = -1;
+static bool s_buildListDump = false;
 static bool s_pathfinderSelfTest = false;
 static int s_pathfinderSelfTestResult = -1;
 static int s_pathfinderOverride = -1;
@@ -3068,6 +3075,572 @@ static int Ownership_SelfTest(void)
 	return 1;
 }
 
+static int Deviator_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "deviator-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/** Deviate one freshly made unit of the given house, with certainty. */
+static Unit *Deviator_Take(uint8 ownerHouse, uint8 taker, uint16 *from)
+{
+	Unit *u = Ownership_SpawnUnit(ownerHouse, from);
+
+	if (u == NULL) { Deviator_Failed("no unit could be put down for a house", ownerHouse); return NULL; }
+
+	/* Big enough to beat every Tools_Random_256() even after Unit_Deviate()
+	 * takes an eighth off it for a house nobody is playing, so the roll is out
+	 * of the test.  What is under test is how long a deviation lasts, not how
+	 * often one lands. */
+	if (!Unit_Deviate(u, 1024, taker)) return NULL;
+
+	return u;
+}
+
+/** How many hits of `damage` a deviated unit of this house survives before it
+ * answers to its own house again.  Hitpoints are restored between hits: what is
+ * being counted is the deviation, not the wreck. */
+static uint16 Deviator_HitsToShakeOff(uint8 ownerHouse, uint8 taker, uint16 damage, uint16 *from)
+{
+	Unit *u = Deviator_Take(ownerHouse, taker, from);
+	uint16 hits;
+
+	if (u == NULL) return 0;
+
+	for (hits = 1; hits < 1000; hits++) {
+		u->o.hitpoints = g_table_unitInfo[u->o.type].o.hitpoints;
+		Unit_Damage(u, damage, 0);
+		if (u->deviated == 0) break;
+	}
+
+	return hits;
+}
+
+/**
+ * How long a deviated unit stays deviated.
+ *
+ * `deviated` is a pool of 120 points, spent by the unit acting -- 10 a tile, 20
+ * a shot, 5 an order it is given, and 1 a second whatever it does.  Damage is
+ * the fifth drain and it was the one that did not fit the model: the original
+ * asks for the *house's toughness* to be subtracted, and toughness is a 0..255
+ * probability that Unit_Deviate() rolls against.  Harkonnen at 200 and Ordos at
+ * 128 are both larger than the whole pool, so one point of damage from anywhere
+ * ended a deviation outright -- and a `degrades` tank deals itself exactly that
+ * on a quarter of the tiles it enters, with nobody shooting at it.
+ *
+ * The test is written against the model rather than against the numbers: the
+ * pool has to be spendable in more than one step by every house, chip damage
+ * has to cost approximately nothing, toughness has to still order the houses,
+ * and the four drains that were never broken have to still cost what they cost.
+ */
+static int Deviator_SelfTest(void)
+{
+	uint16 from = 0;
+	uint8 houseA;
+	uint8 houseB;
+	uint16 hitsA;
+	uint16 hitsB;
+	uint16 i;
+	Unit *u;
+
+	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
+	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	/* The two houses of the match, because only a house somebody is playing can
+	 * be given a unit.  Whichever pair the command line names, they have
+	 * different toughness -- no two houses share a value -- so the ordering
+	 * check below has something to bite on. */
+	houseA = Match_GetSlotHouse(0);
+	houseB = Match_GetSlotHouse(1);
+	if (houseA == HOUSE_INVALID || houseB == HOUSE_INVALID || houseA == houseB) {
+		return Deviator_Failed("the match does not have two houses", houseA);
+	}
+	if (g_table_houseInfo[houseA].toughness == g_table_houseInfo[houseB].toughness) {
+		return Deviator_Failed("the two houses are equally tough", houseA);
+	}
+
+	/* A deviator hit hands the unit over, and the hand-over is visible: the unit
+	 * answers to the house that took it. */
+	u = Deviator_Take(houseA, houseB, &from);
+	if (u == NULL) return Deviator_Failed("a certain deviation did not take", 0);
+	if (u->deviated != 120) return Deviator_Failed("a fresh deviation is not the whole pool", u->deviated);
+	if (u->deviatedHouse != houseB) return Deviator_Failed("the unit was taken by the wrong house", u->deviatedHouse);
+	if (Unit_GetHouseID(u) != houseB) return Deviator_Failed("a deviated unit does not answer to its taker", Unit_GetHouseID(u));
+
+	/* The headline: chip damage must not end it.  This is the case the player
+	 * sees, because it needs no enemy at all -- a degrading tank deals itself
+	 * exactly 1 on a quarter of the tiles it enters, and before this that one
+	 * point was the whole deviation for two houses in three. */
+	Unit_Damage(u, 1, 0);
+	if (u->deviated != 120) return Deviator_Failed("one point of damage spent some of the pool", u->deviated);
+
+	for (i = 0; i < 60; i++) {
+		u->o.hitpoints = g_table_unitInfo[u->o.type].o.hitpoints;
+		Unit_Damage(u, 1, 0);
+	}
+	if (u->deviated == 0) return Deviator_Failed("sixty points of chip damage ended the deviation", i);
+
+	/* And a real beating still ends it, in more than one step.  Before this it
+	 * was one step for Harkonnen and Ordos -- both tougher than the pool they
+	 * were draining -- and two for Atreides, the only house under it, so a gate
+	 * of three catches every house there is. */
+	hitsA = Deviator_HitsToShakeOff(houseA, houseB, 30, &from);
+	hitsB = Deviator_HitsToShakeOff(houseB, houseA, 30, &from);
+	if (hitsA == 0 || hitsB == 0) return Deviator_Failed("a certain deviation did not take", 1);
+	if (hitsA < 3) return Deviator_Failed("a house shook the deviation off in one or two hits", houseA);
+	if (hitsB < 3) return Deviator_Failed("a house shook the deviation off in one or two hits", houseB);
+	if (hitsA > 100 || hitsB > 100) return Deviator_Failed("a house never shook the deviation off at all", hitsA);
+
+	/* Toughness still means something: it scales the drain rather than replacing
+	 * it, so the tougher house is still the one that recovers sooner. */
+	if ((g_table_houseInfo[houseA].toughness > g_table_houseInfo[houseB].toughness) != (hitsA < hitsB)) {
+		return Deviator_Failed("toughness no longer orders the houses", (uint32)hitsA * 1000 + hitsB);
+	}
+
+	/* The four drains this change does not touch.  Each is checked at its own
+	 * price, from a full pool, because the pool is what they are priced in. */
+	u = Deviator_Take(houseA, houseB, &from);
+	if (u == NULL) return Deviator_Failed("a certain deviation did not take", 2);
+	for (i = 0; i < 5; i++) Unit_Deviation_Decrease(u, 20);
+	if (u->deviated == 0) return Deviator_Failed("five shots spent a pool that costs six", i);
+	Unit_Deviation_Decrease(u, 20);
+	if (u->deviated != 0) return Deviator_Failed("six shots did not spend the pool", u->deviated);
+	if (Unit_GetHouseID(u) != houseA) return Deviator_Failed("a spent deviation did not hand the unit back", Unit_GetHouseID(u));
+
+	u = Deviator_Take(houseA, houseB, &from);
+	if (u == NULL) return Deviator_Failed("a certain deviation did not take", 3);
+	for (i = 0; i < 11; i++) Unit_Deviation_Decrease(u, 10);
+	if (u->deviated == 0) return Deviator_Failed("eleven tiles spent a pool that costs twelve", i);
+	Unit_Deviation_Decrease(u, 10);
+	if (u->deviated != 0) return Deviator_Failed("twelve tiles did not spend the pool", u->deviated);
+
+	u = Deviator_Take(houseA, houseB, &from);
+	if (u == NULL) return Deviator_Failed("a certain deviation did not take", 4);
+	for (i = 0; i < 119; i++) Unit_Deviation_Decrease(u, 1);
+	if (u->deviated == 0) return Deviator_Failed("the deviation ran out before its two minutes", i);
+	Unit_Deviation_Decrease(u, 1);
+	if (u->deviated != 0) return Deviator_Failed("the deviation outlived its two minutes", u->deviated);
+
+	return 1;
+}
+
+static int Harvester_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "harvester-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/** Stand a working refinery on the map for a house, or NULL. */
+static Structure *Harvester_PutRefinery(uint8 houseID, uint16 packed)
+{
+	Structure *s = Structure_Create(STRUCTURE_INDEX_INVALID, STRUCTURE_REFINERY, houseID, packed);
+
+	if (s == NULL) return NULL;
+
+	/* Straight to work: a refinery that is still being built is not one a
+	 * harvester can be sent to, and the queue is what is under test. */
+	s->o.flags.s.degrades = false;
+	s->state = STRUCTURE_STATE_IDLE;
+	s->o.hitpoints = s->hitpointsMax;
+
+	return s;
+}
+
+/**
+ * A full harvester picks one refinery and keeps it.
+ *
+ * A refinery goes BUSY the moment anything aims at it: Unit_SetDestination()
+ * links script variable 4 both ways, and linking a structure whose
+ * busyStateIsIncoming is set flips its state as a side effect.  So a harvester
+ * driving home has always just made its own destination busy -- and
+ * Unit_Harvester_RefineryAccepts() read that state before it read whose booking
+ * had caused it, and therefore answered "that one refuses you" about the very
+ * refinery the harvester had booked for itself.
+ *
+ * With two refineries that is a loop rather than a wrong answer.  The retarget
+ * in Unit_Harvester_RecoverRefinery() fires on its cooldown, releases the first
+ * door, books the second, and a cooldown later the second one is the one
+ * refusing it.  Each switch tears up the route, so the harvester spends the
+ * match twitching between two doors and delivering nothing.
+ *
+ * The test plays it rather than asserting it: two refineries, one loaded
+ * harvester, aimed at one of them, and thirty seconds of the real game loop.
+ * What is counted is how often the destination changes.  It is a loop that is
+ * being ruled out, so the gate is on the count and not on the final answer --
+ * a harvester that ends up at the right refinery having visited it four times
+ * has still failed.
+ */
+static int Harvester_SelfTest(void)
+{
+	uint16 spot[512];
+	uint16 found = 0;
+	uint16 packed;
+	uint16 i;
+	uint8 houseID;
+	Structure *refA;
+	Structure *refB;
+	Unit *u;
+	uint16 encA;
+	uint16 encB;
+	uint16 last;
+	uint16 flips = 0;
+	uint32 tick;
+
+	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
+	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	houseID = Match_GetSlotHouse(0);
+	if (houseID == HOUSE_INVALID) return Harvester_Failed("the match has no house in the first slot", 0);
+	g_playerHouseID = houseID;
+
+	for (packed = 0; packed < 64 * 64 && found < 512; packed++) {
+		if (!Map_IsValidPosition(packed)) continue;
+		if (Structure_IsValidBuildLocation(packed, STRUCTURE_REFINERY, houseID) == 0) continue;
+		spot[found++] = packed;
+	}
+	if (found < 2) return Harvester_Failed("fewer than two places to stand a refinery", found);
+
+	/* As far apart as this map allows, so that a switch is a drive across the
+	 * map and not a step sideways -- and so the harvester cannot arrive before
+	 * the loop under test has had time to run. */
+	{
+		uint16 best = 1;
+		uint16 bestDistance = 0;
+
+		for (i = 1; i < found; i++) {
+			uint16 d = Tile_GetDistancePacked(spot[0], spot[i]);
+
+			if (d <= bestDistance) continue;
+			best = i;
+			bestDistance = d;
+		}
+		if (bestDistance < 8) return Harvester_Failed("the two refinery spots are on top of each other", bestDistance);
+
+		refA = Harvester_PutRefinery(houseID, spot[0]);
+		refB = Harvester_PutRefinery(houseID, spot[best]);
+	}
+	if (refA == NULL || refB == NULL) return Harvester_Failed("a refinery would not stand up", (refA == NULL) ? 0 : 1);
+
+	/* The harvester goes down beside the far refinery and is sent to the near
+	 * one, so neither "it was already there" nor "it arrived" can be mistaken
+	 * for the destination holding still. */
+	u = NULL;
+	for (packed = spot[0]; packed < 64 * 64; packed++) {
+		if (!Map_IsValidPosition(packed)) continue;
+		if (Map_GetLandscapeType(packed) != LST_ENTIRELY_ROCK && Map_GetLandscapeType(packed) != LST_NORMAL_SAND) continue;
+		if (Object_GetByPackedTile(packed) != NULL) continue;
+		u = Unit_Create(UNIT_INDEX_INVALID, UNIT_HARVESTER, houseID, Tile_UnpackTile(packed), 0);
+		if (u != NULL) break;
+	}
+	if (u == NULL) return Harvester_Failed("no harvester could be put down", 0);
+
+	u->amount = 100;
+	encA = Tools_Index_Encode(refA->o.index, IT_STRUCTURE);
+	encB = Tools_Index_Encode(refB->o.index, IT_STRUCTURE);
+
+	Unit_SetAction(u, ACTION_MOVE);
+	Unit_SetDestination(u, encA);
+	if (u->targetMove != encA) return Harvester_Failed("the harvester would not take the first refinery", u->targetMove);
+
+	last = encA;
+	for (tick = 0; tick < 1800; tick++) {
+		MpHarness_Step();
+
+		if (!u->o.flags.s.used || u->o.flags.s.isNotOnMap) break;   /* Arrived, or gone. */
+		if (u->targetMove != encA && u->targetMove != encB) continue;
+		if (u->targetMove == last) continue;
+
+		last = u->targetMove;
+		flips++;
+	}
+
+	/* One change of mind is a decision.  Repeated ones are the loop. */
+	if (flips > 1) return Harvester_Failed("the harvester changed refinery more than once", flips);
+
+	/* And the reason it now holds still: its own booking no longer reads as
+	 * somebody else's.  Without this the count above could also be met by a
+	 * harvester that had simply stopped moving. */
+	if (u->o.flags.s.used && !u->o.flags.s.isNotOnMap) {
+		const Structure *target = Tools_Index_GetStructure(u->targetMove);
+
+		if (target == NULL || target->o.type != STRUCTURE_REFINERY) {
+			return Harvester_Failed("the harvester ended up aimed at no refinery", u->targetMove);
+		}
+		if (Unit_Harvester_IsQueued(u)) {
+			return Harvester_Failed("a harvester driving to a free refinery still counts as queueing", u->targetMove);
+		}
+	}
+
+	return 1;
+}
+
+static int FactoryWindow_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "build-list-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/** Two rectangles, half-open, the way the widget table is written: the original
+ * stacks its buttons at 168 and 184 with a height of 16 apiece, so touching
+ * edges are the arrangement rather than a mistake.  (GUI_Widget_HandleEvents()
+ * tests its box inclusively, which means the shared edge belongs to both -- an
+ * original quirk, and the reason cells are measured with a pixel of margin
+ * around them instead.) */
+static bool FactoryWindow_Overlap(int16 ax, int16 ay, int16 aw, int16 ah,
+                                  int16 bx, int16 by, int16 bw, int16 bh)
+{
+	if (ax + aw <= bx || bx + bw <= ax) return false;
+	if (ay + ah <= by || by + bh <= ay) return false;
+	return true;
+}
+
+/** Save what the window actually looks like, so the layout can be looked at
+ * rather than only measured.  Plain PPM: no library, no compression, and any
+ * viewer opens it. */
+static void FactoryWindow_Dump(const char *path)
+{
+	const uint8 *screen = GFX_Screen_Get_ByIndex(SCREEN_0);
+	FILE *f;
+	uint16 i;
+
+	if (screen == NULL) return;
+
+	f = fopen(path, "wb");
+	if (f == NULL) return;
+
+	fprintf(f, "P6\n%d %d\n255\n", SCREEN_WIDTH, SCREEN_HEIGHT);
+	for (i = 0; i < SCREEN_WIDTH * SCREEN_HEIGHT; i++) {
+		const uint8 *c = g_palette1 + screen[i] * 3;
+		uint8 rgb[3];
+
+		/* The palette is the VGA six bits a channel the game keeps it in. */
+		rgb[0] = (uint8)(c[0] << 2);
+		rgb[1] = (uint8)(c[1] << 2);
+		rgb[2] = (uint8)(c[2] << 2);
+		fwrite(rgb, 1, 3, f);
+	}
+	fclose(f);
+}
+
+/** Make every buildable thing of one kind available, so the list is as long as
+ * the game can ever make it. */
+static void FactoryWindow_OfferEverything(bool structures)
+{
+	uint16 i;
+
+	if (structures) {
+		/* Every one of them, including the Construction Yard that no yard can
+		 * actually build -- one more than can ever really appear. */
+		for (i = 0; i < STRUCTURE_MAX; i++) g_table_structureInfo[i].o.available = 1;
+	} else {
+		/* Only what has a price.  The Starport stocks nothing else, and the
+		 * missiles and bullets that fill out UNIT_MAX are not orderable. */
+		for (i = 0; i < UNIT_MAX; i++) {
+			g_table_unitInfo[i].o.available = (g_table_unitInfo[i].o.buildCredits != 0) ? 1 : 0;
+		}
+	}
+}
+
+/**
+ * The build list holds everything, and holds it somewhere legal.
+ *
+ * The window used to show four items of a scrolling strip.  It shows all of
+ * them now, which turns two questions into things that can be got wrong: does
+ * the grid have a cell for every item there can ever be, and does every cell
+ * land on empty screen rather than under a button or off the edge.
+ *
+ * Neither is checked by re-deriving where the cells ought to be -- that would
+ * only be the layout agreeing with itself.  A real window is built, for the two
+ * cases that produce the longest lists, and the widgets it actually created are
+ * measured: against the screen, against each other, and against every button
+ * around them.
+ */
+static int FactoryWindow_SelfTest(void)
+{
+	uint16 pass;
+
+	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	g_playerHouseID = Match_GetSlotHouse(0);
+	if (g_playerHouseID == HOUSE_INVALID) return FactoryWindow_Failed("the match has no house", 0);
+
+	/* The arithmetic first, for every list length the grid claims to take, so
+	 * that a failure below is about the window and not about the shape. */
+	for (pass = 1; pass <= FACTORY_LIST_CELLS; pass++) {
+		uint16 i;
+		uint16 columns;
+
+		g_factoryWindowTotal = pass;
+		GUI_FactoryWindow_Layout();
+		columns = GUI_FactoryWindow_GetColumns();
+
+		if (columns == 0 || columns > FACTORY_LIST_COLUMNS_MAX) {
+			return FactoryWindow_Failed("the grid took a number of columns it does not have", columns);
+		}
+
+		for (i = 0; i < pass; i++) {
+			uint16 x;
+			uint16 y;
+			uint16 j;
+
+			GUI_FactoryWindow_CellPosition(i, &x, &y);
+
+			/* The band the list is allowed: everything left of the detail
+			 * panel, with room for the selection rectangle a pixel outside the
+			 * icon on every side. */
+			if ((int16)x - 1 < 0 || x + 32 > 111) return FactoryWindow_Failed("a cell hangs outside the list band", (uint32)pass * 100 + i);
+			if ((int16)y - 1 < 0 || y + 24 > 199) return FactoryWindow_Failed("a cell hangs off the top or bottom", (uint32)pass * 100 + i);
+
+			for (j = 0; j < i; j++) {
+				uint16 x2;
+				uint16 y2;
+
+				GUI_FactoryWindow_CellPosition(j, &x2, &y2);
+				if (FactoryWindow_Overlap((int16)x - 1, (int16)y - 1, 33, 25, (int16)x2 - 1, (int16)y2 - 1, 33, 25)) {
+					return FactoryWindow_Failed("two cells sit on top of each other", (uint32)pass * 100 + i);
+				}
+			}
+		}
+
+		/* A short list stands where the original strip stood, beside the picture
+		 * it describes.  This is the anchor the whole layout hangs off. */
+		{
+			uint16 x;
+			uint16 y;
+
+			GUI_FactoryWindow_CellPosition(columns - 1, &x, &y);
+			if (x != 72) return FactoryWindow_Failed("the right-hand column moved off the strip", x);
+		}
+	}
+
+	/* Now the two real windows.  Pass 0 is a Construction Yard offering every
+	 * building there is, pass 1 a Starport offering every unit with a price. */
+	for (pass = 0; pass < 2; pass++) {
+		Widget *w;
+		uint16 cells = 0;
+		uint16 buttons = 0;
+		uint16 probe;
+
+		FactoryWindow_OfferEverything(pass == 0);
+
+		g_factoryWindowConstructionYard = (pass == 0);
+		g_factoryWindowStarport         = (pass == 1);
+		g_factoryWindowUpgradeCost      = (pass == 0) ? 200 : 0;
+		g_factoryWindowOrdered          = 0;
+		g_widgetInvoiceTail             = NULL;
+
+		GUI_FactoryWindow_InitItems();
+
+		if (g_factoryWindowTotal == 0) return FactoryWindow_Failed("a window with nothing in it", pass);
+		if (g_factoryWindowTotal > FACTORY_LIST_CELLS) {
+			return FactoryWindow_Failed("more things to build than the grid has cells", g_factoryWindowTotal);
+		}
+
+		GUI_FactoryWindow_Init();
+
+		/* Every item got a cell, every cell is inside the band, and nothing --
+		 * cell or button -- overlaps anything else.  Walking the chain the
+		 * window actually built is what makes this a test of the window rather
+		 * than of the formula. */
+		for (w = g_widgetInvoiceTail; w != NULL; w = GUI_Widget_GetNext(w)) {
+			Widget *v;
+
+			if (w->index >= FACTORY_WIDGET_LIST_BASE && w->index < FACTORY_WIDGET_OTHER_BASE) {
+				uint16 x;
+				uint16 y;
+
+				cells++;
+
+				if (w->index - FACTORY_WIDGET_LIST_BASE >= g_factoryWindowTotal) {
+					return FactoryWindow_Failed("a cell with no item behind it", w->index);
+				}
+				GUI_FactoryWindow_CellPosition((uint16)(w->index - FACTORY_WIDGET_LIST_BASE), &x, &y);
+				if (w->offsetX != (int16)x || w->offsetY != (int16)y) {
+					return FactoryWindow_Failed("a cell widget is not where its cell is", w->index);
+				}
+				if (w->offsetX + w->width > 111) return FactoryWindow_Failed("a cell reaches into the detail panel", w->index);
+			} else {
+				buttons++;
+			}
+
+			for (v = GUI_Widget_GetNext(w); v != NULL; v = GUI_Widget_GetNext(v)) {
+				if (v->index == w->index) return FactoryWindow_Failed("two widgets share an index", w->index);
+				if (FactoryWindow_Overlap(w->offsetX, w->offsetY, w->width, w->height,
+				                          v->offsetX, v->offsetY, v->width, v->height)) {
+					return FactoryWindow_Failed("two widgets overlap", (uint32)w->index * 1000 + v->index);
+				}
+			}
+		}
+
+		/* The selection rectangle is drawn a pixel outside the icon and rubbed
+		 * out by copying the same patch back from SCREEN_1.  The original read
+		 * that patch from sixteen pixels lower down, where the strip lived for
+		 * the sake of the scroll animation, so this is the piece of the window
+		 * the rewrite had most chance of leaving misaligned -- and a rectangle
+		 * that erases to the wrong place is not visible until it has been drawn
+		 * and moved twice.  Both halves are checked at every cell. */
+		GFX_Screen_SetActive(SCREEN_0);
+		for (probe = 0; probe < g_factoryWindowTotal; probe++) {
+			uint16 x;
+			uint16 y;
+
+			GUI_FactoryWindow_CellPosition(probe, &x, &y);
+			g_factoryWindowSelected = probe;
+
+			GUI_FactoryWindow_UpdateSelection(true);
+			if (GFX_GetPixel(x - 1, y - 1) != 255 || GFX_GetPixel(x + 32, y + 24) != 255
+				|| GFX_GetPixel(x + 32, y - 1) != 255 || GFX_GetPixel(x - 1, y + 24) != 255) {
+				return FactoryWindow_Failed("the selection rectangle is not around the cell it marks", probe);
+			}
+
+			GUI_FactoryWindow_B495_0F30();
+			if (GFX_GetPixel(x - 1, y - 1) == 255 || GFX_GetPixel(x + 32, y + 24) == 255) {
+				return FactoryWindow_Failed("the selection rectangle did not rub out", probe);
+			}
+		}
+		g_factoryWindowSelected = 0;
+
+		if (s_buildListDump) {
+			char path[64];
+
+			GUI_FactoryWindow_UpdateSelection(true);
+			snprintf(path, sizeof(path), "buildlist-%s.ppm", (pass == 0) ? "yard" : "starport");
+			FactoryWindow_Dump(path);
+			PrintToConsole(path);
+		}
+
+		if (cells != g_factoryWindowTotal) {
+			return FactoryWindow_Failed("the window built a different number of cells than it has items", cells);
+		}
+
+		/* And the buttons are all still there.  A Construction Yard has the two
+		 * steppers, resume, upgrade and build-this; a Starport swaps build-this
+		 * for send-order and adds plus, minus and the invoice. */
+		if (buttons != ((pass == 0) ? 5 : 7)) {
+			return FactoryWindow_Failed("the window is missing a button", buttons);
+		}
+		if (GUI_Widget_Get_ByIndex(g_widgetInvoiceTail, FACTORY_WIDGET_SEND_ORDER) == NULL) {
+			if (pass == 1) return FactoryWindow_Failed("the Starport has no send-order button", 0);
+		} else {
+			if (pass == 0) return FactoryWindow_Failed("a factory grew a send-order button", 0);
+		}
+	}
+
+	return 1;
+}
+
 static int Pathfinder_Failed(const char *why, uint32 detail)
 {
 	char line[192];
@@ -3743,6 +4316,36 @@ static void GameLoop_Main(void)
 		s_ownershipSelfTestResult = Ownership_SelfTest();
 		PrintToConsole((s_ownershipSelfTestResult == 1) ? "ownership-self-test: PASS"
 		                                                : "ownership-self-test: FAIL");
+		return;
+	}
+
+	if (s_buildListSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_buildListSelfTestResult = FactoryWindow_SelfTest();
+		PrintToConsole((s_buildListSelfTestResult == 1) ? "build-list-self-test: PASS"
+		                                                : "build-list-self-test: FAIL");
+		return;
+	}
+
+	if (s_harvesterSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_harvesterSelfTestResult = Harvester_SelfTest();
+		PrintToConsole((s_harvesterSelfTestResult == 1) ? "harvester-self-test: PASS"
+		                                                : "harvester-self-test: FAIL");
+		return;
+	}
+
+	if (s_deviatorSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_deviatorSelfTestResult = Deviator_SelfTest();
+		PrintToConsole((s_deviatorSelfTestResult == 1) ? "deviator-self-test: PASS"
+		                                               : "deviator-self-test: FAIL");
 		return;
 	}
 
@@ -4822,6 +5425,10 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--build-rules-self-test") == 0) s_buildRulesSelfTest = true;
 			if (strcmp(argv[i], "--build-queue-self-test") == 0) s_buildQueueSelfTest = true;
 			if (strcmp(argv[i], "--ownership-self-test") == 0) s_ownershipSelfTest = true;
+			if (strcmp(argv[i], "--deviator-self-test") == 0) s_deviatorSelfTest = true;
+			if (strcmp(argv[i], "--harvester-self-test") == 0) s_harvesterSelfTest = true;
+			if (strcmp(argv[i], "--build-list-self-test") == 0) s_buildListSelfTest = true;
+			if (strcmp(argv[i], "--build-list-dump") == 0) { s_buildListSelfTest = true; s_buildListDump = true; }
 			if (strcmp(argv[i], "--move-rules-self-test") == 0) s_moveRulesSelfTest = true;
 			if (strcmp(argv[i], "--lobby-self-test") == 0) s_lobbySelfTest = true;
 			if (strncmp(argv[i], "--lobby-play=", 13) == 0) {
@@ -5136,6 +5743,9 @@ int main(int argc, char **argv)
 	if (s_buildRulesSelfTest && s_buildRulesSelfTestResult != 1) return 1;
 	if (s_buildQueueSelfTest && s_buildQueueSelfTestResult != 1) return 1;
 	if (s_ownershipSelfTest && s_ownershipSelfTestResult != 1) return 1;
+	if (s_deviatorSelfTest && s_deviatorSelfTestResult != 1) return 1;
+	if (s_harvesterSelfTest && s_harvesterSelfTestResult != 1) return 1;
+	if (s_buildListSelfTest && s_buildListSelfTestResult != 1) return 1;
 	if (s_techTreeSelfTest && s_techTreeSelfTestResult != 1) return 1;
 	if (s_autoRepairSelfTest && s_autoRepairSelfTestResult != 1) return 1;
 	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;

@@ -2040,16 +2040,34 @@ static void Unit_Harvester_Claim(const Structure *refinery, const Unit *unit)
 
 static bool Unit_Harvester_RefineryAccepts(const Structure *refinery, const Unit *unit)
 {
+	bool booked;
+
 	if (refinery == NULL
 		|| refinery->o.type != STRUCTURE_REFINERY
 		|| refinery->o.hitpoints == 0
-		|| refinery->state != STRUCTURE_STATE_IDLE
 		|| refinery->o.linkedID != 0xFF) return false;
+
+	/* Whose booking is on the door has to be read before the state, because the
+	 * booking is what put the state there.  Unit_SetDestination() links
+	 * variables[4] both ways, and Object_Script_Variable4_Set() flips a refinery
+	 * to BUSY as a side effect of being linked -- so a harvester that aims at a
+	 * refinery makes that refinery "busy" itself, and then reads its own
+	 * destination as one that refuses it.  Asking the state first made the
+	 * answer about every homebound harvester "that door is taken", which is how
+	 * two refineries could pass one harvester back and forth for ever: the
+	 * retarget in Unit_Harvester_RecoverRefinery() fired on its cooldown, the
+	 * switch released the first door and booked the second, and a cooldown later
+	 * the second one was the one refusing it. */
+	booked = (unit != NULL && refinery->o.script.variables[4] == Tools_Index_Encode(unit->o.index, IT_UNIT));
+
+	/* BUSY is only ours to ignore.  READY means a harvester is unloading inside,
+	 * and somebody else's booking is somebody else's. */
+	if (refinery->state != STRUCTURE_STATE_IDLE
+		&& !(booked && refinery->state == STRUCTURE_STATE_BUSY)) return false;
 
 	if (Unit_Harvester_ClaimedByOther(refinery, unit)) return false;
 
-	if (refinery->o.script.variables[4] == 0) return true;
-	return unit != NULL && refinery->o.script.variables[4] == Tools_Index_Encode(unit->o.index, IT_UNIT);
+	return booked || refinery->o.script.variables[4] == 0;
 }
 
 /**
@@ -5046,7 +5064,27 @@ bool Unit_Damage(Unit *unit, uint16 damage, uint16 range)
 		unit->o.hitpoints = 0;
 	}
 
-	Unit_Deviation_Decrease(unit, 0);
+	/* Damage shakes a deviation loose in proportion to the punishment.  The
+	 * original passes 0 here, which means "drain the house's toughness" -- but
+	 * toughness is a 0..255 probability, which is what Unit_Deviate() uses it
+	 * as, while the deviation pool it is being subtracted from is 120.
+	 * Harkonnen at 200 and Ordos at 128 both exceed that pool, so for two houses
+	 * in three a single point of damage from any source ended the deviation
+	 * outright -- one bullet, one splash, or the one point a `degrades` tank
+	 * inflicts on itself on a quarter of the tiles it enters.  That last one
+	 * needs no enemy at all, which is why a deviated unit could change colour
+	 * and change back with nothing else happening on screen.
+	 *
+	 * Toughness stays in the rule as the house's resistance, scaling the drain
+	 * instead of replacing it, so a Harkonnen unit still shrugs deviation off
+	 * sooner than an Atreides one.  A drain that rounds to nothing is not
+	 * applied at all rather than passed on as 0, which this function reads back
+	 * as the toughness the rule just replaced. */
+	if (unit->deviated != 0) {
+		uint16 shake = (uint16)(((uint32)damage * g_table_houseInfo[unit->o.houseID].toughness) / 256);
+
+		if (shake != 0) Unit_Deviation_Decrease(unit, shake);
+	}
 
 	houseID = Unit_GetHouseID(unit);
 

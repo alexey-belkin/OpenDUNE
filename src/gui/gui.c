@@ -99,7 +99,6 @@ uint8 *g_palette_998A = NULL;
 uint8 g_remap[256];
 FactoryWindowItem g_factoryWindowItems[25];
 uint16 g_factoryWindowOrdered = 0;
-uint16 g_factoryWindowBase = 0;
 uint16 g_factoryWindowTotal = 0;
 uint16 g_factoryWindowSelected = 0;
 uint16 g_factoryWindowUpgradeCost = 0;
@@ -107,7 +106,14 @@ bool g_factoryWindowConstructionYard = false;
 FactoryResult g_factoryWindowResult = FACTORY_RESUME;
 bool g_factoryWindowStarport = false;
 static uint8 s_factoryWindowGraymapTbl[256];
-static Widget s_factoryWindowWidgets[13];
+static Widget s_factoryWindowWidgets[FACTORY_LIST_CELLS + 9];
+
+/* Where the grid ended up this time round: chosen by GUI_FactoryWindow_Layout()
+ * from the number of items, and read by everything that draws a cell. */
+static uint16 s_factoryListColumns;
+static uint16 s_factoryListRows;
+static uint16 s_factoryListOriginX;
+static uint16 s_factoryListOriginY;
 static uint8 s_factoryWindowWsaBuffer[64000];
 static uint8 *s_palette1_houseColour;
 static uint32 s_tickCreditsAnimation = 0;                   /*!< Next tick when credits animation needs an update. */
@@ -2681,26 +2687,112 @@ void GUI_Screen_Copy(int16 xSrc, int16 ySrc, int16 xDst, int16 yDst, int16 width
 	GFX_Screen_Copy(xSrc * 8, ySrc, xDst * 8, yDst, width * 8, height, screenSrc, screenDst);
 }
 
+/* One cell is one build icon: SHAPES.SHP draws these at 32x24. */
+#define FACTORY_LIST_ICON_WIDTH   32
+#define FACTORY_LIST_ICON_HEIGHT  24
+/* A pixel of air between neighbours, and one more for the selection rectangle,
+ * which is drawn a pixel outside the icon it marks. */
+#define FACTORY_LIST_PITCH_X      (FACTORY_LIST_ICON_WIDTH + 2)
+#define FACTORY_LIST_PITCH_Y      (FACTORY_LIST_ICON_HEIGHT + 2)
+/* The right-hand column stands where the original strip stood.  Everything the
+ * grid needs beyond that it takes from the empty band to its left, which runs
+ * to the edge of the screen; the detail panel begins at x=128. */
+#define FACTORY_LIST_RIGHT_X      72
+#define FACTORY_LIST_TOP          8
+#define FACTORY_LIST_BOTTOM       198
+
+/**
+ * Choose the shape of the grid for the items there are.
+ *
+ * Seven to a column and no more than three columns, which is twenty-one cells
+ * for a worst case of eighteen.  Columns are added only as they are needed and
+ * the block is centred vertically, so a Light Factory with five things in it
+ * still reads as a short list beside its picture rather than as a mostly empty
+ * board.
+ */
+void GUI_FactoryWindow_Layout(void)
+{
+	uint16 total = g_factoryWindowTotal;
+	uint16 height;
+
+	if (total == 0) total = 1;
+	if (total > FACTORY_LIST_CELLS) total = FACTORY_LIST_CELLS;
+
+	s_factoryListColumns = (total + FACTORY_LIST_ROWS_MAX - 1) / FACTORY_LIST_ROWS_MAX;
+	if (s_factoryListColumns > FACTORY_LIST_COLUMNS_MAX) s_factoryListColumns = FACTORY_LIST_COLUMNS_MAX;
+
+	/* Spread over as few rows as those columns allow, so two columns of nine
+	 * are two columns of nine and not one full one and one nearly empty. */
+	s_factoryListRows = (total + s_factoryListColumns - 1) / s_factoryListColumns;
+
+	s_factoryListOriginX = FACTORY_LIST_RIGHT_X - (s_factoryListColumns - 1) * FACTORY_LIST_PITCH_X;
+
+	height = s_factoryListRows * FACTORY_LIST_PITCH_Y - (FACTORY_LIST_PITCH_Y - FACTORY_LIST_ICON_HEIGHT);
+	s_factoryListOriginY = FACTORY_LIST_TOP + (FACTORY_LIST_BOTTOM - FACTORY_LIST_TOP - height) / 2;
+}
+
+/** How many columns the grid settled on; the decoration depends on it. */
+uint16 GUI_FactoryWindow_GetColumns(void)
+{
+	return s_factoryListColumns;
+}
+
+/** Top-left corner of one cell, in reading order: across, then down. */
+void GUI_FactoryWindow_CellPosition(uint16 cell, uint16 *x, uint16 *y)
+{
+	*x = s_factoryListOriginX + (cell % s_factoryListColumns) * FACTORY_LIST_PITCH_X;
+	*y = s_factoryListOriginY + (cell / s_factoryListColumns) * FACTORY_LIST_PITCH_Y;
+}
+
 static uint32 GUI_FactoryWindow_CreateWidgets(void)
 {
+	/* Keys 1..9 and 0 pick the first ten cells.  The four rows of the strip had
+	 * 1..4 between them; the grid is longer, so the run is.  A cell past the
+	 * tenth has no key, which is what 0 means to the loop below. */
+	static const int16 s_cellShortcut[10] = { -2, -3, -4, -5, -6, -7, -8, -9, -10, -11 };
 	uint16 i;
 	uint16 count = 0;
-	WidgetInfo *wi = g_table_factoryWidgetInfo;
+	uint16 cells;
 	Widget *w = s_factoryWindowWidgets;
 
-	memset(w, 0, 13 * sizeof(Widget));
+	memset(w, 0, sizeof(s_factoryWindowWidgets));
 
-	for (i = 0; i < 13; i++, wi++) {
-		if ((i == 8 || i == 9 || i == 10 || i == 12) && !g_factoryWindowStarport) continue;
-		if (i == 11 && g_factoryWindowStarport) continue;
-		if (i == 7 && g_factoryWindowUpgradeCost == 0) continue;
+	cells = g_factoryWindowTotal;
+	if (cells > FACTORY_LIST_CELLS) cells = FACTORY_LIST_CELLS;
+
+	/* One widget per item, where the strip had four with a scroll offset
+	 * underneath them.  Nothing moves while the window is open, so a cell is one
+	 * item for as long as it exists and GUI_Production_List_Click() can go on
+	 * reading which item was clicked straight off the widget index. */
+	for (i = 0; i < cells + 9; i++) {
+		bool isCell = (i < cells);
+		uint16 slot = isCell ? 0 : (i - cells + 1);
+		WidgetInfo *wi = &g_table_factoryWidgetInfo[slot];
+		int16 shortcut;
+		uint16 x;
+		uint16 y;
+
+		if (!isCell) {
+			if ((slot == 5 || slot == 6 || slot == 7 || slot == 9) && !g_factoryWindowStarport) continue;
+			if (slot == 8 && g_factoryWindowStarport) continue;
+			if (slot == 4 && g_factoryWindowUpgradeCost == 0) continue;
+		}
+
+		if (isCell) {
+			GUI_FactoryWindow_CellPosition(i, &x, &y);
+			shortcut = (i < 10) ? s_cellShortcut[i] : 0;
+		} else {
+			x = (uint16)wi->offsetX;
+			y = (uint16)wi->offsetY;
+			shortcut = wi->shortcut;
+		}
 
 		count++;
 
-		w->index     = i + 46;
+		w->index     = isCell ? (uint16)(FACTORY_WIDGET_LIST_BASE + i) : (uint16)(FACTORY_WIDGET_OTHER_BASE + slot - 1);
 		memset(&w->state, 0, sizeof(w->state));
-		w->offsetX   = wi->offsetX;
-		w->offsetY   = wi->offsetY;
+		w->offsetX   = (int16)x;
+		w->offsetY   = (int16)y;
 		w->flags.requiresClick = (wi->flags & 0x0001) ? true : false;
 		w->flags.notused1 = (wi->flags & 0x0002) ? true : false;
 		w->flags.clickAsHover = (wi->flags & 0x0004) ? true : false;
@@ -2711,7 +2803,11 @@ static uint32 GUI_FactoryWindow_CreateWidgets(void)
 		w->flags.notused2 = (wi->flags & 0x0080) ? true : false;
 		w->flags.buttonFilterLeft = (wi->flags >> 8) & 0x0f;
 		w->flags.buttonFilterRight = (wi->flags >> 12) & 0x0f;
-		w->shortcut  = (wi->shortcut < 0) ? abs(wi->shortcut) : GUI_Widget_GetShortcut(*String_Get_ByIndex(wi->shortcut));
+		if (shortcut == 0) {
+			w->shortcut = 0;
+		} else {
+			w->shortcut = (shortcut < 0) ? abs(shortcut) : GUI_Widget_GetShortcut(*String_Get_ByIndex(shortcut));
+		}
 		w->clickProc = wi->clickProc;
 		w->width     = wi->width;
 		w->height    = wi->height;
@@ -2729,7 +2825,7 @@ static uint32 GUI_FactoryWindow_CreateWidgets(void)
 			w->drawParameterDown.sprite     = g_sprites[wi->spriteID + 1];
 		}
 
-		if (i != 0) {
+		if (count != 1) {
 			g_widgetInvoiceTail = GUI_Widget_Link(g_widgetInvoiceTail, w);
 		} else {
 			g_widgetInvoiceTail = w;
@@ -2737,7 +2833,6 @@ static uint32 GUI_FactoryWindow_CreateWidgets(void)
 
 		w++;
 	}
-
 	GUI_Widget_DrawAll(g_widgetInvoiceTail);
 
 	return count * sizeof(Widget);
@@ -2775,11 +2870,10 @@ static int GUI_FactoryWindow_Sorter(const void *a, const void *b)
 	return pb->sortPriority - pa->sortPriority;
 }
 
-static void GUI_FactoryWindow_InitItems(void)
+void GUI_FactoryWindow_InitItems(void)
 {
 	g_factoryWindowTotal = 0;
 	g_factoryWindowSelected = 0;
-	g_factoryWindowBase = 0;
 
 	memset(g_factoryWindowItems, 0, 25 * sizeof(FactoryWindowItem));
 
@@ -2810,6 +2904,7 @@ static void GUI_FactoryWindow_InitItems(void)
 			ObjectInfo *oi = &g_table_unitInfo[i].o;
 
 			if (oi->available == 0) continue;
+			if (g_factoryWindowTotal >= 25) break;
 
 			g_factoryWindowItems[g_factoryWindowTotal].objectInfo = oi;
 			g_factoryWindowItems[g_factoryWindowTotal].objectType = i;
@@ -2831,6 +2926,7 @@ static void GUI_FactoryWindow_InitItems(void)
 			ObjectInfo *oi = &g_table_structureInfo[i].o;
 
 			if (oi->available == 0) continue;
+			if (g_factoryWindowTotal >= 25) break;
 
 			g_factoryWindowItems[g_factoryWindowTotal].objectInfo    = oi;
 			g_factoryWindowItems[g_factoryWindowTotal].objectType    = i;
@@ -2852,7 +2948,7 @@ static void GUI_FactoryWindow_InitItems(void)
 	qsort(g_factoryWindowItems, g_factoryWindowTotal, sizeof(FactoryWindowItem), GUI_FactoryWindow_Sorter);
 }
 
-static void GUI_FactoryWindow_Init(void)
+void GUI_FactoryWindow_Init(void)
 {
 	static const uint8 xSrc[HOUSE_MAX] = { 0, 0, 16, 0, 0, 0 };
 	static const uint8 ySrc[HOUSE_MAX] = { 8, 152, 48, 0, 0, 0 };
@@ -2868,29 +2964,45 @@ static void GUI_FactoryWindow_Init(void)
 
 	GUI_Palette_RemapScreen(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_1, g_remap);
 
-	GUI_Screen_Copy(xSrc[g_playerHouseID], ySrc[g_playerHouseID], 0, 8, 7, 40, SCREEN_1, SCREEN_1);
-	GUI_Screen_Copy(xSrc[g_playerHouseID], ySrc[g_playerHouseID], 0, 152, 7, 40, SCREEN_1, SCREEN_1);
-
-	GUI_FactoryWindow_CreateWidgets();
+	/* The items decide the shape of the grid, so they have to be counted before
+	 * there is anything to lay out or a widget to put in it. */
 	GUI_FactoryWindow_LoadGraymapTbl();
 	GUI_FactoryWindow_InitItems();
+	GUI_FactoryWindow_Layout();
 
-	for (i = g_factoryWindowTotal; i < 4; i++) GUI_Widget_MakeInvisible(GUI_Widget_Get_ByIndex(g_widgetInvoiceTail, i + 46));
+	/* The strip's frame ran from y=0 to y=167 and the two arrows covered the rest
+	 * of it, so CHOAM.CPS has nothing drawn behind them.  With the arrows moved
+	 * out from under the list that leaves a hole in the frame; carry the frame
+	 * down over it from the stretch immediately above. */
+	GUI_Screen_Copy(8, 136, 8, 168, 6, 32, SCREEN_1, SCREEN_1);
 
-	for (i = 0; i < 4; i++) {
+	/* The two blocks of house decoration sit in the band from x=0 to x=55, which
+	 * is exactly the space a grid of more than one column moves into.  A short
+	 * list leaves them where they were. */
+	if (s_factoryListColumns == 1) {
+		GUI_Screen_Copy(xSrc[g_playerHouseID], ySrc[g_playerHouseID], 0, 8, 7, 40, SCREEN_1, SCREEN_1);
+		GUI_Screen_Copy(xSrc[g_playerHouseID], ySrc[g_playerHouseID], 0, 152, 7, 40, SCREEN_1, SCREEN_1);
+	}
+
+	GUI_FactoryWindow_CreateWidgets();
+
+	for (i = 0; i < (int16)g_factoryWindowTotal && i < FACTORY_LIST_CELLS; i++) {
 		FactoryWindowItem *item = GUI_FactoryWindow_GetItem(i);
+		uint16 x;
+		uint16 y;
 
 		if (item == NULL) continue;
 
+		GUI_FactoryWindow_CellPosition((uint16)i, &x, &y);
+
 		oi = item->objectInfo;
 		if (oi->available == -1) {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], 72, 24 + i * 32, 0, DRAWSPRITE_FLAG_REMAP, s_factoryWindowGraymapTbl, 1);
+			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], x, y, 0, DRAWSPRITE_FLAG_REMAP, s_factoryWindowGraymapTbl, 1);
 		} else {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], 72, 24 + i * 32, 0, 0);
+			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], x, y, 0, 0);
 		}
 	}
 
-	g_factoryWindowBase = 0;
 	g_factoryWindowSelected = 0;
 
 	oi = g_factoryWindowItems[0].objectInfo;
@@ -2899,13 +3011,14 @@ static void GUI_FactoryWindow_Init(void)
 	WSA_DisplayFrame(wsa, 0, 128, 48, SCREEN_1);
 	WSA_Unload(wsa);
 
+	/* SCREEN_1 is left holding the finished window, icons and all, because that
+	 * is what GUI_FactoryWindow_B495_0F30() blits back over the selection
+	 * rectangle to rub it out.  The original painted over the strip here and
+	 * then rebuilt a shifted copy of it for the scroll animation to slide
+	 * about; with nothing to slide, a straight copy is the whole of it. */
 	GUI_Mouse_Hide_Safe();
 	GUI_Screen_Copy(0, 0, 0, 0, SCREEN_WIDTH / 8, SCREEN_HEIGHT, SCREEN_1, SCREEN_0);
 	GUI_Mouse_Show_Safe();
-
-	GUI_DrawFilledRectangle(64, 0, 112, SCREEN_HEIGHT - 1, GFX_GetPixel(72, 23));
-
-	GUI_FactoryWindow_PrepareScrollList();
 
 	GFX_Screen_SetActive(SCREEN_0);
 
@@ -3571,17 +3684,31 @@ void GUI_DrawText_Monospace(char *string, uint16 left, uint16 top, uint8 fgColou
 	}
 }
 
+/**
+ * Rub out the selection rectangle.
+ *
+ * SCREEN_1 still holds the window as it was drawn, so the patch under the
+ * rectangle is a straight copy back from the same coordinates.  The original
+ * read it from sixteen pixels lower down, because the strip it was erasing
+ * lived in SCREEN_1 offset by that much for the sake of the scroll animation.
+ */
 void GUI_FactoryWindow_B495_0F30(void)
 {
+	uint16 x;
+	uint16 y;
+
+	if (g_factoryWindowSelected >= FACTORY_LIST_CELLS) return;
+
+	GUI_FactoryWindow_CellPosition(g_factoryWindowSelected, &x, &y);
+
 	GUI_Mouse_Hide_Safe();
-	GFX_Screen_Copy2(69, ((g_factoryWindowSelected + 1) * 32) + 5, 69, (g_factoryWindowSelected * 32) + 21, 38, 30, SCREEN_1, SCREEN_0, false);
+	GFX_Screen_Copy2((int16)x - 1, (int16)y - 1, (int16)x - 1, (int16)y - 1,
+	                 FACTORY_LIST_ICON_WIDTH + 2, FACTORY_LIST_ICON_HEIGHT + 2, SCREEN_1, SCREEN_0, false);
 	GUI_Mouse_Show_Safe();
 }
 
 FactoryWindowItem *GUI_FactoryWindow_GetItem(int16 offset)
 {
-	offset += g_factoryWindowBase;
-
 	if (offset < 0 || offset >= g_factoryWindowTotal) return NULL;
 
 	return &g_factoryWindowItems[offset];
@@ -3735,6 +3862,7 @@ void GUI_FactoryWindow_UpdateSelection(bool selectionChanged)
 	static int8 paletteChange;
 
 	if (selectionChanged) {
+		uint16 x;
 		uint16 y;
 
 		memset(g_palette1 + 255 * 3, 0x3F, 3);
@@ -3746,11 +3874,11 @@ void GUI_FactoryWindow_UpdateSelection(bool selectionChanged)
 		paletteColour = 0;
 		paletteChange = 8;
 
-		y = g_factoryWindowSelected * 32 + 24;
+		GUI_FactoryWindow_CellPosition(g_factoryWindowSelected, &x, &y);
 
 		GUI_Mouse_Hide_Safe();
-		GUI_DrawWiredRectangle(71, y - 1, 104, y + 24, 255);
-		GUI_DrawWiredRectangle(72, y, 103, y + 23, 255);
+		GUI_DrawWiredRectangle(x - 1, y - 1, x + FACTORY_LIST_ICON_WIDTH, y + FACTORY_LIST_ICON_HEIGHT, 255);
+		GUI_DrawWiredRectangle(x, y, x + FACTORY_LIST_ICON_WIDTH - 1, y + FACTORY_LIST_ICON_HEIGHT - 1, 255);
 		GUI_Mouse_Show_Safe();
 	} else {
 		if (paletteChangeTimer > g_timerGUI) return;
@@ -3861,42 +3989,6 @@ void GUI_Screen_FadeIn(uint16 xSrc, uint16 ySrc, uint16 xDst, uint16 yDst, uint1
 	}
 }
 
-void GUI_FactoryWindow_PrepareScrollList(void)
-{
-	FactoryWindowItem *item;
-
-	GUI_Mouse_Hide_Safe();
-	GUI_Screen_Copy(9, 24, 9, 40, 4, 128, SCREEN_0, SCREEN_1);
-	GUI_Mouse_Show_Safe();
-
-	item = GUI_FactoryWindow_GetItem(-1);
-
-	if (item != NULL) {
-		ObjectInfo *oi = item->objectInfo;
-
-		if (oi->available == -1) {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], 72, 8, 0, DRAWSPRITE_FLAG_REMAP, s_factoryWindowGraymapTbl, 1);
-		} else {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], 72, 8, 0, 0);
-		}
-	} else {
-		GUI_Screen_Copy(9, 32, 9, 24, 4, 8, SCREEN_1, SCREEN_1);
-	}
-
-	item = GUI_FactoryWindow_GetItem(4);
-
-	if (item != NULL) {
-		ObjectInfo *oi = item->objectInfo;
-
-		if (oi->available == -1) {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], 72, 168, 0, DRAWSPRITE_FLAG_REMAP, s_factoryWindowGraymapTbl, 1);
-		} else {
-			GUI_DrawSprite(SCREEN_1, g_sprites[oi->spriteID], 72, 168, 0, 0);
-		}
-	} else {
-		GUI_Screen_Copy(9, 0, 9, 168, 4, 8, SCREEN_1, SCREEN_1);
-	}
-}
 
 /**
  * Fade in parts of the screen from one screenbuffer to the other screenbuffer.

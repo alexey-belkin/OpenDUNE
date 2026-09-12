@@ -266,7 +266,8 @@ if [ "$VERIFY" = 1 ]; then
 	if [ "$DATA" = 1 ]; then
 		for t in "--combat-balance-self-test" "--build-rules-self-test" "--move-rules-self-test" \
 		         "--pathfinder-self-test" "--build-queue-self-test" "--ownership-self-test" \
-		         "--lobby-self-test" "--selection-self-test" "--mp-replay=20000,500" \
+		         "--lobby-self-test" "--selection-self-test" "--build-list-self-test" \
+		         "--deviator-self-test" "--harvester-self-test" "--mp-replay=20000,500" \
 		         "--mp-modal=20000,4000"; do
 			printf '    %-32s' "$t"
 			if SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy "$BIN" --skirmish=ordos,harkonnen $t >"$TMP/log" 2>&1; then

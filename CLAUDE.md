@@ -590,6 +590,117 @@ and never asks the yard, and `Structure_Queue_CanOrder()` requires
 `Match_IsHumanControlled()`. Measured — `--war-metrics` on and off the slab
 change is **bit-identical across all sixteen numbers**.
 
+## The build list
+
+The full-screen window that opens for a factory or the Construction Yard shows
+**every** buildable item at once. It used to show four of a strip that scrolled,
+with an arrow at each end -- eighteen buildings, four at a time. The strip is a
+grid now and there is nothing to scroll.
+
+`GUI_FactoryWindow_Layout()` in [gui/gui.c](src/gui/gui.c) is the whole of the
+geometry, and it is three decisions:
+
+* **Seven to a column, three columns at most** -- twenty-one cells against a
+  worst case of eighteen. `STRUCTURE_MAX` is nineteen and the Construction Yard
+  is the one building no yard can build, so eighteen is the ceiling and the
+  Starport's is lower. Three spare cells is the margin; the self-test is what
+  says whether it is still there.
+* **Columns are added only as they are needed, and anchored to the right at
+  x=72**, where the original strip stood. A Light Factory with five items is
+  still a short column beside the picture it describes; a Construction Yard
+  grows leftwards into the empty half of the window. The block is centred
+  vertically.
+* **Reading order across, then down.** The list is sorted by `sortPriority`, so
+  the highest priorities want to be along the top rather than down the left.
+
+Two things had to move out of the way, and one had to be painted over. The
+**up/down arrows** went from (64,168) to (112,168) -- they scrolled the strip and
+now step the selection by one item, which reaches every cell whatever shape the
+grid took. The Starport's **quantity buttons** went from (8,80) and (8,104),
+which is inside the band a three-column list uses, to beside RESUME GAME at
+(280,168). And CHOAM.CPS has nothing drawn behind where the arrows used to be,
+because the arrows were always there -- so the frame is carried down over the
+hole from the stretch above it.
+
+**One widget per item, not four with an offset underneath.** Nothing moves while
+the window is open, so a cell is one item for as long as it exists and
+`GUI_Production_List_Click()` goes on reading which item was clicked straight off
+`w->index - FACTORY_WIDGET_LIST_BASE`. The widget indices are named now
+(`FACTORY_WIDGET_LIST_BASE` 46, `FACTORY_WIDGET_OTHER_BASE` 67), because the row
+count is no longer 4 and every literal that assumed it was is a bug waiting.
+Number keys 1..9 and 0 pick the first ten cells; the four rows of the strip had
+1..4 between them.
+
+`g_factoryWindowBase` is gone, and with it `GUI_FactoryWindow_PrepareScrollList()`
+and the two scroll animations. That has one consequence worth knowing:
+**SCREEN_1 now holds the finished window, unshifted.** The original painted over
+the strip on SCREEN_1 and rebuilt a copy of it sixteen pixels down for the
+animation to slide about, which is why `GUI_FactoryWindow_B495_0F30()` -- the
+function that rubs out the selection rectangle -- read its patch from `y + 16`.
+It is a straight copy from the same coordinates now. A rectangle that erases to
+the wrong place is invisible until it has been drawn and moved twice, so the
+self-test draws and erases one at **every** cell.
+
+`GUI_FactoryWindow_InitItems()` also gained the bound check it never had: it
+wrote into `g_factoryWindowItems[25]` with nothing stopping it.
+
+`--build-list-self-test` is the guard, and it measures a **real window** rather
+than re-deriving where the cells ought to be, which would only be the layout
+agreeing with itself. It builds one Construction Yard offering every building
+there is and one Starport offering every unit with a price, then walks the widget
+chain the window actually produced: every item got a cell, every cell is inside
+the band and clear of every button, no two widgets share an index or overlap, and
+the selection rectangle draws and erases at each cell in turn. The layout
+arithmetic is checked separately for every list length from 1 to 21. Verified to
+fail: six deliberate breaks -- fewer rows, no gap between columns, the grid
+anchored eight pixels right, the quantity buttons put back in the left band, the
+old `+16` erase offset, and a column-major layout -- produce six different named
+failures.
+
+`--build-list-dump` writes what the window looks like to `bin/buildlist-yard.ppm`
+and `bin/buildlist-starport.ppm`, which is the only way to see a modal screen
+that cannot be opened headlessly.
+
+## How long a deviation lasts
+
+`Unit.deviated` is a budget of 120 points, not a flag, and the unit spends it by
+acting: 10 a tile in `Unit_StartMovement()`, 20 a shot in `Script_Unit_Fire()`,
+5 an order in `UnitSelection_ApplyActionToList()`, and 1 a second in
+`GameLoop_Unit()` whatever it does. Damage is the fifth drain and it was the one
+that did not fit the model.
+
+`Unit_Damage()` asked for `Unit_Deviation_Decrease(unit, 0)`, which means "drain
+the house's toughness" -- and toughness is a **0..255 probability**, which is
+what `Unit_Deviate()` rolls it against. Harkonnen at 200 and Ordos at 128 are
+both larger than the whole 120-point budget, so for two houses in three **one
+point of damage from any source ended the deviation outright**. Atreides at 77
+survived exactly one hit. And a `degrades` tank deals itself exactly one point on
+a quarter of the tiles it enters (`Unit_Move()`, `degradingChance` 85/256 for
+Harkonnen), so a captured tank changed back with nobody shooting at it, which is
+what "it recolours for an instant" looks like on screen.
+
+Damage now drains `damage * toughness / 256`. Toughness stays in the rule as the
+house's resistance, scaling the drain instead of replacing it, so the tough house
+still recovers first -- measured at 30 damage a hit: Harkonnen 6 hits, Ordos 8,
+Atreides 14, against 1, 1 and 2 before. A drain that rounds to nothing is not
+applied at all rather than passed on as 0, which the function reads back as the
+toughness the rule just replaced.
+
+The other four drains are untouched. Note that this fork makes them bite harder
+than the original did: `Unit_Deviate()` puts the unit on `ACTION_GUARD`, and a
+guarding unit of a house somebody plays is picked up by the autonomy layer
+(`Unit_Autonomy_IsCombatUnit()`), which drives it at a target -- where the
+original left it standing still, spending 1 a second.
+
+`--deviator-self-test` is the guard. It tests the model rather than the numbers:
+the budget must be spendable in more than one step by both houses of the match,
+chip damage must cost approximately nothing, toughness must still order the two
+houses, and the four drains that were never broken must still cost 20, 10, 5 and
+1. It deviates with certainty rather than rolling for it -- a probability large
+enough to survive the eighth `Unit_Deviate()` takes off it for a house nobody is
+playing. Only a house someone plays can be given a unit, which is why it tests
+the match's own two rather than all three.
+
 ## Whose army a player may command
 
 A match has two people in it, and every unit command names its recipients by
@@ -694,6 +805,9 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-tes
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-queue-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ownership-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-list-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --deviator-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --harvester-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --tech-tree-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --auto-repair-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test

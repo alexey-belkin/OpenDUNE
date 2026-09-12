@@ -256,6 +256,43 @@ its quarter of the price and its quarter of the area. The original game gave
 both the same build time, so paving a square one tile at a time took four times
 as long as paving it in one piece.
 
+The build list
+--------------
+The full-screen list that opens when you pick a factory or the Construction
+Yard shows everything you can build at once. It used to show four items of a
+strip you scrolled with an arrow at each end, which for a Construction Yard
+meant paging through eighteen buildings four at a time. The list is a grid now
+and it grows to fit: a Light Factory keeps its single column beside the picture,
+and a Construction Yard or a Starport spreads into the empty half of the window
+until every item is on screen.
+
+Nothing scrolls any more. The two arrow buttons moved to the bottom of the
+window and step the highlight one item along, and the number keys 1 to 9 and 0
+pick the first ten items outright. The Starport's quantity buttons moved to the
+bottom right, beside "Send order", to leave the list its space.
+
+Deviator
+--------
+A unit hit by the Ordos deviator changes sides for a while rather than for an
+instant. It has always been meant to: the deviation is a budget the unit spends
+by acting -- driving, shooting, or being given orders -- and it runs out on its
+own after two minutes if the unit does none of those. Damage spends it too, but
+the original game spent the whole budget on the first point of damage from any
+source, which for two houses in three meant that a captured unit changed back
+the moment anything scratched it. Harkonnen tanks did it to themselves: they
+take a point of wear on their own every few tiles they drive. Damage now spends
+the budget in proportion to how hard the unit is hit, so it takes a real beating
+to shake a deviation loose, and the tougher the house the sooner it recovers.
+
+Harvesters
+----------
+A loaded harvester picks one refinery and drives to it. With two or more
+refineries it used to change its mind every second or so and end up shuffling
+between two doors without reaching either, because the act of aiming at a
+refinery marks that refinery busy and the harvester then read its own booking as
+somebody else's. A base with several refineries was the case that suffered, and
+it is the case that has most to gain.
+
 Repair all
 ----------
 Select a Repair facility and a "Repair All" button appears on the row below the
