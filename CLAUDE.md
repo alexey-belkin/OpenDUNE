@@ -106,13 +106,24 @@ A worktree rather than the main tree because `./configure` overwrites
 result runs on any Intel Mac from High Sierra onwards and, through Rosetta, on
 this machine — which is how `package.sh` verifies it.
 
+`./configure` says `checking revision... no detection` in a worktree and it is a
+false alarm: `config.lib` tests for a `.git` **directory**, and a worktree has a
+`.git` file pointing at the real one. The revision in the binary comes from
+`findversion.sh` at build time, which does not care, so the package is still
+named after the commit — check that it is rather than believing the warning.
+
 **Then check that the two packages can play each other**, because nothing else
 does. Build both from the same commit with both trees equally clean, and compare
-the room name each one derives:
+the room name each one derives. **The relay has to be up for this**: the room
+line is printed after `MpNet_Connect()` returns, so against an address nothing
+is listening on both binaries print `mp-live: FAIL` and no room at all. Run them
+one after the other rather than together, so each waits out its own timeout
+instead of pairing up with the other one:
 
 ```bash
-cd <repo>/bin      && ./opendune --lobby-play=127.0.0.1:1,x,0,1 2>&1 | grep 'mp-live: room'
-cd /tmp/x86tree/bin && ./opendune --lobby-play=127.0.0.1:1,x,0,1 2>&1 | grep 'mp-live: room'
+tools/relay/relay -listen 127.0.0.1:31337 &
+cd <repo>/bin       && ./opendune --lobby-play=127.0.0.1:31337,dune42,0,1 --mp-wait=1500 2>&1 | grep -o 'room [^,]*'
+cd /tmp/x86tree/bin && ./opendune --lobby-play=127.0.0.1:31337,dune42,0,1 --mp-wait=1500 2>&1 | grep -o 'room [^,]*'
 ```
 
 The digest in the two strings must be identical. It is a hash of the balance
