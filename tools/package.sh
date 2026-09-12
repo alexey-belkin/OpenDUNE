@@ -121,10 +121,9 @@ if [ -n "$SDL" ] && [ "${SDL#@}" = "$SDL" ]; then
 	chmod u+w "$FRAMEWORKS/$SDLNAME"
 	install_name_tool -id "@executable_path/../Frameworks/$SDLNAME" "$FRAMEWORKS/$SDLNAME"
 	install_name_tool -change "$SDL" "@executable_path/../Frameworks/$SDLNAME" "$MACOS/opendune"
-	# Ad-hoc signature: install_name_tool invalidates the one the linker left,
-	# and macOS refuses to load an arm64 image whose signature does not match.
-	codesign --force --sign - "$FRAMEWORKS/$SDLNAME" 2>/dev/null
-	codesign --force --sign - "$MACOS/opendune" 2>/dev/null
+	# install_name_tool invalidates the signature the linker left, and arm64
+	# refuses an image whose signature does not match -- the Signing step below
+	# puts one back, on the dylib and on the bundle together.
 	echo "    $SDLNAME -> Contents/Frameworks"
 else
 	echo "    nothing to vendor (SDL is already relative or statically linked)"
@@ -151,6 +150,23 @@ if [ -n "$RELAY_BIN" ]; then
 fi
 
 # ------------------------------------------------------------- readme -------
+# ---------------------------------------------------------- Signature -------
+# An unsigned app does not open on a machine that did not build it.  This was
+# done inside the vendoring branch only, so the statically linked Intel package
+# went out unsigned every single time -- and the person on the other end saw a
+# refusal rather than a game.  It has to be its own step, after the data is in
+# and the load command is rewritten, because both of those invalidate whatever
+# signature came before them.
+#
+# Ad-hoc is not a developer identity and does not make the app trusted: the
+# receiving machine still has to be told to allow it (INSTALL.txt says how).
+# What it does buy is a code identity and a sealed resource directory, which is
+# the difference between "allow this developer?" and "the app is damaged".
+step "Signing"
+codesign --force --deep --sign - "$APP" || die "could not sign the bundle"
+codesign --verify --deep --strict "$APP" || die "the signature does not verify"
+echo "    ad-hoc, sealed$( [ -n "$SDL" ] && [ "${SDL#@}" = "$SDL" ] && echo " with the vendored SDL" )"
+
 step "Instructions"
 cat > "$ROOT/bundle/INSTALL.txt" <<EOF
 OpenDUNE $REV — сборка от $(date '+%Y-%m-%d')
@@ -258,6 +274,19 @@ if [ "$VERIFY" = 1 ]; then
 
 	BIN="$TMP/$NAME/OpenDUNE.app/Contents/MacOS/opendune"
 	[ -x "$BIN" ] || die "no executable inside the archive"
+
+	# The signature decides whether the app opens at all, and the zip round
+	# trip is the last thing that could have broken it.  Asked of the unpacked
+	# copy for that reason.
+	printf '    %-32s' "signature"
+	if codesign --verify --deep --strict "$TMP/$NAME/OpenDUNE.app" 2>/dev/null; then
+		echo "ok"
+	else
+		echo "FAILED"
+		codesign --verify --deep --strict "$TMP/$NAME/OpenDUNE.app" 2>&1 | tail -5 >&2
+		rm -f "$ZIP" "$ZIP.sha256"
+		die "the package is not signed; archive removed"
+	fi
 
 	otool -L "$BIN" | tail -n +2 | awk '{print $1}' |
 		grep -v '^/usr/lib/' | grep -v '^/System/' | grep -v '^@executable_path/' |
