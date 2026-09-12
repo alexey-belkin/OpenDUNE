@@ -369,6 +369,14 @@ uint16 MpPacket_Format(char *dst, uint16 size, const MpPacket *packet)
 		if (used < size) used += (uint16)snprintf(dst + used, size - used, "\n");
 	}
 
+	/* snprintf() reports the length it wanted, not the length it wrote, so a
+	 * packet that did not fit leaves `used` past the end of the buffer.  It
+	 * used to be returned as if it were a size, and the caller then sent that
+	 * many bytes -- the tail of a command cut off mid-number, followed by
+	 * whatever lay beyond the buffer.  Zero is "this did not fit", and no
+	 * real packet is that short: the header line alone is over a hundred. */
+	if (used >= size) return 0;
+
 	return used;
 }
 
@@ -552,6 +560,7 @@ static bool MpTransport_File_Write(uint8 slot, const MpPacket *packet)
 	if (s_fileDirectory[0] == '\0') return false;
 
 	used = MpPacket_Format(body, sizeof(body), packet);
+	if (used == 0) return false;
 
 	/* Written beside the real name and renamed into place: the reader is another
 	 * process polling the directory, and a half-written packet parses as a short
@@ -645,4 +654,104 @@ const MpTransport *MpTransport_File(const char *directory)
 	snprintf(s_fileDirectory, sizeof(s_fileDirectory), "%s", directory);
 
 	return &s_transportFile;
+}
+
+/**
+ * The wire format, round trip, at the sizes a real turn can reach.
+ *
+ * The buffer used to be 8192 bytes and MpPacket_Format() cut the tail off in
+ * silence, so the first check is the one that names that bug: the largest
+ * packet the command layer can produce must fit in MP_NET_PAYLOAD and must NOT
+ * fit in 8192 -- if it ever does, the constant can go back down and this test
+ * says so.  The rest is that what comes out of Parse is byte for byte what went
+ * into Format, for the largest packet, an ordinary one and an empty one.
+ */
+int MpPacket_RunRegressionTest(void)
+{
+	static char body[16384];
+	static MpPacket in;
+	static MpPacket out;
+	uint16 i;
+	uint16 u;
+	uint16 used;
+	int result = 1;
+
+	/* The worst turn there is: every command slot filled, every recipient list
+	 * full, every number at the width it can reach. */
+	memset(&in, 0, sizeof(in));
+	in.turn         = 4000000000u;
+	in.checkTurn    = 3999999999u;
+	in.check.info   = 0xFFFFFFFF; in.check.house = 0xFEDCBA98; in.check.unit = 0x12345678;
+	in.check.structure = 0x0F0F0F0F; in.check.map = 0xF0F0F0F0; in.check.team = 0xDEADBEEF;
+	in.check.unitNew = 0xCAFEBABE; in.check.anim = 0x0BADF00D; in.check.rng = 0x8BADF00D;
+	in.check.total  = 0xFFFFFFFE;
+	in.count        = MP_TURN_COMMANDS_MAX;
+	for (i = 0; i < MP_TURN_COMMANDS_MAX; i++) {
+		MpCommand *cmd = &in.cmd[i];
+
+		cmd->type    = 255;
+		cmd->houseID = 5;
+		cmd->action  = 255;
+		cmd->packed  = 4095;
+		cmd->object  = 65535;
+		cmd->value   = 65535;
+		cmd->count   = MP_COMMAND_UNITS_MAX;
+		for (u = 0; u < MP_COMMAND_UNITS_MAX; u++) cmd->unit[u] = (uint16)(241 - (u % 3));
+	}
+
+	used = MpPacket_Format(body, 8192, &in);
+	if (used != 0) {
+		printf("packet: the largest turn fits in 8192 bytes (%u), so the payload need not have grown\n", (unsigned)used);
+		result = 0;
+	}
+
+	used = MpPacket_Format(body, sizeof(body), &in);
+	if (used == 0) {
+		printf("packet: the largest turn does not fit in %u bytes\n", (unsigned)sizeof(body));
+		return 0;
+	}
+	printf("packet: the largest turn is %u bytes on the wire\n", (unsigned)used);
+
+	if (!MpPacket_Parse(body, &out)) {
+		printf("packet: the largest turn did not parse back\n");
+		return 0;
+	}
+	if (memcmp(&in, &out, sizeof(in)) != 0) {
+		printf("packet: the largest turn came back different\n");
+		result = 0;
+	}
+
+	/* An ordinary one: two commands, a handful of recipients. */
+	memset(&in, 0, sizeof(in));
+	in.turn = 17; in.checkTurn = 14; in.check.total = 1; in.count = 2;
+	in.cmd[0].type = 3; in.cmd[0].houseID = 1; in.cmd[0].packed = 2113; in.cmd[0].count = 3;
+	in.cmd[0].unit[0] = 7; in.cmd[0].unit[1] = 8; in.cmd[0].unit[2] = 9;
+	in.cmd[1].type = 9; in.cmd[1].houseID = 1; in.cmd[1].object = 12; in.cmd[1].value = 4;
+	used = MpPacket_Format(body, sizeof(body), &in);
+	if (used == 0 || !MpPacket_Parse(body, &out) || memcmp(&in, &out, sizeof(in)) != 0) {
+		printf("packet: an ordinary turn did not round trip\n");
+		result = 0;
+	}
+
+	/* And nothing at all, which is most turns. */
+	memset(&in, 0, sizeof(in));
+	in.turn = 18; in.checkTurn = MP_TURN_NO_CHECKSUM;
+	used = MpPacket_Format(body, sizeof(body), &in);
+	if (used == 0 || !MpPacket_Parse(body, &out) || memcmp(&in, &out, sizeof(in)) != 0) {
+		printf("packet: an empty turn did not round trip\n");
+		result = 0;
+	}
+
+	/* A body cut short must be refused, not read as a shorter command. */
+	memset(&in, 0, sizeof(in));
+	in.turn = 19; in.count = 1; in.cmd[0].type = 3; in.cmd[0].count = 4;
+	in.cmd[0].unit[0] = 10; in.cmd[0].unit[1] = 11; in.cmd[0].unit[2] = 12; in.cmd[0].unit[3] = 13;
+	used = MpPacket_Format(body, sizeof(body), &in);
+	body[used - 4] = '\0';
+	if (MpPacket_Parse(body, &out)) {
+		printf("packet: a truncated turn was accepted\n");
+		result = 0;
+	}
+
+	return result;
 }

@@ -60,6 +60,7 @@ extern const char *MpTurn_GetDesyncChunks(void);
 extern void MpTurn_SetSnapshots(bool enabled);
 
 extern uint16 MpPacket_Format(char *dst, uint16 size, const MpPacket *packet);
+extern int MpPacket_RunRegressionTest(void);
 extern bool MpPacket_Parse(const char *src, MpPacket *packet);
 
 extern const MpTransport *MpTransport_Loopback(void);
