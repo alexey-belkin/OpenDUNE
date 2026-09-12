@@ -262,6 +262,20 @@ static uint32 Lobby_Seed(const char *code)
 }
 
 /**
+ * The digest two players have to agree about, on its own.
+ *
+ * It was only ever visible inside a room name, and only after a connect
+ * succeeded -- so two people who could not find each other had no way to see
+ * why, and "the other player never joined" was the only symptom of a settings
+ * file one of them did not have.  --config-hash prints this without a relay,
+ * without an opponent and without starting anything.
+ */
+uint32 GUI_Lobby_ConfigHash(void)
+{
+	return Lobby_ConfigHash();
+}
+
+/**
  * The name sent to the relay: the code, the houses, and the build digest.
  *
  * The slot is deliberately absent -- the two players are in the same room, they

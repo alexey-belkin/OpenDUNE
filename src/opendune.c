@@ -148,6 +148,7 @@ static bool s_techTreeSelfTest = false;
 static int s_techTreeSelfTestResult = -1;
 static bool s_autoRepairSelfTest = false;
 static int s_autoRepairSelfTestResult = -1;
+static bool s_configHash = false;
 static bool s_starportSelfTest = false;
 static int s_starportSelfTestResult = -1;
 /* Extra simulation passes per loop iteration, on top of whatever the Game
@@ -237,6 +238,13 @@ static uint32 s_mpLiveSampleStep = 300;
 static uint16 s_mpLiveUnits = 0;
 static uint8 s_mpViewpointOverride = 0;
 static bool s_mpLiveDesyncSeen = false;
+/* Why the turn loop stopped, kept for the screen rather than for the log.  The
+ * match ends and the local simulation carries on -- the window has to stay
+ * alive to be looked at and closed -- so without this the only sign that the
+ * other player is gone is the sync line disappearing from the corner, and a
+ * player who is not told carries on playing a game nobody else is in. */
+static char s_mpLiveEnded[24] = "";
+static uint32 s_mpLiveEndedTurn = 0;
 static uint32 s_mpLiveDumpTick = 0xFFFFFFFF;   /*!< Zero means the starting position. */
 static bool s_mpDesyncDump = false;            /*!< Keep a rolling dump of recent turns. */
 
@@ -1462,6 +1470,13 @@ static void MpGame_Step(void)
 				         (unsigned)MpTurn_GetTurn(),
 				         MpNet_IsConnected() ? "the other player left" : MpNet_GetError());
 				PrintToConsole(line);
+
+				/* Said on screen too, and permanently: this line is the only
+				 * thing between a dead match and a player who thinks the
+				 * opponent has gone quiet. */
+				snprintf(s_mpLiveEnded, sizeof(s_mpLiveEnded), "%s",
+				         MpNet_IsConnected() ? "THEY LEFT" : "RELAY LOST");
+				s_mpLiveEndedTurn = MpTurn_GetTurn();
 				MpTurn_End();
 				Timer_ClaimAnimClock(false);
 				MpNet_Disconnect();
@@ -1570,7 +1585,16 @@ const char *MpGame_GetSyncLine(uint8 *colour)
 	static char line[64];
 	uint32 turn = 0;
 
-	if (!MpTurn_IsActive()) return NULL;
+	if (!MpTurn_IsActive()) {
+		if (s_mpLiveEnded[0] == '\0') return NULL;
+
+		/* Red and permanent, like a desync, and for the same reason: from here
+		 * this is not the game the other player is playing.  The console line
+		 * beside it goes to a terminal nobody running a windowed game sees. */
+		if (colour != NULL) *colour = 8;
+		snprintf(line, sizeof(line), "ENDED t%u: %s", (unsigned)s_mpLiveEndedTurn, s_mpLiveEnded);
+		return line;
+	}
 
 	if (MpTurn_HasDesynced(&turn)) {
 		/* Red, and it stays: from here the two games are different games, and
@@ -1829,6 +1853,8 @@ static bool MpGame_Begin(void)
 	s_mpLiveStalledMs  = 0;
 	s_mpLiveNextSample = s_mpLiveSampleStep;
 	s_mpLiveDesyncSeen = false;
+	s_mpLiveEnded[0]   = '\0';
+	s_mpLiveEndedTurn  = 0;
 
 	/* Squad first, then the clock.  Placing units after the turn loop is running
 	 * -- and worse, after the pump is registered -- means the world can advance
@@ -4391,6 +4417,32 @@ static void GameLoop_Main(void)
 		return;
 	}
 
+	/* Everything two players must agree about, in one screen, without a relay
+	 * and without an opponent.  A digest that differs is why they never met;
+	 * the lines under it are where to look, since each of them is an
+	 * opendune.ini key and the file is what usually differs. */
+	if (s_configHash) {
+		char line[128];
+
+		snprintf(line, sizeof(line), "config-hash: %08x", (unsigned)GUI_Lobby_ConfigHash());
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  revision            %s", g_opendune_revision);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  tech_tree           %s", Structure_TechTree_GetTree());
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  pathfinder_astar    %u", Pathfinder_IsEnabled() ? 1 : 0);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  move_rolling_turn   %u", Unit_MoveRules_IsRollingTurn() ? 1 : 0);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  build_slab_on_sand  %u", Structure_BuildRules_SlabOnSand() ? 1 : 0);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  skirmish_base_rock  %u", Skirmish_Rules_BaseRock() ? 1 : 0);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  starport_special    %u", Starport_SellsSpecialUnits() ? 1 : 0);
+		PrintToConsole(line);
+		return;
+	}
+
 	if (s_starportSelfTest) {
 		s_starportSelfTestResult = Starport_RunRegressionTest();
 		PrintToConsole((s_starportSelfTestResult == 1) ? "starport-self-test: PASS"
@@ -5478,6 +5530,7 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
 			if (strcmp(argv[i], "--tech-tree-self-test") == 0) s_techTreeSelfTest = true;
 			if (strcmp(argv[i], "--auto-repair-self-test") == 0) s_autoRepairSelfTest = true;
+			if (strcmp(argv[i], "--config-hash") == 0) s_configHash = true;
 			if (strcmp(argv[i], "--starport-self-test") == 0) s_starportSelfTest = true;
 			/* Same reason as --pathfinder=: opendune.ini is searched in the
 			 * player's Application Support directory first, so a copy there

@@ -961,6 +961,20 @@ the answer to a sample thousands of ticks later; `--mp-modal-dump=TICK` leaves
 both passes' copy of one sample on disk for `tools/mpdesync_diff.py`. Run it on
 several seeds: the first bug it found showed on one seed in three.
 
+**A match that ends has to say so on the screen.** When the other player leaves
+or the relay connection breaks, the turn loop stops and the local simulation
+carries on — deliberately, so the window stays alive to be looked at and closed.
+That was announced with `PrintToConsole()` alone, which in a windowed game goes
+to a terminal nobody is watching, and the only other sign was the sync line
+vanishing from the corner. Both players then kept playing, each alone, each
+seeing the other's base frozen at the moment of the break, with no warning
+anywhere — which is indistinguishable from a desync and is not one, because the
+checksum comparison needs the other client's packet and no packet ever came.
+`MpGame_GetSyncLine()` answers `ENDED t<turn>: THEY LEFT` or `RELAY LOST` in red
+where it used to answer nothing. Note that the relay's own `idleTimeout` is
+120 s ([tools/relay/relay.go](tools/relay/relay.go)), so a match nobody sends
+packets for that long is closed from under both of them.
+
 **Guards on match-shared state key on `Match_IsActive()`, not `MpTurn_IsActive()`.**
 The turn loop starts several hundred milliseconds after the match is built, and
 a repaint in that window is enough. `MpTurn_IsActive()` is right only for things
@@ -1075,6 +1089,16 @@ without knowing that it does.
 * The **game code** is the only thing anybody has to exchange. The map seed is
   `crc32(code) | 1`, so both sides derive the same map from it and no seed is
   ever sent.
+* **`--config-hash` prints it**, with the ini-driven rules listed under it, and
+  needs no relay and no opponent. Without that the digest was visible only
+  inside a room name and only after a connect succeeded, so two players who
+  could not find each other had no way to see why — and the commonest reason is
+  not a code difference at all but **an `opendune.ini` one machine has and the
+  other does not**. Measured here: `tech_tree=mp` against the compiled-in
+  `stock` is `c7bb21aa` against `d490bdf8`, which is two rooms. `package.sh`
+  copies the builder's effective ini in beside the app and refuses to ship a
+  package whose digest differs from the build machine's, so the configuration
+  is a property of the package rather than of whoever unpacked it.
 * The **config hash** is `crc32(revision + g_table_unitInfo + g_table_structureInfo
   + the rules that are not table patches)`. Hashing the tables rather than the
   ini file is what makes it exact: the balance module, the unit tuning and the

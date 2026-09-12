@@ -28,6 +28,7 @@ typedef struct LobbyChoice {
 } LobbyChoice;
 
 extern bool GUI_Lobby_Show(LobbyChoice *out);
+extern uint32 GUI_Lobby_ConfigHash(void);
 extern bool GUI_Lobby_Choose(const char *relay, const char *code, uint8 pair, uint8 slot, LobbyChoice *out);
 extern int GUI_Lobby_RunSelfTest(void);
 
