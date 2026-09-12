@@ -95,6 +95,20 @@ typedef struct SelectionTypeStruct {
 
 struct Widget;
 
+/**
+ * How far apart two clicks may be and still be one double click, in
+ * milliseconds of wall clock.
+ *
+ * The wall clock, and not g_timerGUI, which is what this used to be counted in.
+ * In a match the simulation stepper owns that counter -- Timer_StepGUI() runs
+ * once per simulation tick -- so it advances at sixty times the speed
+ * multiplier, and the window shrank as the match got faster: half a second at
+ * x1, a quarter at x2, an eighth at x4 and a sixteenth at x8, which is quicker
+ * than a hand can click.  250 ms is what x2 gave, and x2 is the speed it was
+ * comfortable at; now every speed gives it.
+ */
+#define GUI_DOUBLE_CLICK_MS 250
+
 extern const SelectionTypeStruct g_table_selectionType[SELECTIONTYPE_MAX];
 
 extern uint8 *g_palette_998A;

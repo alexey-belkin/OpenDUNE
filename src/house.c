@@ -1,6 +1,7 @@
 /** @file src/house.c %House management routines. */
 
 #include <stdio.h>
+#include "os/common.h"
 #include "types.h"
 #include "os/math.h"
 #include "os/strings.h"
@@ -54,6 +55,7 @@ typedef struct StarportConfig {
 	uint16 deliveryOrdos;                                   /*!< The same for Ordos. */
 	uint16 stockCredits;                                    /*!< A type's opening stock is what this buys of it. */
 	uint16 stockCeiling;                                    /*!< Restock limit, as a percentage of the opening stock. */
+	bool   specialUnits;                                    /*!< Whether a House's own units are for sale.  @see Starport_Sells() */
 } StarportConfig;
 
 static StarportConfig s_starport = {
@@ -63,7 +65,8 @@ static StarportConfig s_starport = {
 	300,
 	150,
 	1500,
-	200
+	200,
+	false
 };
 
 static uint16 Starport_ReadPercent(const char *key, uint16 defaultValue, uint16 low)
@@ -94,6 +97,8 @@ void Starport_Init(void)
 	s_starport.delivery      = Starport_ReadPercent("starport_delivery", s_starport.delivery, 0);
 	s_starport.deliveryOrdos = Starport_ReadPercent("starport_delivery_ordos", s_starport.deliveryOrdos, 0);
 	s_starport.stockCeiling  = Starport_ReadPercent("starport_stock_ceiling", s_starport.stockCeiling, 100);
+
+	s_starport.specialUnits = (IniFile_GetInteger("starport_special_units", s_starport.specialUnits ? 1 : 0) != 0);
 
 	ticks = IniFile_GetInteger("starport_stock_credits", s_starport.stockCredits);
 	if (ticks < 0) ticks = 0;
@@ -159,6 +164,154 @@ int16 Starport_StockCeiling(uint16 buildCredits)
 	if (ceiling < (uint32)opening) ceiling = (uint32)opening;
 
 	return (int16)min(ceiling, 127);
+}
+
+/**
+ * Whether any factory in the game builds this type.
+ *
+ * The Ordos Raider Trike is a special case and not an exception: no table lists
+ * it, because Structure_GetBuildObject() swaps a Light Factory's Trike for one
+ * when Ordos own the factory.  It has a factory; it just has it by substitution.
+ */
+static bool Starport_FactoryBuilds(uint16 unitType)
+{
+	uint16 i, j;
+
+	if (unitType == UNIT_RAIDER_TRIKE) return true;
+
+	for (i = 0; i < STRUCTURE_MAX; i++) {
+		for (j = 0; j < 8; j++) {
+			if (g_table_structureInfo[i].buildableUnits[j] == unitType) return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Whether the freighter sells this type at all.
+ *
+ * The Starport used to sell whatever the buying house was allowed to field,
+ * which let it stand in for buildings the house had never built: eight hundred
+ * credits and a Starport bought a Devastator, and the House of IX -- the thing
+ * that is supposed to cost -- need never go up.  The same for the Saboteur,
+ * which no factory anywhere builds, because it is what the Ordos Palace does.
+ *
+ * So the shop is now the common roster: what a house could have built for
+ * itself with an ordinary factory.  A House's own unit comes from that House's
+ * own building.  `starport_special_units=1` sells them again.
+ */
+bool Starport_Sells(uint16 unitType)
+{
+	const UnitInfo *ui;
+
+	if (unitType >= UNIT_MAX) return false;
+
+	ui = &g_table_unitInfo[unitType];
+
+	/* A build price of zero is what separates merchandise from the rest of the
+	 * unit pool: the projectiles, the sandworm, the frigate and the Death Hand
+	 * all sit in the same table and cost nothing. */
+	if (ui->o.buildCredits == 0) return false;
+
+	if (s_starport.specialUnits) return true;
+
+	/* Anything that wants a building of its own is that building's to sell.
+	 * Today that is the House of IX, four times over. */
+	if (ui->o.structuresRequired != 0) return false;
+
+	return Starport_FactoryBuilds(unitType);
+}
+
+/**
+ * The shop rule, checked one type at a time.
+ *
+ * No map and no match: Starport_Sells() reads two static tables and one key, so
+ * the test is exactly as wide as the rule is.  What it cannot reach is the
+ * order handler, which needs a Starport standing -- that half is covered by
+ * refusing the whole order before anything is charged, and by the window never
+ * offering what this refuses.
+ *
+ * @return 1 when everything held, 0 on the first thing that did not.
+ */
+int Starport_RunRegressionTest(void)
+{
+	static const uint16 refused[] = {
+		UNIT_DEVIATOR, UNIT_DEVASTATOR, UNIT_SONIC_TANK, UNIT_ORNITHOPTER, UNIT_SABOTEUR
+	};
+	static const uint16 sold[] = {
+		UNIT_CARRYALL, UNIT_TANK, UNIT_SIEGE_TANK, UNIT_QUAD, UNIT_HARVESTER, UNIT_MCV,
+		UNIT_TRIKE, UNIT_RAIDER_TRIKE, UNIT_SOLDIER, UNIT_INFANTRY, UNIT_TROOPER,
+		UNIT_TROOPERS, UNIT_LAUNCHER
+	};
+	/* Priced at nothing, and therefore not merchandise at any setting. */
+	static const uint16 never[] = {
+		UNIT_MISSILE_HOUSE, UNIT_MISSILE_ROCKET, UNIT_SANDWORM, UNIT_FRIGATE
+	};
+	const bool configured = s_starport.specialUnits;
+	int result = 1;
+	uint16 i;
+
+	s_starport.specialUnits = false;
+
+	for (i = 0; i < lengthof(refused); i++) {
+		if (Starport_Sells(refused[i])) {
+			printf("starport: %s is still for sale\n", g_table_unitInfo[refused[i]].o.name);
+			result = 0;
+		}
+	}
+
+	for (i = 0; i < lengthof(sold); i++) {
+		if (!Starport_Sells(sold[i])) {
+			printf("starport: %s is no longer for sale\n", g_table_unitInfo[sold[i]].o.name);
+			result = 0;
+		}
+	}
+
+	for (i = 0; i < lengthof(never); i++) {
+		if (Starport_Sells(never[i])) {
+			printf("starport: %s is not merchandise\n", g_table_unitInfo[never[i]].o.name);
+			result = 0;
+		}
+	}
+
+	/* Every excluded type has to be obtainable some other way, or the rule has
+	 * taken a unit out of the game rather than moved it. */
+	for (i = 0; i < lengthof(refused); i++) {
+		if (refused[i] == UNIT_SABOTEUR) continue;                  /* the Palace, which builds no unit list. */
+		if (g_table_unitInfo[refused[i]].o.structuresRequired == 0 || !Starport_FactoryBuilds(refused[i])) {
+			printf("starport: %s has nowhere else to come from\n", g_table_unitInfo[refused[i]].o.name);
+			result = 0;
+		}
+	}
+
+	/* And the key sells them again. */
+	s_starport.specialUnits = true;
+	for (i = 0; i < lengthof(refused); i++) {
+		if (!Starport_Sells(refused[i])) {
+			printf("starport_special_units=1 did not restore %s\n", g_table_unitInfo[refused[i]].o.name);
+			result = 0;
+		}
+	}
+	for (i = 0; i < lengthof(never); i++) {
+		if (Starport_Sells(never[i])) result = 0;
+	}
+
+	s_starport.specialUnits = configured;
+
+	return result;
+}
+
+/** Whether a House's own units are for sale.  Folded into the lobby digest. */
+bool Starport_SellsSpecialUnits(void)
+{
+	return s_starport.specialUnits;
+}
+
+/** For the tests; the player's own setting is starport_special_units. */
+void Starport_SetSpecialUnits(bool sold)
+{
+	s_starport.specialUnits = sold;
 }
 
 /** How long the freighter takes, in Starport ticks. */

@@ -393,6 +393,93 @@ directly and never asked this rule in the first place.
 
 `--build-rules-self-test` checks both halves against a generated map.
 
+## The map a match is played on
+
+`skirmish_base_rock` (default 0). Each base used to be laid out inside a 24x20
+rectangle that `Skirmish_CarveRock()` first turned into solid rock — the one
+thing on a generated map that could not have grown there, and the reason a
+skirmish map had two suspiciously flat corners. It is off now: the plan paves
+every footprint before it builds on it (`Skirmish_LaySlabs()` writes the ground
+tile directly and charges for the footprint), so a base stands on its own
+concrete wherever it landed, which is what `build_slab_on_sand` made possible.
+
+**It measures worse, and the key is why it still exists.** Rock is the fastest
+ground short of concrete, and 480 tiles of it per base is an army that leaves
+home sooner. Measured on `--war-metrics`, rock against natural ground:
+`econ.spice/match` 73597 → 62750, `result.points %` 87 → 58,
+`result.wipeouts %` 8 → 25, `wave.matches %` 91 → 75, `turret.entries/match`
+4 → 17. The suite still passes — no gate is crossed — but five numbers move a
+long way, and every recorded figure in [metrics.md](metrics.md) was taken with
+the plateau. `skirmish_base_rock=1` restores it *exactly*: all sixteen numbers
+come back bit-for-bit, which is the check that the key really is the only
+difference.
+
+Two things had to be said out loud once the rock was gone. Spice may not be
+seeded inside a base rectangle (`Skirmish_IsInsideBase()`) — rock used to refuse
+it for free, since `Map_ChangeSpiceAmount()` only writes sand, dune and spice,
+and without the rule a house sometimes started the match mining its own front
+yard. And levelling the mountains inside the rectangle was tried and **rejected
+on measurement**: it moved nothing in the right direction and took the suite to
+FAIL with 2 regressions, so a mountain in a base is left standing.
+
+A third thing surfaced when the branch was merged: **`--harvester-self-test`
+asks for the plateau back**. It needs two places a refinery can stand as far
+apart as the map allows, a refinery still refuses bare sand, and a generated
+map's own rock comes in patches whose widest pair of refinery sites is seven
+tiles — a step sideways rather than the drive the flip loop needs time to run
+in. `Harvester_SelfTest()` therefore sets the key for the duration of the test
+and puts it back afterwards. It is the harvester layer under test, and that
+layer cannot see what the ground is made of.
+
+## What a player may click twice
+
+The double-click window is wall-clock milliseconds (`GUI_DOUBLE_CLICK_MS` in
+[gui/gui.h](src/gui/gui.h)), and it has to be. It was counted in `g_timerGUI`,
+which outside a match is the 60 Hz ticker but **inside one is the simulation
+stepper**: `MpGame_Step()` calls `Timer_StepGUI()` once per simulation tick, so
+the counter runs at 60 x the speed multiplier and the window shrank with the
+speed — half a second at x1, a quarter at x2, an eighth at x4, a sixteenth at
+x8. At x4 nobody could click fast enough. Both double clicks were affected: a
+unit on the map (`GUI_Widget_Viewport_TakePair()`) and an item in the build list
+(`GUI_Production_List_Click()`).
+
+250 ms is what x2 gave, and every speed gives it now.
+
+`--selection-self-test` is what caught the consequence: it used to lapse the
+window by adding to `g_timerGUI`, which a wall clock does not notice.
+`GUI_Widget_Viewport_ResetDoubleClick()` says what that line meant, and the
+alternative — sleeping the window out three times over five savegames — is four
+seconds of a headless test doing nothing.
+
+## The Starport sells the common roster
+
+`Starport_Sells()` in [house.c](src/house.c), key `starport_special_units`
+(default 0). The Starport used to sell whatever the buying house was allowed to
+field, which quietly made it a substitute for buildings the house had never
+built: eight hundred credits and a Starport bought a Devastator, and the House
+of IX — the thing that is supposed to cost — never had to go up.
+
+The rule is now *what a house could have built for itself with an ordinary
+factory*, which excludes exactly five types and no others: the Deviator, the
+Devastator, the Sonic Tank and the Ornithopter, all of which carry
+`structuresRequired = FLAG_STRUCTURE_HOUSE_OF_IX`, and the Saboteur, which no
+`buildableUnits` list anywhere contains because it is what the Ordos Palace
+does. The Raider Trike is not one of them and is a special case in the code:
+`Structure_GetBuildObject()` swaps a Light Factory's Trike for one when Ordos
+own the factory, so it has a factory by substitution rather than by table.
+
+Two places enforce it. The window (`Structure_BuildObject()`) hides what is not
+for sale, and `Structure_StarportOrder()` refuses it — **the whole order, before
+anything is charged**, because an order carries one total and no per-line price,
+so dropping a line would charge for it. The AI is unaffected: it only ever buys
+harvesters and carryalls (`Skirmish_AI_StarportOrder()`).
+
+`--starport-self-test` is the guard: the five refused, thirteen still sold, the
+priced-at-nothing types (projectiles, sandworm, frigate, Death Hand) never sold
+either way, every refused type still obtainable somewhere else, and the key
+selling them again. Verified to fail: dropping either half of the rule produces
+a different named failure.
+
 ## Repair all
 
 `Structure_AutoRepair_*` in [structure.c](src/structure.c). A switch on the
@@ -810,6 +897,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonne
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --harvester-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --tech-tree-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --auto-repair-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --starport-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --move-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --pathfinder-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --lobby-self-test
@@ -964,11 +1052,17 @@ without knowing that it does.
 * The **game code** is the only thing anybody has to exchange. The map seed is
   `crc32(code) | 1`, so both sides derive the same map from it and no seed is
   ever sent.
-* The **config hash** is `crc32(revision + g_table_unitInfo + g_table_structureInfo)`.
-  Hashing the tables rather than the ini file is what makes it exact: the balance
-  module works by patching those tables, so a key written out at its default
-  value, a comment or a blank line changes nothing, and a real difference always
-  changes the hash.
+* The **config hash** is `crc32(revision + g_table_unitInfo + g_table_structureInfo
+  + the rules that are not table patches)`. Hashing the tables rather than the
+  ini file is what makes it exact: the balance module, the unit tuning and the
+  tech tree all work by patching those tables, so a key written out at its
+  default value, a comment or a blank line changes nothing, and a real
+  difference always changes the hash. A rule that is *not* a table patch has to
+  be named in `Lobby_ConfigHash()` one at a time — `pathfinder_astar`,
+  `move_rolling_turn`, `build_slab_on_sand`, `skirmish_base_rock` and
+  `starport_special_units` — and that is exactly the list that gets forgotten.
+  `--lobby-self-test` flips each of them and demands the digest move; removing
+  any one fold fails it by name.
 * The **house row** cycles the six *ordered* pairs, and the player row swaps which
   end of the pair is yours. Both players see the same pair — it is in the room
   name — and pick opposite seats.

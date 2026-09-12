@@ -33,6 +33,7 @@
 #include "pool/structure.h"
 #include "pool/team.h"
 #include "pool/unit.h"
+#include "inifile.h"
 #include "scenario.h"
 #include "sprites.h"
 #include "structure.h"
@@ -76,7 +77,15 @@
 /** Campaign the skirmish pretends to be, so the full tech tree is available. */
 #define SKIRMISH_CAMPAIGN 8
 
-/** Size of the rock plateau carved out for one base. */
+/** Size of the rectangle one base is laid out in.
+ *
+ * It used to be carved into solid rock, because a structure on sand takes a
+ * hitpoint penalty and then erodes, and an AI test bench measuring erosion is
+ * not measuring build orders.  Concrete answers that better than terrain does:
+ * the plan paves every footprint before it puts anything on it
+ * (Skirmish_LaySlabs), so the base stands on its own slab wherever it landed,
+ * and the map is left as the generator drew it -- no two rectangles of
+ * suspiciously flat rock in opposite corners. */
 #define SKIRMISH_BASE_WIDTH  24
 #define SKIRMISH_BASE_HEIGHT 20
 /** Middle of the 62x62 map, which is what a base is oriented against. */
@@ -154,6 +163,9 @@ static uint32 s_harvested[HOUSE_MAX];
 static uint32 s_refineryLoad[STRUCTURE_INDEX_MAX_SOFT];
 static uint16 s_refineryWait[HOUSE_MAX];
 static uint32 s_nextQueueSample[HOUSE_MAX];
+/* Whether a base rectangle is carved into rock before anything is built on it.
+ * See Skirmish_CarveRock(); `skirmish_base_rock` in opendune.ini. */
+static bool s_baseRock = false;
 static uint32 s_nextBloom;                                  /*!< Game tick the next spice bloom is due. */
 static uint16 s_carryallTarget[HOUSE_MAX];
 static uint32 s_tripStart[UNIT_INDEX_MAX];
@@ -774,9 +786,16 @@ static bool Skirmish_IsRockNeighbour(uint16 x, uint16 y, const SkirmishBase *b)
 }
 
 /**
- * Turn the base rectangle into solid rock.  Structures may be built on sand,
- * but they degrade there, which would make every skirmish a race against
- * erosion instead of a test of the build order.
+ * Turn the base rectangle into solid rock: the old shape of a skirmish map.
+ *
+ * Off by default now.  The plan paves every footprint before it builds on it,
+ * so a base does not need rock underneath it -- and two rectangles of flat rock
+ * in opposite corners are the one thing on a generated map that could not have
+ * grown there.  The key is kept because the AI measures worse without it, and
+ * the suite's recorded numbers were taken with it on: --war-metrics reads
+ * econ.spice/match 73597 against 62750, result.points 87 against 58.  Rock is
+ * the fastest ground a unit crosses short of concrete, and a base that stands
+ * on sand is a base its army leaves more slowly.
  */
 static void Skirmish_CarveRock(const SkirmishBase *b)
 {
@@ -967,9 +986,10 @@ static void Skirmish_LaySlabs(House *h, uint16 position, uint8 structureType)
 		x = Tile_GetPackedX(packed);
 		y = Tile_GetPackedY(packed);
 
-		/* Inside the plateau only.  Concrete poured onto the sand outside it
-		 * would be paid for and then erode, and it would draw the outline of the
-		 * base for anyone watching. */
+		/* Inside the base rectangle only.  The apron is there so the next
+		 * structure has something of its own to touch, and paving beyond the
+		 * rectangle buys nothing but draws the outline of the base for anyone
+		 * watching. */
 		if (x < b->rectX || x >= b->rectX + SKIRMISH_BASE_WIDTH) continue;
 		if (y < b->rectY || y >= b->rectY + SKIRMISH_BASE_HEIGHT) continue;
 
@@ -2018,8 +2038,33 @@ uint16 Skirmish_House_MaxCredits(const House *h)
 }
 
 /**
+ * Whether a tile belongs to somebody's base rectangle.
+ *
+ * The rock plateau used to answer this by itself -- Map_ChangeSpiceAmount()
+ * refuses anything that is not sand, dune or spice, so a base could never be
+ * seeded with spice.  On natural ground it has to be said out loud, or a house
+ * would sometimes start the match mining its own front yard and sometimes not,
+ * which is the map deciding the economy.
+ */
+static bool Skirmish_IsInsideBase(uint16 x, uint16 y)
+{
+	uint8 i;
+
+	for (i = 0; i < SKIRMISH_PLAYER_MAX; i++) {
+		const SkirmishBase *b = &s_bases[i];
+
+		if (b->entryCount == 0) continue;
+
+		if (x >= b->rectX && x < b->rectX + SKIRMISH_BASE_WIDTH &&
+		    y >= b->rectY && y < b->rectY + SKIRMISH_BASE_HEIGHT) return true;
+	}
+
+	return false;
+}
+
+/**
  * Add a spice field around a tile.  Map_ChangeSpiceAmount() refuses anything
- * that is not sand, dune or spice, so this quietly skips rock and structures.
+ * that is not sand, dune or spice, so this quietly skips structures.
  */
 static void Skirmish_SeedSpiceField(uint16 centerX, uint16 centerY, uint16 tiles)
 {
@@ -2031,6 +2076,7 @@ static void Skirmish_SeedSpiceField(uint16 centerX, uint16 centerY, uint16 tiles
 		uint16 packed;
 
 		if (x >= 64 || y >= 64) continue;
+		if (Skirmish_IsInsideBase(x, y)) continue;
 
 		packed = Tile_PackXY(x, y);
 		if (!Map_IsValidPosition(packed)) continue;
@@ -2083,7 +2129,7 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
 		Skirmish_MakeDefaultPlan(&b->plan);
 	}
 
-	Skirmish_CarveRock(b);
+	if (s_baseRock) Skirmish_CarveRock(b);
 	Skirmish_Plan_Create(b);
 
 	h = House_Allocate(houseID);
@@ -2129,6 +2175,32 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
 		Team_Create(houseID, TEAM_ACTION_NORMAL, s_teamPlan[i].movementType,
 		            s_teamPlan[i].minMembers, s_teamPlan[i].maxMembers);
 	}
+}
+
+/**
+ * Read the rules a generated map is drawn by.
+ *
+ * One key so far: `skirmish_base_rock` restores the rock plateau each base used
+ * to be carved into.  Called once at start-up, beside the other rule modules --
+ * the map is generated long after, and a key read at generation time would be
+ * read once per search evaluation for no reason.
+ */
+void Skirmish_Rules_Init(void)
+{
+	s_baseRock = (IniFile_GetInteger("skirmish_base_rock", 0) != 0);
+}
+
+/** Whether a base is carved into rock.  Folded into the lobby digest: the map
+ *  is derived from it, so two players who disagree play two different maps. */
+bool Skirmish_Rules_BaseRock(void)
+{
+	return s_baseRock;
+}
+
+/** For the tests and the command line; the player's own setting is the key. */
+void Skirmish_Rules_SetBaseRock(bool carved)
+{
+	s_baseRock = carved;
 }
 
 /**

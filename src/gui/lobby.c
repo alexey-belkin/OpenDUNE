@@ -30,8 +30,11 @@
 #include "../house.h"
 #include "../inifile.h"
 #include "../input/input.h"
+#include "../house.h"
 #include "../mpsync.h"
+#include "../pathfinder.h"
 #include "../rev.h"
+#include "../skirmish.h"
 #include "../sprites.h"
 #include "../string.h"
 #include "../structure.h"
@@ -199,11 +202,20 @@ static uint32 Lobby_FoldStructure(uint32 crc, const StructureInfo *si)
  * A digest of everything about this build that changes what the simulation
  * does.
  *
- * The two tables are the whole of it: the balance module and the unit tuning
- * both work by patching them, so hashing the tables catches every ini key that
- * matters and ignores every one that does not -- whitespace, comments, a key
- * written out at its default value.  The revision is in there because two
+ * The two tables carry most of it: the balance module, the unit tuning and the
+ * tech tree all work by patching them, so hashing the tables catches every ini
+ * key that does and ignores every one that does not -- whitespace, comments, a
+ * key written out at its default value.  The revision is in there because two
  * different builds of the same tables can still differ anywhere else.
+ *
+ * The rules that are *not* table patches have to be named one at a time, and
+ * every one of them is a simulation input: the route search and the rolling
+ * turn decide where a unit is a tick later, concrete on sand decides whether a
+ * building may be placed, the base rock decides what the map looks like before
+ * anybody has moved, and the Starport rule decides whether an order is refused.
+ * Two players who disagree about any of them do not desync a minute in -- they
+ * never meet, which is a thing a person can act on.  Add a key here whenever
+ * one is added that the simulation reads.
  */
 /**
  * How much of the revision string says what the code is.
@@ -231,6 +243,12 @@ static uint32 Lobby_ConfigHash(void)
 
 	for (i = 0; i < UNIT_MAX; i++) crc = Lobby_FoldUnit(crc, &g_table_unitInfo[i]);
 	for (i = 0; i < STRUCTURE_MAX; i++) crc = Lobby_FoldStructure(crc, &g_table_structureInfo[i]);
+
+	crc = Lobby_Fold(crc, Pathfinder_IsEnabled() ? 1 : 0);
+	crc = Lobby_Fold(crc, Unit_MoveRules_IsRollingTurn() ? 1 : 0);
+	crc = Lobby_Fold(crc, Structure_BuildRules_SlabOnSand() ? 1 : 0);
+	crc = Lobby_Fold(crc, Skirmish_Rules_BaseRock() ? 1 : 0);
+	crc = Lobby_Fold(crc, Starport_SellsSpecialUnits() ? 1 : 0);
 
 	return crc;
 }
@@ -463,6 +481,38 @@ int GUI_Lobby_RunSelfTest(void)
 			ok = (Lobby_ConfigHash() != before);
 			g_table_structureInfo[STRUCTURE_WINDTRAP].powerUsage = (int16)savedPower;
 		}
+
+		if (!ok) return 0;
+		if (Lobby_ConfigHash() != before) return 0;
+	}
+
+	/* And the same for every rule that is not a table patch.  These are the ones
+	 * that have to be named one at a time in Lobby_ConfigHash(), so they are the
+	 * ones that get forgotten -- each was a simulation input two players could
+	 * disagree about while asking the relay for the same room. */
+	{
+		uint32 before = Lobby_ConfigHash();
+		bool ok = true;
+
+		Pathfinder_SetEnabled(!Pathfinder_IsEnabled());
+		if (Lobby_ConfigHash() == before) ok = false;
+		Pathfinder_SetEnabled(!Pathfinder_IsEnabled());
+
+		Unit_MoveRules_SetRollingTurn(!Unit_MoveRules_IsRollingTurn());
+		if (Lobby_ConfigHash() == before) ok = false;
+		Unit_MoveRules_SetRollingTurn(!Unit_MoveRules_IsRollingTurn());
+
+		Structure_BuildRules_SetSlabOnSand(!Structure_BuildRules_SlabOnSand());
+		if (Lobby_ConfigHash() == before) ok = false;
+		Structure_BuildRules_SetSlabOnSand(!Structure_BuildRules_SlabOnSand());
+
+		Skirmish_Rules_SetBaseRock(!Skirmish_Rules_BaseRock());
+		if (Lobby_ConfigHash() == before) ok = false;
+		Skirmish_Rules_SetBaseRock(!Skirmish_Rules_BaseRock());
+
+		Starport_SetSpecialUnits(!Starport_SellsSpecialUnits());
+		if (Lobby_ConfigHash() == before) ok = false;
+		Starport_SetSpecialUnits(!Starport_SellsSpecialUnits());
 
 		if (!ok) return 0;
 		if (Lobby_ConfigHash() != before) return 0;

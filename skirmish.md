@@ -40,7 +40,7 @@ callers:
 
 Each AI is given **only a Construction Yard**. Everything else is a plan: an
 ordered list of (structure type, packed position) laid out at start inside a
-20x16 rock plateau carved out of the generated landscape. The Construction Yard
+24x20 rectangle of the generated landscape, whatever the generator put there. The Construction Yard
 works through it, which reuses the engine's own rebuild mechanism
 (`House.ai_structureRebuild`, five slots) rather than replacing it:
 
@@ -91,8 +91,11 @@ builds a Silo before the Light Factory that unlocks the Heavy Factory.
 * **Placement is unchecked for AI houses.** `Structure_Place()` only rejects
   invalid locations for the player ([src/structure.c:664](src/structure.c:664)),
   and `Structure_IsValidBuildLocation()` tests adjacency against
-  *`g_playerHouseID`*'s buildings, so it is useless for planning. The plateau is
-  carved to rock precisely so the plan does not have to rely on it.
+  *`g_playerHouseID`*'s buildings, so it is useless for planning. The rectangle
+  used to be carved into rock precisely so the plan did not have to rely on it;
+  `Skirmish_LaySlabs()` paving every footprint before anything stands on it does
+  the same job on natural ground, and `skirmish_base_rock=1` brings the plateau
+  back. It measures better — see "The map a match is played on" in CLAUDE.md.
 
 ## Attacks
 

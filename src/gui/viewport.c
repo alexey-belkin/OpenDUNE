@@ -43,13 +43,8 @@ static bool s_selectionBoxSuppressUntilRelease;              /*!< Ignore the tai
 static uint16 s_selectionBoxStart;                          /*!< Start tile, fixed in world coordinates. */
 static uint16 s_selectionBoxEnd;                            /*!< End tile, fixed in world coordinates. */
 static uint16 s_lastClickUnit = 0xFFFF;                     /*!< Unit hit by the previous plain click, for double-click detection. */
-static uint32 s_lastClickTime;                              /*!< When that click happened, on the GUI clock. */
+static uint32 s_lastClickTime;                              /*!< When that click happened, on the wall clock in ms. */
 static bool s_clickHandledOnPress;                          /*!< The press completed a double click; its release adds nothing. */
-
-/* Half a second of GUI time.  Deliberately not the game timer: that one runs at
- * double rate in Fast mode and stops altogether when the game is paused, which
- * would make the double-click window a quarter of a second on x2. */
-#define VIEWPORT_DOUBLE_CLICK_TICKS 30
 
 /** Convert a tactical-view pixel position to a map tile. */
 static uint16 GUI_Widget_Viewport_GetPackedAt(uint16 x, uint16 y)
@@ -104,13 +99,25 @@ static Unit *GUI_Widget_Viewport_UnitAt(uint16 packed)
 static bool GUI_Widget_Viewport_TakePair(uint16 packed, bool additive)
 {
 	Unit *unit = GUI_Widget_Viewport_UnitAt(packed);
+	const uint32 now = Timer_GetTime();
 	bool doubleClick = unit != NULL && unit->o.index == s_lastClickUnit &&
-		s_lastClickTime != 0 && s_lastClickTime + VIEWPORT_DOUBLE_CLICK_TICKS > g_timerGUI;
+		s_lastClickTime != 0 && now - s_lastClickTime <= GUI_DOUBLE_CLICK_MS;
 
 	s_lastClickUnit = unit != NULL ? unit->o.index : 0xFFFF;
-	s_lastClickTime = g_timerGUI;
+	s_lastClickTime = now;
 
 	return doubleClick && UnitSelection_SelectSameTypeOnScreen(unit, additive);
+}
+
+/* Forget the click before this one, so the next one cannot pair with it.
+ *
+ * The pairing window is wall-clock time now, which a headless test cannot skip
+ * forward: the regression test used to lapse it by advancing g_timerGUI, and
+ * that was only ever a way of saying "start clean". */
+void GUI_Widget_Viewport_ResetDoubleClick(void)
+{
+	s_lastClickUnit = 0xFFFF;
+	s_lastClickTime = 0;
 }
 
 /* A single click on the map: shift takes a unit in or out of the group, and

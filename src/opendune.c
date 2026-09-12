@@ -148,6 +148,8 @@ static bool s_techTreeSelfTest = false;
 static int s_techTreeSelfTestResult = -1;
 static bool s_autoRepairSelfTest = false;
 static int s_autoRepairSelfTestResult = -1;
+static bool s_starportSelfTest = false;
+static int s_starportSelfTestResult = -1;
 /* Extra simulation passes per loop iteration, on top of whatever the Game
  * Controls speed setting already does.  Powers of two only: the '[' and ']'
  * keys halve and double it. */
@@ -3277,7 +3279,7 @@ static Structure *Harvester_PutRefinery(uint8 houseID, uint16 packed)
  * a harvester that ends up at the right refinery having visited it four times
  * has still failed.
  */
-static int Harvester_SelfTest(void)
+static int Harvester_SelfTestBody(void)
 {
 	uint16 spot[512];
 	uint16 found = 0;
@@ -3380,6 +3382,28 @@ static int Harvester_SelfTest(void)
 	}
 
 	return 1;
+}
+
+/**
+ * The harvester test needs two places a refinery can stand, as far apart as the
+ * map allows, and a refinery still refuses bare sand -- so it needs rock it did
+ * not have to pave.  A generated map's own rock comes in small patches, and the
+ * widest pair of refinery sites among them is seven tiles: a step sideways
+ * rather than the drive across the map the flip loop has to be given time to
+ * run in.  The base plateaus are the only thing that guarantees the distance,
+ * so this test asks for them however the match is configured.  What the ground
+ * is made of is nothing the harvester layer under test can see.
+ */
+static int Harvester_SelfTest(void)
+{
+	const bool baseRock = Skirmish_Rules_BaseRock();
+	int result;
+
+	Skirmish_Rules_SetBaseRock(true);
+	result = Harvester_SelfTestBody();
+	Skirmish_Rules_SetBaseRock(baseRock);
+
+	return result;
 }
 
 static int FactoryWindow_Failed(const char *why, uint32 detail)
@@ -4222,6 +4246,7 @@ static void GameLoop_Main(void)
 	Unit_MoveRules_Init();
 	Structure_BuildRules_Init();
 	Structure_TechTree_Init();
+	Skirmish_Rules_Init();
 	Pathfinder_Init();
 	if (s_pathfinderOverride >= 0) Pathfinder_SetEnabled(s_pathfinderOverride != 0);
 	Starport_Init();
@@ -4363,6 +4388,13 @@ static void GameLoop_Main(void)
 		s_techTreeSelfTestResult = Structure_TechTree_RunRegressionTest();
 		PrintToConsole((s_techTreeSelfTestResult == 1) ? "tech-tree-self-test: PASS"
 		                                               : "tech-tree-self-test: FAIL");
+		return;
+	}
+
+	if (s_starportSelfTest) {
+		s_starportSelfTestResult = Starport_RunRegressionTest();
+		PrintToConsole((s_starportSelfTestResult == 1) ? "starport-self-test: PASS"
+		                                              : "starport-self-test: FAIL");
 		return;
 	}
 
@@ -5446,6 +5478,7 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--combat-balance-self-test") == 0) s_combatBalanceSelfTest = true;
 			if (strcmp(argv[i], "--tech-tree-self-test") == 0) s_techTreeSelfTest = true;
 			if (strcmp(argv[i], "--auto-repair-self-test") == 0) s_autoRepairSelfTest = true;
+			if (strcmp(argv[i], "--starport-self-test") == 0) s_starportSelfTest = true;
 			/* Same reason as --pathfinder=: opendune.ini is searched in the
 			 * player's Application Support directory first, so a copy there
 			 * shadows anything put next to the binary.  Both players must end up
@@ -5748,6 +5781,7 @@ int main(int argc, char **argv)
 	if (s_buildListSelfTest && s_buildListSelfTestResult != 1) return 1;
 	if (s_techTreeSelfTest && s_techTreeSelfTestResult != 1) return 1;
 	if (s_autoRepairSelfTest && s_autoRepairSelfTestResult != 1) return 1;
+	if (s_starportSelfTest && s_starportSelfTestResult != 1) return 1;
 	if (s_pathfinderSelfTest && s_pathfinderSelfTestResult != 1) return 1;
 	if (s_moveRulesSelfTest && s_moveRulesSelfTestResult != 1) return 1;
 	if (s_lobbySelfTest && s_lobbySelfTestResult != 1) return 1;

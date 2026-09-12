@@ -186,6 +186,10 @@ extern void Starport_Init(void);
 extern uint16 Starport_RestockTicks(void);
 extern uint16 Starport_Price(uint8 houseID, uint16 buildCredits, uint16 roll);
 extern int16 Starport_InitialStock(uint16 buildCredits);
+extern bool Starport_Sells(uint16 unitType);
+extern bool Starport_SellsSpecialUnits(void);
+extern void Starport_SetSpecialUnits(bool sold);
+extern int Starport_RunRegressionTest(void);
 extern int16 Starport_StockCeiling(uint16 buildCredits);
 extern uint16 Starport_DeliveryTime(uint8 houseID);
 

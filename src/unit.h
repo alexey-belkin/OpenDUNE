@@ -292,6 +292,7 @@ extern bool Unit_Move(Unit *unit, uint16 distance);
 extern bool Unit_Damage(Unit *unit, uint16 damage, uint16 range);
 extern void Unit_MoveRules_Init(void);
 extern void Unit_MoveRules_SetRollingTurn(bool allowed);
+extern bool Unit_MoveRules_IsRollingTurn(void);
 extern bool Unit_MoveRules_RollingTurn(Unit *unit, int8 target);
 extern void Unit_CombatBalance_Init(void);
 extern uint16 Unit_CombatBalance_ApplyHouseDamage(const Unit *attacker, uint16 damage);

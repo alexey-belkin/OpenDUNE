@@ -122,11 +122,30 @@ starport_delivery_ordos=150
 starport_stock_credits=1500
 starport_stock_ceiling=200
 
+; What is on the shelves at all.  Off (the default) the Starport sells only the
+; common roster -- what a house could have built for itself with an ordinary
+; factory.  A House's own units are left to that House's own buildings: the
+; Deviator, the Devastator, the Sonic Tank and the Ornithopter want the House of
+; IX, and the Saboteur is what the Ordos Palace does.  Sold off a freighter they
+; were a tech tree with a hole in it: a Starport and eight hundred credits, and
+; the House of IX never had to go up.  1 puts them back on sale.
+starport_special_units=0
+
 ; Game ticks between one top-up and the next, at 60 ticks per second.  Each
 ; top-up adds one to a single randomly chosen type, so lowering this is how you
 ; make the shelves refill faster.  A type that has sold out comes back; a type
 ; the freighter never carried stays at zero.
 starport_restock_ticks=1800
+
+; --- The generated map -------------------------------------------------------
+; Whether each base is carved into a rectangle of solid rock before anything is
+; built on it.  Off by default: the AI paves every footprint before it builds on
+; it, so it does not need rock underneath, and two rectangles of flat rock in
+; opposite corners are the one thing on a generated map that could not have
+; grown there.  Turning it on restores the older, faster ground -- the numbers
+; in metrics.md were taken with it on, and --war-metrics reads econ.spice/match
+; 73597 with it against 62750 without.
+skirmish_base_rock=0
 
 ; Turning on the move.  Arriving on a tile a unit reads the next direction off
 ; its route and, if it differs from where it is pointing, stops and turns.  On a
