@@ -4,6 +4,11 @@ Upstream OpenDUNE is a faithful re-creation of Westwood's **Dune II**: the same
 game, running natively. This fork keeps that engine and asks a different
 question — *what would Dune II be if it had the conveniences of a modern RTS, an
 opponent worth playing, and a second person on the other side of the internet?*
+Two of its answers are changes to the game itself rather than to the engine: a
+**tech tree** that is a chain of decisions instead of one radar that opens
+everything, and **damage that depends on what is shooting at what**, which is
+the counter system the original never had. Both are §3 below, and both are data
+in `opendune.ini` rather than numbers in the source.
 
 It starts at upstream `60019e87` (20 March 2026) and, at the time of writing,
 adds **152 commits** across **107 files**, about 41500 lines added against 2000
@@ -64,26 +69,129 @@ As of this month the computer's units get the same guard layer the player's have
 (`skirmish_ai_guard`), which is what stopped "I can walk up and kill its guards
 one at a time and the rest never move".
 
-### 3. Rules as configuration, not as source
+### 3. Two rules Dune II never had
 
-A tuning module reads `opendune.ini` at start-up and patches the tables:
-a class-versus-class combat balance matrix with House identity bonuses,
-per-unit damage and rate of fire, and a **tech tree** (`stock` or the fork's
-`mp`, plus per-building overrides). Beside them sit the rules that are not table
-patches — `pathfinder_astar`, `move_rolling_turn`, `build_slab_on_sand`,
-`skirmish_base_rock`, `skirmish_ai_paving`, `skirmish_ai_guard`,
-`starport_special_units`, `mp_start_units`.
+Most of this fork is the original game done better. These two are the original
+game changed, and they are the ones that make a match a strategy rather than a
+race — so they are worth stating at length.
+
+#### The tech tree, rebuilt and turned into data
+
+Dune II gates a building twice: by the mission number it becomes available on,
+and by a mask of other buildings you must already own. In a campaign the mission
+number does the work, and the mask is almost decoration. In a match there are no
+missions — `Skirmish_Prepare()` sets `g_campaignID` past the last building on
+the list — so the mask becomes the whole of the tech tree, and it turns out
+Westwood's mask is not a tree at all. It is a **fan**, and the Outpost is its
+hinge:
+
+| building | needs, in the original |
+|---|---|
+| Refinery, Outpost | Windtrap |
+| Light Factory, Starport, Silo | Refinery |
+| Barracks, Wall, Turret, Rocket Turret | **Outpost** |
+| Heavy Factory, Hi-Tech, Repair | **Outpost** + Light Factory |
+| WOR | **Outpost** + Barracks |
+| House of IX | Starport |
+| Palace | Starport |
+
+One 400-credit radar opens the barracks, the walls, both turrets, the heavy
+factory, the repair yard and the high-tech hall at a stroke, and the only real
+depth left in the game is two Construction Yard *upgrades* that exist to unlock
+the Rocket Turret. There is nothing to choose: every house builds a Windtrap, a
+Refinery and an Outpost, in that order, always — which is exactly what our own
+AI did, for the same reason, until this month.
+
+The fork's `mp` tree is a chain instead of a fan
+(`Structure_TechTree_*` in [structure.c](src/structure.c)):
+
+| building | needs, under `mp` |
+|---|---|
+| Refinery | Windtrap |
+| Barracks, Light Factory, Wall, Turret, Silo, Outpost | Refinery |
+| WOR | Barracks + Refinery |
+| Heavy Factory, Repair | Light Factory |
+| Hi-Tech, House of IX, Starport | Outpost |
+| Rocket Turret | **House of IX** |
+| Palace | Hi-Tech + House of IX + Starport |
+
+Now the Refinery carries the early game, the Light Factory is the road to
+armour, and the Outpost is a genuine investment that opens the three late
+buildings rather than a toll gate on everything at once. The Rocket Turret costs
+a House of IX, so a turret line is a *technology* decision and not a default.
+The Palace wants all three late buildings together, which makes it the end of a
+tech game rather than an accident of having built a Starport. The Construction
+Yard drops to one upgrade level, because its second only ever unlocked the
+Rocket Turret and was otherwise 200 credits and twenty ticks for nothing.
+
+Two details that are House identity and were left alone: WOR keeps the Refinery
+beside the Barracks, because `Structure_GetBuildable()` waives the Barracks bit
+for Harkonnen and a mask of Barracks alone would give them rocket infantry on
+the first tick; and the Atreides WOR ban stands.
+
+The whole thing is **data**, not code. `tech_tree=stock|mp` picks a tree,
+`tech_req_<building>`, `tech_upgrade_<building>` and
+`tech_upgrade_levels_<building>` override any edge of it from `opendune.ini`,
+and `Structure_TechTree_Validate()` refuses a tree with a cycle, with a building
+nothing can reach, or with an upgrade level the Construction Yard does not
+offer, keeping stock instead. Because the tree is folded into the room name, two
+players are on the same tree or they never meet. And because the AI's build
+order is now compiled against whatever tree is standing rather than against a
+list someone typed, the same AI plays both trees correctly.
+
+#### Damage that depends on what is shooting at what
+
+In the original, a shot deals a number. That number does not care what it hits:
+a Trooper's rocket does the same to infantry as to a tank, and the only
+rock-paper-scissors in Dune II is the one players invent for themselves.
+
+`Unit_CombatBalance_ApplyClassDamage()` ([unit.c](src/unit.c)) adds the missing
+axis. Every unit that matters belongs to one of five classes — **P** light
+infantry (Soldier, Infantry), **RP** rocket infantry (Trooper, Troopers),
+**LT** light vehicles (Trike, Raider Trike, Quad), **TT** tanks (Tank, Siege
+Tank, Devastator) and **AR** artillery, meaning the two units that outrange a
+Rocket Turret (Launcher, Sonic Tank) — and a 25-cell attacker-versus-target
+matrix scales the damage at the moment of impact, unit against unit only.
+Everything outside the five classes is neutral on both sides, so a harvester or
+a Carryall is never affected. Each cell is an integer percentage and each is an
+ini key (`class_damage_rp_vs_tt` and so on), so the counter system is tuned
+without a rebuild.
+
+Alongside it: a **House identity bonus** applied to the base shot — Atreides
+light infantry, Harkonnen rocket infantry, Ordos Trikes (deliberately not
+Quads) — and two rules rather than literals, so that retuning one thing does not
+silently break another. Infantry range is a bonus over the rocket infantry's
+range; light infantry speed is derived from the matching rocket infantry's, so
+the light half stays the fast half whatever the heavy half is set to. Both
+infantry factories are opened to every House, the Barracks training Soldier and
+Infantry and WOR training Trooper and Troopers, which is a third departure from
+the original, where your House decided which infantry you would ever see.
+
+One design lesson from measuring it is written into the notes because it keeps
+being forgotten: **rate of fire is usually the better lever**. A shot deals a
+fixed amount and the excess is thrown away, so damage is a step function that
+buys nothing until it crosses the number of shots a target dies to — the
+Launcher at 150% damage was worth *exactly zero* against Soldier, Trooper,
+Infantry and Quad, while 150% rate paid against all twelve unit types.
+`python3 tools/threat_report.py` scores the roster against whatever the
+configuration currently is, and `tools/threat_attrition.py` plays the fights out
+shot by shot, whole units dying one at a time, when the closed form is not
+enough.
+
+### 4. Everything else as configuration, not as source
+
+The same module reads the rest of `opendune.ini` at start-up: per-unit damage
+and rate of fire as percentages of the table value, and beside the table patches
+the rules that are not table patches — `pathfinder_astar`, `move_rolling_turn`,
+`build_slab_on_sand`, `skirmish_base_rock`, `skirmish_ai_paving`,
+`skirmish_ai_guard`, `starport_special_units`, `mp_start_units`.
 
 Concrete may be laid on sand, which makes it a road and makes a base grow
 wherever it lands; a small slab takes a quarter of a large one's time, as it
 always should have. The Starport sells what a house could have built for itself
 and is no longer a House of IX nobody had to build.
 
-`python3 tools/threat_report.py` scores the roster against whatever the
-configuration currently is, and `tools/threat_attrition.py` plays the fights out
-shot by shot when the closed form is not enough.
-
-### 4. An opponent, and a bench to judge it on
+### 5. An opponent, and a bench to judge it on
 
 `--skirmish` puts two AI houses on a generated 62x62 map. Each starts with a
 Construction Yard and a *plan* it works through: a build order compiled against
@@ -110,7 +218,7 @@ concrete paid for in time, guards that answer — rather than against the faster
 more passive AI it was first calibrated on, so no comparison is ever made
 against an opponent nobody plays.
 
-### 5. Two people, one match, over the internet
+### 6. Two people, one match, over the internet
 
 Deterministic lockstep, built in stages and documented in [mp.md](mp.md): the
 clock taken off the wall, the RNG streams split between simulation and
@@ -135,7 +243,7 @@ other chair, which is how a person plays the skirmish AI.
 Each player commands their own army and nobody else's, locally and
 authoritatively.
 
-### 6. Shipping it
+### 7. Shipping it
 
 `tools/package.sh` produces a macOS app another machine can actually open:
 game data back inside the bundle, SDL vendored and the load command rewritten,
@@ -228,7 +336,8 @@ the speed alone.
 ### Concrete as territory
 
 Three rules that together turn paving from decoration into the shape of a base,
-and each of which is a real change to how a base is attacked:
+each of which is a real change to how a base is attacked, and one readout
+without which none of them can be followed:
 
 * **Connectivity.** Concrete that loses its path back to a source — the
   Construction Yard, a Windtrap — through other slabs and buildings goes
@@ -243,12 +352,16 @@ and each of which is a real change to how a base is attacked:
   `House_CalculatePowerAndCredit()` sums a house's production and usage
   globally, wherever the buildings stand. With contact required, layout matters
   and a severed base browns out.
+* **Whose concrete is whose, at a glance.** Once a slab can be ours, neutral or
+  the enemy's, a player has to be able to *see* which — so each slab carries a
+  coloured pixel in its owner's House colour, and a neutral one carries none.
+  It is not a marker anybody places; it is the readout for the three rules
+  above, and without it connectivity is a mechanic nobody can follow. The
+  ownership bits (`Tile.houseID`) and the tile drawing are both there already,
+  and it wants to be legible on the radar as well as on the map.
 
 ### The map
 
-* **Marks on your own concrete.** A coloured pixel a player can place on a slab
-  they own — where a building is going, where an ally should stand. Cheap: the
-  ownership bits and the tile drawing are both already there.
 * **Spice generation as a match setting.** This fork regrows spice in a skirmish
   because two AIs mining continuously strip a map bare, which the original game
   never had to handle. It should be a switch both players agree on, and
