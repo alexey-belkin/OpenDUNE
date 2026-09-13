@@ -2,7 +2,12 @@
 
 Open source re-creation of Westwood's **Dune II**. This fork adds modern RTS
 conveniences (group selection, order queue, autonomous defence, harvester
-management) on top of the original engine.
+management), an AI worth playing and internet multiplayer on top of the original
+engine.
+
+→ [fork.md](fork.md) — what the fork is: everything it adds to upstream, as of
+13 Sep 2026, and the work that is planned. Start there for the shape of it; this
+file is the working detail underneath.
 
 ## The one thing to understand first
 
@@ -1646,6 +1651,11 @@ Check a network change against a real relay — `tools/mpduel.sh` and
 
 ## Deeper notes
 
+* [fork.md](fork.md) — the fork against upstream OpenDUNE, as of 13 Sep 2026:
+  what was built, how it is verified, where it stands, and the roadmap
+* [ai-strategy.md](ai-strategy.md) — **draft**: making an AI strategy a set of
+  numbers (phases, five axes, ini-driven profiles) and the instruments needed to
+  judge one — match recording, text snapshots, metrics developed offline
 * [emc-scripts.md](emc-scripts.md) — script VM, disassembly, shared-state rules
 * [mp.md](mp.md) — internet multiplayer (deterministic lockstep): the plan, and
   the engine changes it needs — `g_playerHouseID` as a simulation input, the
