@@ -255,6 +255,7 @@ static uint32 Lobby_ConfigHash(void)
 	crc = Lobby_Fold(crc, Unit_MoveRules_IsRollingTurn() ? 1 : 0);
 	crc = Lobby_Fold(crc, Structure_BuildRules_SlabOnSand() ? 1 : 0);
 	crc = Lobby_Fold(crc, Skirmish_Rules_BaseRock() ? 1 : 0);
+	crc = Lobby_Fold(crc, Skirmish_Rules_AiPaving() ? 1 : 0);
 	crc = Lobby_Fold(crc, Starport_SellsSpecialUnits() ? 1 : 0);
 	crc = Lobby_Fold(crc, MpGame_GetStartUnits());
 
@@ -555,6 +556,10 @@ int GUI_Lobby_RunSelfTest(void)
 		Skirmish_Rules_SetBaseRock(!Skirmish_Rules_BaseRock());
 		if (Lobby_ConfigHash() == before) ok = false;
 		Skirmish_Rules_SetBaseRock(!Skirmish_Rules_BaseRock());
+
+		Skirmish_Rules_SetAiPaving(!Skirmish_Rules_AiPaving());
+		if (Lobby_ConfigHash() == before) ok = false;
+		Skirmish_Rules_SetAiPaving(!Skirmish_Rules_AiPaving());
 
 		Starport_SetSpecialUnits(!Starport_SellsSpecialUnits());
 		if (Lobby_ConfigHash() == before) ok = false;

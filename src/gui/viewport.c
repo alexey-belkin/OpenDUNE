@@ -871,7 +871,13 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 			if (u == NULL) break;
 
-			if (u->o.index < 20 || u->o.index > 101) continue;
+			/* This was `index < 20 || index > 101`: Westwood's ground band.
+			 * The pool is cut differently here (units.md) -- ground runs to
+			 * 201 and projectiles live at 202..241 -- so the literal drew the
+			 * first eighty ground units and left the rest invisible.  What
+			 * belongs in this layer is a kind, not a slot: everything that
+			 * neither flies nor is the worm, which has its own pass above. */
+			if (g_table_unitInfo[u->o.type].movementType == MOVEMENT_WINGER || u->o.type == UNIT_SANDWORM) continue;
 
 			packed = Tile_PackTile(u->o.position);
 
@@ -1094,7 +1100,12 @@ void GUI_Widget_Viewport_Draw(bool forceRedraw, bool hasScrolled, bool drawToMai
 
 			if (u == NULL) break;
 
-			if (u->o.index > 15) continue;
+			/* This was `index > 15`: Westwood's air band, carryalls and
+			 * projectiles.  Projectiles are at 202..241 in this fork, so
+			 * every bullet and rocket was skipped and a match showed the
+			 * explosions and the damage and nothing in between.  The layer is
+			 * what flies -- the same test Unit_Dirty() uses to count it. */
+			if (g_table_unitInfo[u->o.type].movementType != MOVEMENT_WINGER) continue;
 
 			curPos = Tile_PackTile(u->o.position);
 

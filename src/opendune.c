@@ -138,6 +138,10 @@ static int s_buildRulesSelfTestResult = -1;
 static bool s_buildQueueSelfTest = false;
 static int s_buildQueueSelfTestResult = -1;
 static bool s_ownershipSelfTest = false;
+static bool s_guardPostSelfTest = false;
+static int s_guardPostSelfTestResult = -1;
+static bool s_aiPavingSelfTest = false;
+static int s_aiPavingSelfTestResult = -1;
 static int s_ownershipSelfTestResult = -1;
 static bool s_deviatorSelfTest = false;
 static int s_deviatorSelfTestResult = -1;
@@ -149,6 +153,9 @@ static bool s_buildListDump = false;
 static bool s_pathfinderSelfTest = false;
 static int s_pathfinderSelfTestResult = -1;
 static int s_pathfinderOverride = -1;
+static int s_aiPavingOverride = -1;
+static bool s_viewportSelfTest = false;
+static int s_viewportSelfTestResult = -1;
 static bool s_combatBalanceSelfTest = false;
 static int s_combatBalanceSelfTestResult = -1;
 static bool s_techTreeSelfTest = false;
@@ -3328,6 +3335,547 @@ static int Ownership_SelfTest(void)
 	return 1;
 }
 
+static int GuardPost_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "guard-post-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/** A unit of the given type on the nearest clear, drivable tile to `near`. */
+static Unit *GuardPost_Spawn(uint8 houseID, uint8 type, uint16 near)
+{
+	int16 ring;
+
+	for (ring = 0; ring < 12; ring++) {
+		int16 dx, dy;
+
+		for (dx = -ring; dx <= ring; dx++) {
+			for (dy = -ring; dy <= ring; dy++) {
+				int16 x = (int16)Tile_GetPackedX(near) + dx;
+				int16 y = (int16)Tile_GetPackedY(near) + dy;
+				uint16 packed;
+				uint16 lst;
+				Unit *u;
+
+				if (abs(dx) != ring && abs(dy) != ring) continue;
+				if (x < 1 || y < 1 || x > 62 || y > 62) continue;
+
+				packed = Tile_PackXY((uint16)x, (uint16)y);
+				lst = Map_GetLandscapeType(packed);
+				if (lst != LST_NORMAL_SAND && lst != LST_ENTIRELY_ROCK && lst != LST_CONCRETE_SLAB) continue;
+				if (Object_GetByPackedTile(packed) != NULL) continue;
+
+				u = Unit_Create(UNIT_INDEX_INVALID, type, houseID, Tile_UnpackTile(packed), 0);
+				if (u == NULL) continue;
+
+				return u;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/**
+ * Where a unit stands guard after a player's Attack on something far away.
+ *
+ * The rule is the one Unit_GetDefaultActionAfterCompletion() states: a
+ * player-issued Attack is a manual order, and where it ends is the new post.
+ * It held only for a unit that fired from where it stood.  One that had to
+ * drive to its target came out of the fight through the script's
+ * SetAction(MOVE), which cleared the manual mark on the way past, so the post
+ * stayed where the order had been given and Area Guard drove the unit all the
+ * way back to it -- reported as "attack across the map, and the moment the
+ * target is dead the whole group turns round and leaves".
+ *
+ * Played: a Tank of the house in slot 1 beside its own base, an MCV of the
+ * other house two thirds of the way to the other base, the Attack given
+ * through the command layer, the clock run until the MCV is gone.  The tank
+ * must have driven a long way to get there, its post must then be where the
+ * fight was rather than where it started, and a while later it must still be
+ * there.
+ */
+static int GuardPost_SelfTest(void)
+{
+	Unit *tank;
+	Unit *mcv;
+	uint8 myHouse;
+	uint8 theirHouse;
+	uint16 home, far;
+	uint16 start, fought;
+	uint16 mcvTile;
+	uint32 i;
+
+	Skirmish_SetController(0, MATCH_CONTROLLER_HUMAN_LOCAL);
+	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	myHouse    = Match_GetSlotHouse(0);
+	theirHouse = Match_GetSlotHouse(1);
+	if (myHouse == HOUSE_INVALID || theirHouse == HOUSE_INVALID || myHouse == theirHouse) {
+		return GuardPost_Failed("the match does not have two houses", myHouse);
+	}
+	g_playerHouseID = myHouse;
+
+	home = Skirmish_GetBaseOrigin(0);
+	far  = Skirmish_GetBaseOrigin(1);
+	if (home == 0xFFFF || far == 0xFFFF) return GuardPost_Failed("a base has no origin", home);
+
+	/* Two thirds of the way over: far enough that the tank has to drive, near
+	 * enough that it is not the other base's turrets that decide the fight. */
+	{
+		int16 hx = (int16)Tile_GetPackedX(home), hy = (int16)Tile_GetPackedY(home);
+		int16 fx = (int16)Tile_GetPackedX(far),  fy = (int16)Tile_GetPackedY(far);
+
+		mcvTile = Tile_PackXY((uint16)(hx + (fx - hx) * 2 / 3), (uint16)(hy + (fy - hy) * 2 / 3));
+	}
+
+	tank = GuardPost_Spawn(myHouse, UNIT_TANK, home);
+	mcv  = GuardPost_Spawn(theirHouse, UNIT_MCV, mcvTile);
+	if (tank == NULL) return GuardPost_Failed("could not put a tank down beside the base", home);
+	if (mcv == NULL)  return GuardPost_Failed("could not put an MCV down on the way over", mcvTile);
+
+	/* An MCV rather than a combat unit: nothing on either side drives it, so
+	 * the fight is where it was put and not wherever a chase ended. */
+	Unit_SetAction(mcv, ACTION_STOP);
+	start   = Tile_PackTile(tank->o.position);
+	mcvTile = Tile_PackTile(mcv->o.position);
+	if (Tile_GetDistancePacked(start, mcvTile) < 12) return GuardPost_Failed("the target is too close to be a drive", Tile_GetDistancePacked(start, mcvTile));
+
+	/* The order, as a click on the MCV would give it. */
+	{
+		MpCommand cmd;
+
+		MpCommand_Init(&cmd, MP_CMD_UNIT_ORDER, myHouse);
+		cmd.action  = ACTION_ATTACK;
+		cmd.packed  = mcvTile;
+		cmd.count   = 1;
+		cmd.unit[0] = tank->o.index;
+		MpCommand_Submit(&cmd);
+	}
+	if (tank->actionID != ACTION_ATTACK || !Tools_Index_IsValid(tank->targetAttack)) {
+		return GuardPost_Failed("the attack order did not take", tank->actionID);
+	}
+
+	/* The drive.  Far enough from where it started that the return the old
+	 * code made would be plain, and still short of firing range: the target
+	 * has to go while the tank is on its way to a firing position, because
+	 * that is the case the completion hook never saw.  A tank that arrives
+	 * and does the killing itself ends its attack through SetActionDefault
+	 * and was always handled; the ones that arrive second -- most of a group
+	 * -- come out through the script's SetAction(MOVE). */
+	for (i = 0; i < 20000; i++) {
+		if (!Tools_Index_IsValid(tank->targetAttack) || tank->actionID != ACTION_ATTACK) break;
+		if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), start) >= 8) break;
+		MpHarness_Step();
+	}
+	if (!Tools_Index_IsValid(tank->targetAttack) || tank->actionID != ACTION_ATTACK) return GuardPost_Failed("the attack ended before the tank had driven anywhere", i);
+	if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), mcvTile) <= g_table_unitInfo[UNIT_TANK].fireDistance) {
+		return GuardPost_Failed("the tank was already in range when the target went", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), mcvTile));
+	}
+	if (!Tools_Index_IsValid(tank->targetMove)) return GuardPost_Failed("the tank was not driving to a firing position", tank->targetMove);
+
+	/* Somebody else got there first. */
+	Unit_Damage(mcv, (uint16)(mcv->o.hitpoints + 1), 0);
+	if (Tools_Index_IsValid(tank->targetAttack) && mcv->o.hitpoints != 0) return GuardPost_Failed("the MCV survived being killed", mcv->o.hitpoints);
+
+	/* The script lets go of the attack within a few ticks. */
+	for (i = 0; i < 2000; i++) {
+		if (tank->actionID != ACTION_ATTACK) break;
+		MpHarness_Step();
+	}
+	if (tank->actionID == ACTION_ATTACK) return GuardPost_Failed("the tank never left the attack", i);
+
+	fought = Tile_PackTile(tank->o.position);
+	if (Tile_GetDistancePacked(start, fought) < 8) return GuardPost_Failed("the tank was back near the start already", Tile_GetDistancePacked(start, fought));
+
+	/* The post is where the fight is, not where the order was given: the
+	 * firing position it was driving to, which is where it ends up. */
+	if (!Map_IsValidPosition(tank->guardPosition)) return GuardPost_Failed("no post after the attack", tank->guardPosition);
+	if (Tile_GetDistancePacked(tank->guardPosition, start) < 8) {
+		return GuardPost_Failed("the post stayed where the order was given", Tile_GetDistancePacked(tank->guardPosition, start));
+	}
+
+	/* And it stays there: long enough for the drive home the old code made,
+	 * with a margin.  A tank crosses sand in 78 ticks a tile. */
+	for (i = 0; i < 4000; i++) MpHarness_Step();
+	if (!tank->o.flags.s.used) return GuardPost_Failed("the tank died standing guard", 0);
+	if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), tank->guardPosition) > 3) {
+		return GuardPost_Failed("the tank is not standing at its post", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), tank->guardPosition));
+	}
+	if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), start) < 8) {
+		return GuardPost_Failed("the tank drove back to where the order was given", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), start));
+	}
+	{
+		char line[160];
+
+		snprintf(line, sizeof(line), "guard-post-self-test: order at %u,%u, target %u,%u, post %u,%u, standing at %u,%u",
+		         (unsigned)Tile_GetPackedX(start), (unsigned)Tile_GetPackedY(start),
+		         (unsigned)Tile_GetPackedX(mcvTile), (unsigned)Tile_GetPackedY(mcvTile),
+		         (unsigned)Tile_GetPackedX(tank->guardPosition), (unsigned)Tile_GetPackedY(tank->guardPosition),
+		         (unsigned)Tile_GetPackedX(Tile_PackTile(tank->o.position)), (unsigned)Tile_GetPackedY(Tile_PackTile(tank->o.position)));
+		PrintToConsole(line);
+	}
+
+	/* The other half, which is what the rule must not break: a unit that went
+	 * out on its own to meet something inside its guarded area comes back to
+	 * its post afterwards, whatever happened out there.  Same tank, now on
+	 * Area Guard at the post the fight gave it; an enemy MCV put down inside
+	 * its radius and beyond its range, so that it has to leave the post to
+	 * engage; the MCV killed under it while it is on its way, as before.  The
+	 * post must not move and the tank must be back on it. */
+	{
+		Unit *bait;
+		uint16 post = tank->guardPosition;
+		uint16 baitTile;
+		int16 px = (int16)Tile_GetPackedX(post), py = (int16)Tile_GetPackedY(post);
+		int16 sx = (int16)Tile_GetPackedX(start), sy = (int16)Tile_GetPackedY(start);
+		int16 dx = (sx > px) ? 1 : ((sx < px) ? -1 : 0);
+		int16 dy = (sy > py) ? 1 : ((sy < py) ? -1 : 0);
+
+		if (tank->actionID != ACTION_AREA_GUARD && tank->actionID != ACTION_GUARD) return GuardPost_Failed("the tank is not standing guard after its attack", tank->actionID);
+
+		baitTile = Tile_PackXY((uint16)(px + dx * 7), (uint16)(py + dy * 7));
+		bait = GuardPost_Spawn(theirHouse, UNIT_MCV, baitTile);
+		if (bait == NULL) return GuardPost_Failed("could not put a second MCV down near the post", baitTile);
+		Unit_SetAction(bait, ACTION_STOP);
+		baitTile = Tile_PackTile(bait->o.position);
+		if (Tile_GetDistancePacked(post, baitTile) <= g_table_unitInfo[UNIT_TANK].fireDistance) {
+			return GuardPost_Failed("the bait is within range of the post, so the tank need not move", Tile_GetDistancePacked(post, baitTile));
+		}
+
+		for (i = 0; i < 6000; i++) {
+			if (tank->actionID == ACTION_ATTACK && Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) >= 2) break;
+			if (!bait->o.flags.s.used || bait->o.hitpoints == 0) break;
+			MpHarness_Step();
+		}
+		if (tank->actionID != ACTION_ATTACK) return GuardPost_Failed("the tank did not go out to meet what came inside its area", tank->actionID);
+		if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) < 2) return GuardPost_Failed("the tank engaged without leaving its post", 0);
+
+		Unit_Damage(bait, (uint16)(bait->o.hitpoints + 1), 0);
+
+		for (i = 0; i < 4000; i++) MpHarness_Step();
+		if (!tank->o.flags.s.used) return GuardPost_Failed("the tank died on its sortie", 0);
+		if (tank->guardPosition != post) return GuardPost_Failed("a sortie of the tank's own moved its post", Tile_GetDistancePacked(tank->guardPosition, post));
+		if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) > 2) {
+			return GuardPost_Failed("the tank did not come back to its post after a sortie", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post));
+		}
+	}
+
+	return 1;
+}
+
+static int Viewport_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "viewport-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/** The viewport as drawn: widget 2, 240 by 160 from (0, 40) on SCREEN_1. */
+#define VIEWPORT_TEST_W 240
+#define VIEWPORT_TEST_H 160
+
+/** Where two copies differ, said out loud: what a test that passes for the
+ *  wrong reason looks like is a diff nowhere near the sprite. */
+static void Viewport_ReportDiff(const char *what, const uint8 *a, const uint8 *b, uint16 x, uint16 y)
+{
+	char line[192];
+	uint32 count = 0;
+	uint16 minX = 0xFFFF, minY = 0xFFFF, maxX = 0, maxY = 0;
+	uint16 px, py;
+
+	for (py = 0; py < VIEWPORT_TEST_H; py++) {
+		for (px = 0; px < VIEWPORT_TEST_W; px++) {
+			if (a[py * VIEWPORT_TEST_W + px] == b[py * VIEWPORT_TEST_W + px]) continue;
+			count++;
+			if (px < minX) minX = px;
+			if (px > maxX) maxX = px;
+			if (py < minY) minY = py;
+			if (py > maxY) maxY = py;
+		}
+	}
+
+	snprintf(line, sizeof(line), "viewport-self-test: %s at (%u,%u): %u pixels changed in (%u,%u)-(%u,%u)",
+	         what, (unsigned)x, (unsigned)y, (unsigned)count, (unsigned)minX, (unsigned)minY, (unsigned)maxX, (unsigned)maxY);
+	PrintToConsole(line);
+}
+
+/** Pixels that differ within a sprite's reach of (x, y) -- and nowhere else
+ *  counts, because the House overlay along the top of the viewport changes
+ *  with every unit created and would pass this for the wrong reason. */
+static uint32 Viewport_ChangedNear(const uint8 *a, const uint8 *b, uint16 x, uint16 y)
+{
+	uint32 count = 0;
+	int16 px, py;
+
+	for (py = (int16)y - 12; py <= (int16)y + 12; py++) {
+		for (px = (int16)x - 12; px <= (int16)x + 12; px++) {
+			if (px < 0 || py < 0 || px >= VIEWPORT_TEST_W || py >= VIEWPORT_TEST_H) continue;
+			if (a[py * VIEWPORT_TEST_W + px] != b[py * VIEWPORT_TEST_W + px]) count++;
+		}
+	}
+
+	return count;
+}
+
+static void Viewport_Snapshot(uint8 *out)
+{
+	Screen old = GFX_Screen_SetActive(SCREEN_1);
+	uint16 x, y;
+
+	GUI_Widget_Viewport_Draw(true, false, false);
+
+	for (y = 0; y < VIEWPORT_TEST_H; y++) {
+		for (x = 0; x < VIEWPORT_TEST_W; x++) {
+			out[y * VIEWPORT_TEST_W + x] = GFX_GetPixel(x, (uint16)(40 + y));
+		}
+	}
+
+	GFX_Screen_SetActive(old);
+}
+
+/** A clear, drivable tile inside the viewport at or near the given cell. */
+static uint16 Viewport_FreeTile(uint16 column, uint16 row)
+{
+	int16 ring;
+
+	for (ring = 0; ring < 3; ring++) {
+		int16 dx, dy;
+
+		for (dx = -ring; dx <= ring; dx++) {
+			for (dy = -ring; dy <= ring; dy++) {
+				int16 x = (int16)(Tile_GetPackedX(g_viewportPosition) + column) + dx;
+				int16 y = (int16)(Tile_GetPackedY(g_viewportPosition) + row) + dy;
+				uint16 packed;
+				uint16 lst;
+
+				if (abs(dx) != ring && abs(dy) != ring) continue;
+				/* Inside the 15x10 tiles the viewport shows, whole. */
+				if (x < (int16)Tile_GetPackedX(g_viewportPosition) + 1 || x > (int16)Tile_GetPackedX(g_viewportPosition) + 13) continue;
+				if (y < (int16)Tile_GetPackedY(g_viewportPosition) + 1 || y > (int16)Tile_GetPackedY(g_viewportPosition) + 8) continue;
+				if (x < 1 || y < 1 || x > 62 || y > 62) continue;
+
+				packed = Tile_PackXY((uint16)x, (uint16)y);
+				if (!Map_IsValidPosition(packed)) continue;
+				if (Object_GetByPackedTile(packed) != NULL) continue;
+				lst = Map_GetLandscapeType(packed);
+				if (lst != LST_NORMAL_SAND && lst != LST_ENTIRELY_ROCK && lst != LST_CONCRETE_SLAB) continue;
+
+				return packed;
+			}
+		}
+	}
+
+	return 0xFFFF;
+}
+
+/**
+ * Everything on the map is drawn.
+ *
+ * Two loops in GUI_Widget_Viewport_Draw() chose their units by pool index --
+ * Westwood's bands, `index > 15` for the air layer and `< 20 || > 101` for the
+ * ground -- and this fork cut the pool differently (units.md): ground to 201,
+ * projectiles at 202..241.  So every bullet and rocket was skipped, and so
+ * was every ground unit past the eightieth.  A match showed explosions and
+ * damage and nothing flying in between, and a big battle showed half an army.
+ *
+ * Measured rather than argued: the viewport is drawn to SCREEN_1 and copied
+ * out, a unit is put on a clear tile in view, it is drawn again, and the two
+ * copies must differ.  A bullet in the projectile band, a tank in a slot past
+ * the old band, and a carryall in the old air band that must still draw.
+ */
+static int Viewport_SelfTest(void)
+{
+	static uint8 before[VIEWPORT_TEST_W * VIEWPORT_TEST_H];
+	static uint8 after[VIEWPORT_TEST_W * VIEWPORT_TEST_H];
+	uint8 houseID;
+	uint16 tile;
+	Unit *u;
+
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	houseID = Match_GetSlotHouse(0);
+	if (houseID == HOUSE_INVALID) return Viewport_Failed("no house in slot 0", 0);
+
+	/* Two draws of the same scene must agree, or the comparison below means
+	 * nothing. */
+	Viewport_Snapshot(before);
+	Viewport_Snapshot(after);
+	if (memcmp(before, after, sizeof(before)) != 0) return Viewport_Failed("the same scene drew differently twice", 0);
+
+	/* A bullet, in the band the old air loop never reached. */
+	tile = Viewport_FreeTile(4, 3);
+	if (tile == 0xFFFF) return Viewport_Failed("no clear tile for the bullet", 0);
+	u = Unit_Create(UNIT_INDEX_INVALID, UNIT_BULLET, houseID, Tile_UnpackTile(tile), 0);
+	if (u == NULL) return Viewport_Failed("could not create a bullet", tile);
+	if (u->o.index <= 15) return Viewport_Failed("the bullet landed in the old air band, so this proves nothing", u->o.index);
+	Viewport_Snapshot(after);
+	{
+		uint16 sx = 0, sy = 0;
+
+		if (!Map_IsPositionInViewport(u->o.position, &sx, &sy)) return Viewport_Failed("the bullet is not in the viewport", u->o.index);
+		Viewport_ReportDiff("bullet", before, after, sx, sy);
+		if (Viewport_ChangedNear(before, after, sx, sy) == 0) return Viewport_Failed("a bullet in view drew nothing", u->o.index);
+	}
+	memcpy(before, after, sizeof(before));
+
+	/* A tank in a slot past the old ground band. */
+	tile = Viewport_FreeTile(9, 6);
+	if (tile == 0xFFFF) return Viewport_Failed("no clear tile for the tank", 0);
+	u = Unit_Create(150, UNIT_TANK, houseID, Tile_UnpackTile(tile), 0);
+	if (u == NULL) return Viewport_Failed("could not create a tank in slot 150", tile);
+	if (u->o.index != 150) return Viewport_Failed("the tank did not take slot 150", u->o.index);
+	Viewport_Snapshot(after);
+	{
+		uint16 sx = 0, sy = 0;
+
+		if (!Map_IsPositionInViewport(u->o.position, &sx, &sy)) return Viewport_Failed("the tank is not in the viewport", u->o.index);
+		Viewport_ReportDiff("tank", before, after, sx, sy);
+		if (Viewport_ChangedNear(before, after, sx, sy) == 0) return Viewport_Failed("a ground unit past slot 101 drew nothing", u->o.index);
+	}
+	memcpy(before, after, sizeof(before));
+
+	/* And what always drew still does. */
+	tile = Viewport_FreeTile(12, 4);
+	if (tile == 0xFFFF) return Viewport_Failed("no clear tile for the carryall", 0);
+	u = Unit_Create(UNIT_INDEX_INVALID, UNIT_CARRYALL, houseID, Tile_UnpackTile(tile), 0);
+	if (u == NULL) return Viewport_Failed("could not create a carryall", tile);
+	Viewport_Snapshot(after);
+	{
+		uint16 sx = 0, sy = 0;
+
+		if (!Map_IsPositionInViewport(u->o.position, &sx, &sy)) return Viewport_Failed("the carryall is not in the viewport", u->o.index);
+		Viewport_ReportDiff("carryall", before, after, sx, sy);
+		if (Viewport_ChangedNear(before, after, sx, sy) == 0) return Viewport_Failed("a carryall in view drew nothing", u->o.index);
+	}
+	memcpy(before, after, sizeof(before));
+
+	tile = Viewport_FreeTile(6, 8);
+	if (tile == 0xFFFF) return Viewport_Failed("no clear tile for the trike", 0);
+	u = Unit_Create(UNIT_INDEX_INVALID, UNIT_TRIKE, houseID, Tile_UnpackTile(tile), 0);
+	if (u == NULL) return Viewport_Failed("could not create a trike", tile);
+	Viewport_Snapshot(after);
+	{
+		uint16 sx = 0, sy = 0;
+
+		if (!Map_IsPositionInViewport(u->o.position, &sx, &sy)) return Viewport_Failed("the trike is not in the viewport", u->o.index);
+		Viewport_ReportDiff("trike", before, after, sx, sy);
+		if (Viewport_ChangedNear(before, after, sx, sy) == 0) return Viewport_Failed("a trike in view drew nothing", u->o.index);
+	}
+
+	return 1;
+}
+
+static int AiPaving_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "ai-paving-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/**
+ * The AI pays for its concrete in time.
+ *
+ * Skirmish_LaySlabs() pours a building's slabs into the map in one call when
+ * the building goes down, which charged the AI the credits and none of the
+ * time a person spends at the yard making one slab after another: the AI's
+ * refinery stood six tiles' worth of buildTime sooner, every building, all
+ * match -- "the computer builds too fast, as if slabs took no time".
+ *
+ * Played on the AI's own yard: the first building its plan asks for is
+ * ordered, the paving owed must be the unpaved footprint at a slab's
+ * buildTime a tile, and while it is being poured the building's own countdown
+ * must not move; once poured, it must.  The credits are not in question: they
+ * were always charged.
+ */
+static int AiPaving_SelfTest(void)
+{
+	Structure *yard;
+	House *h;
+	uint8 houseID;
+	uint16 type;
+	uint16 tiles;
+	uint16 slabTime;
+	uint16 owed;
+	uint32 i;
+
+	/* Slot 1 is a person's from the start, so that the other yard is idle at
+	 * tick zero when it is asked the same thing the AI's is. */
+	Skirmish_SetController(0, MATCH_CONTROLLER_AI);
+	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
+	if (!MpHarness_StartMatch(1000)) return 0;
+
+	houseID = Match_GetSlotHouse(0);
+	if (houseID == HOUSE_INVALID) return AiPaving_Failed("no house in slot 0", 0);
+	if (Match_IsHumanControlled(houseID)) return AiPaving_Failed("slot 0 is not the AI", houseID);
+
+	h = House_Get_ByIndex(houseID);
+	if (h == NULL) return AiPaving_Failed("the house is not there", houseID);
+	h->credits = 5000;
+
+	yard = BuildQueue_FindYard(houseID);
+	if (yard == NULL) return AiPaving_Failed("the AI has no construction yard", houseID);
+	if (yard->o.linkedID != 0xFF) return AiPaving_Failed("the yard is already busy", yard->objectType);
+
+	type = Structure_AI_PickNextToBuild(yard);
+	if (type == 0xFFFF || type >= STRUCTURE_MAX) return AiPaving_Failed("the plan offers nothing to build", type);
+	if (type == STRUCTURE_WALL) return AiPaving_Failed("the plan's first entry is a wall, which paves nothing", type);
+
+	tiles    = Skirmish_Plan_PavingTiles(h, (uint8)type);
+	slabTime = g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildTime;
+	if (tiles == 0) return AiPaving_Failed("the first building's footprint is paved already", type);
+	if (tiles > g_table_structure_layoutTileCount[g_table_structureInfo[type].layout]) {
+		return AiPaving_Failed("more tiles to pave than the footprint has", tiles);
+	}
+
+	if (!Structure_BuildObject(yard, type)) return AiPaving_Failed("the yard refused the order", type);
+
+	owed = (uint16)(tiles * slabTime << 8);
+	if (Structure_AI_GetPavingLeft(yard) != owed) return AiPaving_Failed("the paving owed is not the footprint at a slab's buildTime a tile", Structure_AI_GetPavingLeft(yard));
+	if (yard->countDown != (uint16)(g_table_structureInfo[type].o.buildTime << 8)) return AiPaving_Failed("the building's countdown did not start where it always did", yard->countDown);
+
+	/* A person's yard owes nothing here: they pour at the yard themselves. */
+	{
+		uint8 other = Match_GetSlotHouse(1);
+		Structure *theirs = (other != HOUSE_INVALID) ? BuildQueue_FindYard(other) : NULL;
+
+		if (theirs == NULL) return AiPaving_Failed("the other house has no yard", other);
+		if (!Match_IsHumanControlled(other)) return AiPaving_Failed("the other house is not a person's", other);
+
+		House_Get_ByIndex(other)->credits = 5000;
+		if (!Structure_BuildObject(theirs, type)) return AiPaving_Failed("the person's yard refused the order", type);
+		if (Structure_AI_GetPavingLeft(theirs) != 0) return AiPaving_Failed("a person's yard was charged the AI's paving", Structure_AI_GetPavingLeft(theirs));
+	}
+
+	/* Poured before built: the countdown holds still until the concrete is
+	 * down, then moves. */
+	for (i = 0; i < 20000; i++) {
+		if (Structure_AI_GetPavingLeft(yard) == 0) break;
+		if (yard->countDown != (uint16)(g_table_structureInfo[type].o.buildTime << 8)) {
+			return AiPaving_Failed("the building advanced while its concrete was still being poured", yard->countDown);
+		}
+		MpHarness_Step();
+	}
+	if (Structure_AI_GetPavingLeft(yard) != 0) return AiPaving_Failed("the concrete was never finished", Structure_AI_GetPavingLeft(yard));
+	if (i == 0) return AiPaving_Failed("the concrete took no time at all", tiles);
+
+	for (i = 0; i < 2000; i++) {
+		if (yard->countDown != (uint16)(g_table_structureInfo[type].o.buildTime << 8)) break;
+		MpHarness_Step();
+	}
+	if (yard->countDown == (uint16)(g_table_structureInfo[type].o.buildTime << 8)) return AiPaving_Failed("the building did not start once the concrete was down", yard->countDown);
+
+	return 1;
+}
+
 static int Deviator_Failed(const char *why, uint32 detail)
 {
 	char line[192];
@@ -4501,6 +5049,7 @@ static void GameLoop_Main(void)
 	Pathfinder_Init();
 	MpGame_Rules_Init();
 	if (s_pathfinderOverride >= 0) Pathfinder_SetEnabled(s_pathfinderOverride != 0);
+	if (s_aiPavingOverride >= 0) Skirmish_Rules_SetAiPaving(s_aiPavingOverride != 0);
 	Starport_Init();
 
 	free(g_readBuffer); g_readBuffer = NULL;
@@ -4596,6 +5145,36 @@ static void GameLoop_Main(void)
 		return;
 	}
 
+	if (s_guardPostSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_guardPostSelfTestResult = GuardPost_SelfTest();
+		PrintToConsole((s_guardPostSelfTestResult == 1) ? "guard-post-self-test: PASS"
+		                                                : "guard-post-self-test: FAIL");
+		return;
+	}
+
+	if (s_aiPavingSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_aiPavingSelfTestResult = AiPaving_SelfTest();
+		PrintToConsole((s_aiPavingSelfTestResult == 1) ? "ai-paving-self-test: PASS"
+		                                               : "ai-paving-self-test: FAIL");
+		return;
+	}
+
+	if (s_viewportSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_viewportSelfTestResult = Viewport_SelfTest();
+		PrintToConsole((s_viewportSelfTestResult == 1) ? "viewport-self-test: PASS"
+		                                               : "viewport-self-test: FAIL");
+		return;
+	}
+
 	if (s_buildListSelfTest) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
@@ -4670,6 +5249,8 @@ static void GameLoop_Main(void)
 		snprintf(line, sizeof(line), "  build_slab_on_sand  %u", Structure_BuildRules_SlabOnSand() ? 1 : 0);
 		PrintToConsole(line);
 		snprintf(line, sizeof(line), "  skirmish_base_rock  %u", Skirmish_Rules_BaseRock() ? 1 : 0);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  skirmish_ai_paving  %u", Skirmish_Rules_AiPaving() ? 1 : 0);
 		PrintToConsole(line);
 		snprintf(line, sizeof(line), "  starport_special    %u", Starport_SellsSpecialUnits() ? 1 : 0);
 		PrintToConsole(line);
@@ -5790,6 +6371,8 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--build-rules-self-test") == 0) s_buildRulesSelfTest = true;
 			if (strcmp(argv[i], "--build-queue-self-test") == 0) s_buildQueueSelfTest = true;
 			if (strcmp(argv[i], "--ownership-self-test") == 0) s_ownershipSelfTest = true;
+			if (strcmp(argv[i], "--guard-post-self-test") == 0) s_guardPostSelfTest = true;
+			if (strcmp(argv[i], "--ai-paving-self-test") == 0) s_aiPavingSelfTest = true;
 			if (strcmp(argv[i], "--deviator-self-test") == 0) s_deviatorSelfTest = true;
 			if (strcmp(argv[i], "--harvester-self-test") == 0) s_harvesterSelfTest = true;
 			if (strcmp(argv[i], "--build-list-self-test") == 0) s_buildListSelfTest = true;
@@ -5835,6 +6418,10 @@ int main(int argc, char **argv)
 			 * put next to the binary, so on a machine that has one there is no
 			 * way to change this key alone without editing the player's file. */
 			if (strncmp(argv[i], "--pathfinder=", 13) == 0) s_pathfinderOverride = (atoi(argv[i] + 13) != 0) ? 1 : 0;
+			/* And for the AI's concrete: --war-metrics against the numbers in
+			 * metrics.md is a run with this off, whatever the ini says. */
+			if (strncmp(argv[i], "--ai-paving=", 12) == 0) s_aiPavingOverride = (atoi(argv[i] + 12) != 0) ? 1 : 0;
+			if (strcmp(argv[i], "--viewport-self-test") == 0) s_viewportSelfTest = true;
 			/* "--doctrine=B" for both sides, "--doctrine=A,B" to play one against
 			 * the other on the same map: the only honest test of a battle
 			 * strategy is the strategy it replaces, on the same seed. */
@@ -6124,6 +6711,9 @@ int main(int argc, char **argv)
 	if (s_buildRulesSelfTest && s_buildRulesSelfTestResult != 1) return 1;
 	if (s_buildQueueSelfTest && s_buildQueueSelfTestResult != 1) return 1;
 	if (s_ownershipSelfTest && s_ownershipSelfTestResult != 1) return 1;
+	if (s_guardPostSelfTest && s_guardPostSelfTestResult != 1) return 1;
+	if (s_aiPavingSelfTest && s_aiPavingSelfTestResult != 1) return 1;
+	if (s_viewportSelfTest && s_viewportSelfTestResult != 1) return 1;
 	if (s_deviatorSelfTest && s_deviatorSelfTestResult != 1) return 1;
 	if (s_harvesterSelfTest && s_harvesterSelfTestResult != 1) return 1;
 	if (s_buildListSelfTest && s_buildListSelfTestResult != 1) return 1;

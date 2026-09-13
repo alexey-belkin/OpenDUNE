@@ -147,6 +147,16 @@ starport_restock_ticks=1800
 ; 73597 with it against 62750 without.
 skirmish_base_rock=0
 
+; Whether the computer pays for its concrete in time.  The AI lays the slabs
+; under a building straight into the map when the building goes down, which
+; charged it the credits and none of the time a person spends at the yard
+; making one slab after another -- its refinery stood six tiles' worth of
+; buildTime sooner, every building, all match.  On, the yard pours the
+; footprint first at a slab's buildTime a tile.  Off is the older, faster
+; computer the numbers in metrics.md were measured against (--war-metrics
+; reads econ.spice/match 79621 with it off against 65370 on).
+skirmish_ai_paving=1
+
 ; Turning on the move.  Arriving on a tile a unit reads the next direction off
 ; its route and, if it differs from where it is pointing, stops and turns.  On a
 ; diagonal route that happens every other tile, for 45 degrees each time, which

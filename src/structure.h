@@ -191,5 +191,6 @@ extern void Structure_StartAnimation(Structure *s);
 extern uint32 Structure_GetBuildable(Structure *s);
 extern void Structure_HouseUnderAttack(uint8 houseID);
 extern uint16 Structure_AI_PickNextToBuild(Structure *s);
+extern uint16 Structure_AI_GetPavingLeft(const Structure *s);
 
 #endif /* STRUCTURE_H */

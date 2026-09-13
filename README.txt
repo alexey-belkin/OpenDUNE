@@ -461,6 +461,12 @@ later. "Player" picks which of the two seats is yours (the computer takes the
 other), "House" picks the pair, and Begin starts at once. The computer plays
 the fork's skirmish AI; mp_start_units applies to both sides.
 
+The computer builds at your pace. It used to lay the concrete under a building
+in an instant, paying the credits and none of the time you spend making slabs
+at the yard one after another; now its yard pours the footprint first, at the
+same four ticks a slab you pay. skirmish_ai_paving=0 in opendune.ini brings the
+faster computer back.
+
 
 Ingame
 ------

@@ -68,6 +68,14 @@ typedef struct UnitBuildQueue {
  * separate order cart. */
 static UnitBuildQueue s_unitBuildQueue[STRUCTURE_INDEX_MAX_HARD];
 
+/* Concrete an AI yard still has to pour before the building it is making can
+ * advance, in the same units as countDown (buildTime << 8).  The skirmish AI
+ * lays its slabs straight into the map when the building goes down
+ * (Skirmish_LaySlabs), which charged it the credits and none of the time a
+ * person spends making one slab after another at the yard.  Not saved state:
+ * a skirmish is not a savegame, and both clients of a match derive it. */
+static uint16 s_aiPaving[STRUCTURE_INDEX_MAX_HARD];
+
 /* How many finished buildings the local player has already clicked a spot for
  * whose placement command has not run yet.  Local presentation state and
  * nothing else: it decides only whether the cursor stays in placement mode, so
@@ -133,6 +141,7 @@ static void Structure_Queue_Reset(Structure *s)
 	queue->ready = 0;
 	queue->readyType = 0xFFFF;
 	s_yardPlaceCommitted[s->o.index] = 0;
+	s_aiPaving[s->o.index] = 0;
 }
 
 bool Structure_Queue_CanOrder(const Structure *s)
@@ -467,6 +476,46 @@ void Structure_ResetTicks(void)
 	 * a different building next match. */
 	memset(s_unitBuildQueue,  0, sizeof(s_unitBuildQueue));
 	memset(s_structureRally,  0, sizeof(s_structureRally));
+	memset(s_aiPaving,        0, sizeof(s_aiPaving));
+}
+
+uint16 Structure_AI_GetPavingLeft(const Structure *s)
+{
+	if (s == NULL || s->o.index >= STRUCTURE_INDEX_MAX_HARD) return 0;
+	return s_aiPaving[s->o.index];
+}
+
+/**
+ * One structure tick of an AI yard's concrete, poured at the pace the building
+ * behind it will be built at -- the same buildSpeed, hitpoints and campaign
+ * cap included.  True while there is still some to pour, which is a tick the
+ * building itself does not advance and is not paid for.
+ */
+static bool Structure_AI_PavingTick(Structure *s)
+{
+	const StructureInfo *si;
+	uint16 speed;
+
+	if (s->o.type != STRUCTURE_CONSTRUCTION_YARD || s_aiPaving[s->o.index] == 0) return false;
+
+	/* A yard a person took over pours nothing here: they pay at the yard. */
+	if (Match_IsHumanControlled(s->o.houseID)) {
+		s_aiPaving[s->o.index] = 0;
+		return false;
+	}
+
+	si = &g_table_structureInfo[s->o.type];
+	speed = 256;
+	if (s->o.hitpoints < si->o.hitpoints) speed = s->o.hitpoints * 256 / si->o.hitpoints;
+	if (speed > g_campaignID * 20 + 95) speed = g_campaignID * 20 + 95;
+
+	if (speed < s_aiPaving[s->o.index]) {
+		s_aiPaving[s->o.index] -= speed;
+	} else {
+		s_aiPaving[s->o.index] = 0;
+	}
+
+	return true;
 }
 
 void GameLoop_Structure(void)
@@ -603,7 +652,8 @@ void GameLoop_Structure(void)
 					s->o.flags.s.repairing = false;
 				}
 			} else {
-				if (!s->o.flags.s.onHold && s->countDown != 0 && s->o.linkedID != 0xFF && s->state == STRUCTURE_STATE_BUSY && si->o.flags.factory) {
+				if (!s->o.flags.s.onHold && s->countDown != 0 && s->o.linkedID != 0xFF && s->state == STRUCTURE_STATE_BUSY && si->o.flags.factory &&
+				    !Structure_AI_PavingTick(s)) {
 					ObjectInfo *oi;
 					uint16 buildSpeed;
 					uint16 buildCost;
@@ -2530,6 +2580,7 @@ static void Structure_CancelBuild(Structure *s)
 	s->o.flags.s.onHold = false;
 	s->countDown = 0;
 	s->o.linkedID = 0xFF;
+	s_aiPaving[s->o.index] = 0;
 	Structure_Queue_Clear(s);
 }
 
@@ -2962,6 +3013,23 @@ bool Structure_BuildObject(Structure *s, uint16 objectType)
 		s->o.linkedID = o->index & 0xFF;
 		s->objectType = objectType;
 		s->countDown = oi->buildTime << 8;
+
+		/* The AI pays for its concrete in time as well as in credits: the
+		 * footprint its plan has in mind for this building, at a slab's
+		 * buildTime a tile, poured before the building starts.  A rebuild
+		 * goes back onto the old building's slabs and pours nothing. */
+		if (s->o.type == STRUCTURE_CONSTRUCTION_YARD && Skirmish_IsActive() && Skirmish_Rules_AiPaving() && !Match_IsHumanControlled(s->o.houseID)) {
+			House *h = House_Get_ByIndex(s->o.houseID);
+			bool rebuild = false;
+			uint8 i;
+
+			for (i = 0; i < 5; i++) {
+				if (h->ai_structureRebuild[i][0] == objectType) rebuild = true;
+			}
+
+			s_aiPaving[s->o.index] = rebuild ? 0 : (uint16)((uint32)Skirmish_Plan_PavingTiles(h, (uint8)objectType)
+			                                             * g_table_structureInfo[STRUCTURE_SLAB_1x1].o.buildTime << 8);
+		}
 
 		Structure_SetState(s, STRUCTURE_STATE_BUSY);
 

@@ -822,6 +822,101 @@ enough to survive the eighth `Unit_Deviate()` takes off it for a house nobody is
 playing. Only a house someone plays can be given a unit, which is why it tests
 the match's own two rather than all three.
 
+## Where a unit stands after a player's attack
+
+A player's Attack is a manual order, and where it ends is the unit's new
+post -- `Unit_GetDefaultActionAfterCompletion()` in [unit.c](src/unit.c)
+has said so all along. It held only for a unit that fired from where it
+stood. One that had to **drive** to its target ends the fight through the
+original script's `SetAction(ACTION_MOVE)` (UNIT.EMC word 238, taken when
+the target is gone and `targetMove` still names a firing position), and
+`Unit_SetAction()` cleared the manual mark on the way past; the hook then saw
+an ordinary Move ending far from the post, left the post where the order had
+been given, and Area Guard drove the unit all the way back to it. Attack
+something across the map with a group and the moment it is dead the whole
+group turns round and leaves -- most of a group arrives second, and those are
+exactly the units that go out through the Move.
+
+The post moves in `Unit_SetAction()` now, on the way out of the Attack: to
+the firing position the unit was still driving to, or to the tile it is on.
+**Only for a player's order.** The test is `s_attackPositionManual` set
+*and* no autonomous post open: a unit that went out on its own to meet
+something inside its area is `AUTONOMOUS_POST_ENGAGING` (every road into a
+sortie opens one -- `Unit_SetAction()` from a guard script,
+`Unit_SetTarget()` from a script that acquires a target without changing
+action, the autonomy layer itself) and goes home through
+`Unit_Autonomy_ReturnToPost()`, which is what makes a defensive line a line.
+
+`--guard-post-self-test` plays both halves. A Tank beside its base is sent at
+an MCV two thirds of the way to the other base, the MCV is killed under it
+once it has driven eight tiles and is still short of range, and the post must
+then be far from the start and the tank still standing on it four thousand
+ticks later. Then a second MCV is put down inside the tank's area and beyond
+its range, killed once the tank has left its post for it, and the post must
+not have moved and the tank must be back on it. Verified to fail: the first
+scenario fails by name with the hook removed.
+
+## The AI pays for its concrete in time
+
+`Skirmish_LaySlabs()` pours a building's slabs into the map in one call when
+the building goes down, which charged the AI the credits and none of the time
+a person spends at the yard making one slab after another -- the AI's
+refinery stood six tiles' worth of buildTime sooner, every building, all
+match. "The computer builds too fast, as if slabs took no time" was the
+report, and it was right.
+
+`Structure_BuildObject()` now gives an AI yard in a skirmish a paving debt
+(`s_aiPaving` in [structure.c](src/structure.c)): the footprint its plan has
+in mind for the building (`Skirmish_Plan_PavingTiles()`, the same entry
+`Skirmish_Plan_TakePosition()` will hand out, less what is concrete already)
+at a slab's buildTime a tile. `Structure_AI_PavingTick()` pours it at the
+yard's own pace -- same buildSpeed, hitpoints and campaign cap -- and while
+any is left the building's countdown does not move and nothing is charged.
+A rebuild goes back onto the old building's slabs and pours nothing; a wall
+paves nothing; a person's yard owes nothing here. Not saved state: a skirmish
+is not a savegame, and both clients of a match derive it.
+
+`--ai-paving-self-test` orders the AI's first building on its own yard and
+checks the debt is the unpaved footprint at a slab's buildTime a tile, that
+the countdown holds still until it is poured and moves afterwards, and that a
+person's yard given the same order owes nothing. Verified to fail: the debt
+set to zero fails it by name.
+
+**It measures worse, and it is a key for that reason** — `skirmish_ai_paving`
+(default 1), `--ai-paving=0|1` from the command line for the same reason
+`--pathfinder=` exists. Both AIs are honestly slower, and the suite was
+calibrated on the faster ones: on `--war-metrics`, on against off,
+`econ.spice/match` 65370 → 79621, `result.points %` 70 → 83,
+`wave.matches %` 75 → 91, `turret.entries/match` 8 → 24, and
+`harv.lost.early` 8 → 1 — that last one is a **REGRESSION** against its gate
+of 6 with the key on, so the suite reads FAIL on the default. With
+`--ai-paving=0` all sixteen numbers come back bit-for-bit, which is the check
+that the key is the only difference. **Run `--war-metrics` with
+`--ai-paving=0` when comparing against [metrics.md](metrics.md)**; the AI's
+own dynamics do not depend on how long its concrete takes, and the fairness
+of a match against a person is what the default is for. The key is folded
+into the lobby digest like the others.
+
+## Everything on the map is drawn
+
+Two loops in `GUI_Widget_Viewport_Draw()` ([gui/viewport.c](src/gui/viewport.c))
+chose their units by pool index — Westwood's bands, `index > 15` for the air
+layer and `< 20 || > 101` for the ground — and this fork cut the pool
+differently ([units.md](units.md)): ground runs to 201 and projectiles live at
+202..241. So **every bullet and rocket was skipped** — a match showed the
+explosions and the damage and nothing flying in between — and so was every
+ground unit past the eightieth, which in a big battle is half an army. Both
+loops pick by kind now: the air layer is what flies (`MOVEMENT_WINGER`, the
+same test `Unit_Dirty()` counts it by), the ground layer is everything else
+but the worm, which has its own pass. Nothing in the draw code names a slot
+number any more, and nothing should.
+
+`--viewport-self-test` measures it: the viewport is drawn to SCREEN_1 and
+copied out, a unit is put on a clear tile in view and it is drawn again, and
+the two copies must differ — a bullet in the projectile band, a tank in slot
+150, and a carryall and a trike that always drew. Verified to fail: the old
+`index > 15` fails it on the bullet.
+
 ## Whose army a player may command
 
 A match has two people in it, and every unit command names its recipients by
@@ -928,6 +1023,9 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --combat-balance-self-tes
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-rules-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-queue-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ownership-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --guard-post-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ai-paving-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --viewport-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-list-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --deviator-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --harvester-self-test
@@ -1246,7 +1344,7 @@ without knowing that it does.
   difference always changes the hash. A rule that is *not* a table patch has to
   be named in `Lobby_ConfigHash()` one at a time — `pathfinder_astar`,
   `move_rolling_turn`, `build_slab_on_sand`, `skirmish_base_rock`,
-  `starport_special_units` and `mp_start_units` (the starting squad, read by
+  `skirmish_ai_paving`, `starport_special_units` and `mp_start_units` (the starting squad, read by
   `MpGame_Rules_Init()` in opendune.c; `--mp-units=` overrides it) — and that
   is exactly the list that gets forgotten.
   `--lobby-self-test` flips each of them and demands the digest move; removing

@@ -42,6 +42,8 @@ extern void Skirmish_SetViewpoint(uint8 slot);
 extern void Skirmish_Rules_Init(void);
 extern bool Skirmish_Rules_BaseRock(void);
 extern void Skirmish_Rules_SetBaseRock(bool carved);
+extern bool Skirmish_Rules_AiPaving(void);
+extern void Skirmish_Rules_SetAiPaving(bool timed);
 extern bool Skirmish_IsActive(void);
 extern bool Skirmish_IsEconomyMode(void);
 extern void Skirmish_Reset(void);
@@ -58,6 +60,7 @@ extern bool Skirmish_War_IsDefeated(uint8 index);
 
 extern uint16 Skirmish_Plan_PickNext(struct House *h);
 extern uint16 Skirmish_Plan_TakePosition(struct House *h, uint8 structureType);
+extern uint16 Skirmish_Plan_PavingTiles(struct House *h, uint8 structureType);
 extern uint16 Skirmish_House_MaxCredits(const struct House *h);
 extern void Skirmish_House_LoseNoSilo(uint8 houseID);
 extern void Skirmish_Economy_Tick(struct House *h);

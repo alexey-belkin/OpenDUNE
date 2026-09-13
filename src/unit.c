@@ -3747,6 +3747,39 @@ void Unit_SetAction(Unit *u, ActionType action)
 	}
 
 	preserveDefensivePost = !manualOrder && s_autonomousPost[u->o.index].state == AUTONOMOUS_POST_ENGAGING;
+
+	/* A player's Attack ends where the unit stands.  The completion hook says
+	 * as much (Unit_GetDefaultActionAfterCompletion), but it only ever saw the
+	 * fights that were fought from the spot.  A unit that had to drive to its
+	 * target ends the fight through the original script's SetAction(MOVE)
+	 * (UNIT.EMC word 238) -- which comes through here first, and the line
+	 * below then cleared the manual mark before that move had even started.
+	 * The hook saw an ordinary Move ending far from the post, left the post
+	 * where the order had been given, and Area Guard drove the unit all the
+	 * way back across the map to it: attack something on the far side and the
+	 * whole group turns round and leaves the moment it is dead.  The post
+	 * moves here instead, on the way out of the Attack, whatever the script
+	 * turns the unit into next.  An autonomous sortie is not a player's
+	 * Attack -- its post is open (ENGAGING) and it goes home through
+	 * Unit_Autonomy_ReturnToPost(), which is the drift the hook guards.
+	 *
+	 * The post is the firing position the unit was still driving to when the
+	 * target went -- that is where the script's Move takes it, and where its
+	 * group is gathering -- or, with nowhere left to go, the tile it is on. */
+	if (!manualOrder && u->actionID == ACTION_ATTACK && action != ACTION_ATTACK &&
+	    s_attackPositionManual[u->o.index] && s_autonomousPost[u->o.index].state == AUTONOMOUS_POST_NONE &&
+	    Match_IsHumanControlled(Unit_GetHouseID(u))) {
+		uint16 post = Tile_PackTile(u->o.position);
+
+		if (action == ACTION_MOVE && Tools_Index_IsValid(u->targetMove)) {
+			uint16 dest = Tools_Index_GetPackedTile(u->targetMove);
+
+			if (Map_IsValidPosition(dest)) post = dest;
+		}
+
+		Unit_SetGuardPosition(u, post);
+	}
+
 	if (action != ACTION_ATTACK && !preserveDefensivePost) Unit_AttackPosition_SetManual(u, false);
 
 	ai = &g_table_actionInfo[action];

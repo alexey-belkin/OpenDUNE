@@ -166,6 +166,9 @@ static uint32 s_nextQueueSample[HOUSE_MAX];
 /* Whether a base rectangle is carved into rock before anything is built on it.
  * See Skirmish_CarveRock(); `skirmish_base_rock` in opendune.ini. */
 static bool s_baseRock = false;
+
+/* Whether the AI's slabs take the time a person's take; `skirmish_ai_paving`. */
+static bool s_aiPaving = true;
 static uint32 s_nextBloom;                                  /*!< Game tick the next spice bloom is due. */
 static uint16 s_carryallTarget[HOUSE_MAX];
 static uint32 s_tripStart[UNIT_INDEX_MAX];
@@ -1255,6 +1258,52 @@ uint16 Skirmish_Plan_TakePosition(House *h, uint8 structureType)
 }
 
 /**
+ * How many tiles the AI still has to pave before its next building of this
+ * type can stand: the footprint of the entry Skirmish_Plan_TakePosition() will
+ * hand out, less what is concrete already (the apron of a neighbour, or the
+ * yard's own).  Zero for a wall, which paves nothing, and for a type the plan
+ * does not hold.
+ *
+ * Skirmish_LaySlabs() pours the concrete in one call, and that used to be the
+ * whole of the AI's cost for it: the credits, and no time at all.  A person
+ * pays the yard four ticks of buildTime a tile, one slab after another, before
+ * the building can go down; the AI got its refinery six tiles sooner every
+ * time.  The number here is what structure.c charges it in time.
+ */
+uint16 Skirmish_Plan_PavingTiles(House *h, uint8 structureType)
+{
+	const StructureInfo *si = &g_table_structureInfo[structureType];
+	SkirmishBase *b;
+	uint16 i;
+
+	if (h == NULL || structureType == STRUCTURE_WALL) return 0;
+
+	b = Skirmish_GetBase((uint8)h->index);
+	if (b == NULL) return 0;
+
+	for (i = 0; i < b->entryCount; i++) {
+		const SkirmishPlanEntry *e = &b->entries[i];
+		uint16 tiles = 0;
+		uint16 j;
+
+		if (e->taken) continue;
+		if (e->type != structureType) continue;
+
+		for (j = 0; j < g_table_structure_layoutTileCount[si->layout]; j++) {
+			uint16 packed = e->position + g_table_structure_layoutTiles[si->layout][j];
+
+			if (Tile_IsOutOfMap(packed)) continue;
+			if (Map_GetLandscapeType(packed) == LST_CONCRETE_SLAB) continue;
+			tiles++;
+		}
+
+		return tiles;
+	}
+
+	return 0;
+}
+
+/**
  * Whether a skirmish AI should put a harvester on the line next.
  *
  * The stock AI never builds one: Structure_AI_PickNextToBuild() masks the
@@ -2187,7 +2236,21 @@ static void Skirmish_SetupBase(SkirmishBase *b, uint8 houseID, uint16 rectX, uin
  */
 void Skirmish_Rules_Init(void)
 {
-	s_baseRock = (IniFile_GetInteger("skirmish_base_rock", 0) != 0);
+	s_baseRock  = (IniFile_GetInteger("skirmish_base_rock", 0) != 0);
+	s_aiPaving  = (IniFile_GetInteger("skirmish_ai_paving", 1) != 0);
+}
+
+/** Whether the AI pays for its concrete in time (structure.c, s_aiPaving).
+ *  On by default; off is the older, faster AI the numbers in metrics.md were
+ *  taken against. */
+bool Skirmish_Rules_AiPaving(void)
+{
+	return s_aiPaving;
+}
+
+void Skirmish_Rules_SetAiPaving(bool timed)
+{
+	s_aiPaving = timed;
 }
 
 /** Whether a base is carved into rock.  Folded into the lobby digest: the map
