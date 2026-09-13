@@ -671,6 +671,30 @@ static void Unit_Harvester_ResetState(uint16 index)
 	memset(&s_harvester[index], 0, sizeof(s_harvester[index]));
 }
 
+/**
+ * Whether a house's guards answer for the ground round their post.
+ *
+ * A person's always have (the autonomy layer below is what Guard and Area
+ * Guard mean in this fork).  The computer's stood where they were put and
+ * shot what walked into their range, and the rest of the line watched: "I can
+ * walk up and kill them one at a time and the others never move".  In a
+ * skirmish the AI's guards are given the same layer -- a post, a sortie out to
+ * meet what comes inside the area, the way home afterwards -- under the
+ * skirmish_ai_guard key, and only for a unit the doctrine has not committed
+ * (Unit_Autonomy_IsCombatUnit() asks Doctrine_IsOnWave()).
+ */
+/* The house a unit answers to, for a pointer that may not be written through. */
+static uint8 Unit_Autonomy_HouseOf(const Unit *unit)
+{
+	return unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID;
+}
+
+static bool Unit_Autonomy_HouseDefends(uint8 houseID)
+{
+	if (Match_IsHumanControlled(houseID)) return true;
+	return Skirmish_IsActive() && Skirmish_Rules_AiGuard();
+}
+
 static void Unit_Autonomy_ClearPost(Unit *unit)
 {
 	if (unit == NULL || unit->o.index >= UNIT_INDEX_MAX) return;
@@ -728,7 +752,13 @@ static bool Unit_AttackPosition_IsEligible(Unit *unit)
 
 	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
 	if (!s_attackPositionManual[unit->o.index] || unit->actionID != ACTION_ATTACK) return false;
-	if (!Match_IsHumanControlled(Unit_GetHouseID(unit)) || !Tools_Index_IsValid(unit->targetAttack)) return false;
+	/* The computer's guard on a sortie is placed by this layer too: a unit
+	 * with a turret has no other way to close on a target -- the script never
+	 * copies the target into targetMove for it -- so without this the AI's
+	 * tank went out on a sortie by standing still.  The mark is only ever set
+	 * on an AI unit by Unit_AttackPosition_SetAutomatic(), i.e. by a sortie;
+	 * the doctrine's own orders clear it (Doctrine_OrderBegin). */
+	if (!Unit_Autonomy_HouseDefends(Unit_GetHouseID(unit)) || !Tools_Index_IsValid(unit->targetAttack)) return false;
 
 	ui = &g_table_unitInfo[unit->o.type];
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || ui->fireDistance == 0) return false;
@@ -1264,8 +1294,18 @@ static bool Unit_Autonomy_IsCombatUnit(const Unit *unit)
 	uint8 houseID;
 
 	if (unit == NULL || !unit->o.flags.s.used || !unit->o.flags.s.allocated || unit->o.flags.s.isNotOnMap) return false;
-	houseID = unit->deviated != 0 ? (g_dune2_enhanced ? unit->deviatedHouse : HOUSE_ORDOS) : unit->o.houseID;
-	if (!Match_IsHumanControlled(houseID)) return false;
+	houseID = Unit_Autonomy_HouseOf(unit);
+	if (!Unit_Autonomy_HouseDefends(houseID)) return false;
+
+	/* The computer's army is the doctrine's: a unit on a wave, or one hunting
+	 * on its own the way the engine sends a fresh AI unit out, is not a guard.
+	 * Only what is standing guard -- or already out on a sortie from a post --
+	 * gets the layer, so the doctrine's orders are never second-guessed. */
+	if (!Match_IsHumanControlled(houseID)) {
+		if (Doctrine_IsOnWave(unit) || Doctrine_HasErrand(unit)) return false;
+		if (s_autonomousPost[unit->o.index].state == AUTONOMOUS_POST_NONE
+			&& unit->actionID != ACTION_GUARD && unit->actionID != ACTION_AREA_GUARD) return false;
+	}
 
 	ui = &g_table_unitInfo[unit->o.type];
 	if (!ui->flags.isNormalUnit || !ui->flags.isGroundUnit || ui->fireDistance == 0) return false;
@@ -1297,6 +1337,18 @@ static uint16 Unit_Autonomy_GetSearchRadius(const Unit *unit)
 	 * radius would read as zero for exactly the two states in which the unit is
 	 * away from its post and most needs to know how far its area reaches. */
 	if (post->state != AUTONOMOUS_POST_NONE && post->action != ACTION_INVALID) action = post->action;
+
+	/* The computer's guard is the tight one -- the same Guard a person's unit
+	 * is on until they click Area Guard -- and that was measured, not
+	 * assumed.  Given a person's fourteen-tile default instead, doctrine B's
+	 * reserve, which is meant to accumulate at the muster and strike as one,
+	 * was spent a unit at a time on sorties ten tiles out: --war-metrics
+	 * with the AI's concrete instant read result.points 83 -> 70 and
+	 * wave.matches 91 -> 75 from B's own guards alone; at this radius the
+	 * suite passes with result.wipeouts 16 -> 0.  Five tiles past the gun is
+	 * enough for what was reported: a guard shot at from range is answered by
+	 * every neighbour whose post is within its reach, which for a squad set
+	 * down round a yard is all of them. */
 
 	/* The radius is measured from the post, and a unit stops as soon as its
 	 * target is within its own weapon range, so what it really controls is how
@@ -1517,6 +1569,18 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit, uint32 *bestScoreOut)
 	uint16 best = 0;
 	uint32 bestScore = 0;
 	PoolFindStruct find;
+	/* The computer's guard fights what comes at it, and not what happens to
+	 * stand near it.  A person's guard may take a building inside its area --
+	 * the person put it there knowing what is there.  The AI's posts are
+	 * wherever the doctrine stood a unit, and a raider parked on the enemy's
+	 * spice has the enemy base inside fourteen tiles: measured, letting its
+	 * sorties take buildings and ground under turrets is a siege nobody
+	 * ordered, a unit at a time, and it cost doctrine B most of its matches.
+	 * So: enemy units only, and none of them on ground a turret covers --
+	 * the rule Doctrine_TurretExclusion() enforces on the way, asked before
+	 * setting out.  Only for the guard layer's own sweep (s_scanRadius is
+	 * zero); Unit_Skirmish_ClearTheWay() asks with its own rules. */
+	bool aiGuard = (s_scanRadius == 0 && !Match_IsHumanControlled(Unit_Autonomy_HouseOf(unit)));
 
 	find.houseID = HOUSE_INVALID;
 	find.index = 0xFFFF;
@@ -1532,6 +1596,7 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit, uint32 *bestScoreOut)
 		if (target == NULL) break;
 		encoded = Tools_Index_Encode(target->o.index, IT_UNIT);
 		if (!Unit_Autonomy_TargetInArea(unit, encoded)) continue;
+		if (aiGuard && Doctrine_TargetIsCovered(Unit_Autonomy_HouseOf(unit), encoded)) continue;
 		priority = Unit_Autonomy_BasePriority(unit, encoded, &maxHitpoints, &hitpoints);
 		if (priority == 0) continue;
 		distance = Tile_GetDistanceRoundedUp(unit->o.position, target->o.position);
@@ -1541,7 +1606,7 @@ static uint16 Unit_Autonomy_FindTarget(Unit *unit, uint32 *bestScoreOut)
 	find.houseID = HOUSE_INVALID;
 	find.index = 0xFFFF;
 	find.type = 0xFFFF;
-	while (true) {
+	while (!aiGuard) {
 		Structure *target = Structure_Find(&find);
 		uint16 encoded;
 		uint16 maxHitpoints;
@@ -1635,6 +1700,14 @@ bool Unit_Autonomy_ReturnToPost(Unit *unit)
 	returnAction = post->action;
 	anchor = post->anchor;
 	if (post->state != AUTONOMOUS_POST_ENGAGING || returnAction == ACTION_INVALID) return false;
+
+	/* A computer's unit that its doctrine has since committed to a wave is the
+	 * doctrine's now: the sortie it went out on is forgotten rather than
+	 * finished with a drive home from the middle of an attack. */
+	if (!Match_IsHumanControlled(Unit_GetHouseID(unit)) && !Unit_Autonomy_IsCombatUnit(unit)) {
+		Unit_Autonomy_ClearPost(unit);
+		return false;
+	}
 
 	/* A live target inside the guarded area is not something to walk away from.
 	 * Without this the move script's completion hook sends the unit home the
@@ -1793,7 +1866,7 @@ static void Unit_Autonomy_Update(Unit *unit)
 
 void Unit_Autonomy_ReportThreat(uint8 houseID, uint16 attacker, uint16 packed)
 {
-	if (!Match_IsHumanControlled(houseID) || !Tools_Index_IsValid(attacker) || !Map_IsValidPosition(packed)) return;
+	if (!Unit_Autonomy_HouseDefends(houseID) || !Tools_Index_IsValid(attacker) || !Map_IsValidPosition(packed)) return;
 
 	s_houseThreatTarget[houseID] = attacker;
 	s_houseThreatUntil[houseID] = g_timerGame + 180;
@@ -3737,6 +3810,24 @@ void Unit_SetAction(Unit *u, ActionType action)
 	manualOrder = s_manualOrderStarting[u->o.index];
 	s_manualOrderStarting[u->o.index] = false;
 
+	/* Where the computer's guard stands is its post.  A person's post is set by
+	 * the order that put the unit there (UnitSelection_ResetOrder); the AI's
+	 * units are put places by team scripts and by the doctrine, neither of
+	 * which knows about posts, so the post follows the unit: whatever moved it
+	 * somewhere and stood it on Guard has chosen its ground.  Within two tiles
+	 * of the post it has already the post stays exactly where it is -- the
+	 * arrival slack at the end of a sortie's drive home must not walk the post
+	 * forward a tile at a time, which is how a person's line once marched into
+	 * the enemy over a few waves. */
+	if (!manualOrder && (action == ACTION_GUARD || action == ACTION_AREA_GUARD)
+		&& s_autonomousPost[u->o.index].state == AUTONOMOUS_POST_NONE
+		&& !Match_IsHumanControlled(Unit_GetHouseID(u)) && Unit_Autonomy_HouseDefends(Unit_GetHouseID(u))
+		&& u->o.type != UNIT_HARVESTER && !u->o.flags.s.isNotOnMap) {
+		uint16 here = Tile_PackTile(u->o.position);
+
+		if (!Map_IsValidPosition(u->guardPosition) || Tile_GetDistancePacked(here, u->guardPosition) > 2) Unit_SetGuardPosition(u, here);
+	}
+
 	/* Legacy Guard scripts often switch to Move/Attack themselves.  Treat that
 	 * as the same defensive sortie as a target found by the autonomous layer. */
 	if (!manualOrder && s_autonomousPost[u->o.index].state == AUTONOMOUS_POST_NONE
@@ -4381,7 +4472,7 @@ bool Unit_SetPosition(Unit *u, tile32 position)
 	u->currentDestination.y = 0;
 	u->targetMove = 0;
 	u->targetAttack = 0;
-	if (Match_IsHumanControlled(u->o.houseID) && u->o.type != UNIT_HARVESTER) Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
+	if (Unit_Autonomy_HouseDefends(u->o.houseID) && u->o.type != UNIT_HARVESTER) Unit_SetGuardPosition(u, Tile_PackTile(u->o.position));
 
 	if (g_map[Tile_PackTile(u->o.position)].isUnveiled) {
 		/* A new unit being delivered fresh from the factory; force a seenByHouses

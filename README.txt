@@ -467,6 +467,13 @@ at the yard one after another; now its yard pours the footprint first, at the
 same four ticks a slab you pay. skirmish_ai_paving=0 in opendune.ini brings the
 faster computer back.
 
+The computer's guards defend their ground. They used to stand where they were
+put and fire only at what came within range, so a line could be picked apart
+one unit at a time while the rest watched; now a unit of the computer's that is
+standing guard goes out to meet whatever comes inside the area a guard of
+yours answers for, and returns to its post afterwards. skirmish_ai_guard=0
+in opendune.ini brings the passive guard back.
+
 
 Ingame
 ------

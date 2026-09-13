@@ -157,6 +157,16 @@ skirmish_base_rock=0
 ; reads econ.spice/match 79621 with it off against 65370 on).
 skirmish_ai_paving=1
 
+; Whether the computer's guards answer for the ground round their post.  A
+; person's units on Guard go out to meet anything that comes inside their
+; area and return to their post afterwards; the computer's stood where they
+; were put and shot only what walked into their range, so a person could pick
+; a line apart one unit at a time while the rest watched.  On, an AI unit
+; standing guard gets the same layer -- the doctrine's own orders (waves,
+; raids, the muster) are never second-guessed.  Off is the passive guard the
+; numbers in metrics.md were measured against.
+skirmish_ai_guard=1
+
 ; Turning on the move.  Arriving on a tile a unit reads the next direction off
 ; its route and, if it differs from where it is pointing, stops and turns.  On a
 ; diagonal route that happens every other tile, for 45 degrees each time, which

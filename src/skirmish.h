@@ -44,6 +44,8 @@ extern bool Skirmish_Rules_BaseRock(void);
 extern void Skirmish_Rules_SetBaseRock(bool carved);
 extern bool Skirmish_Rules_AiPaving(void);
 extern void Skirmish_Rules_SetAiPaving(bool timed);
+extern bool Skirmish_Rules_AiGuard(void);
+extern void Skirmish_Rules_SetAiGuard(bool active);
 extern bool Skirmish_IsActive(void);
 extern bool Skirmish_IsEconomyMode(void);
 extern void Skirmish_Reset(void);

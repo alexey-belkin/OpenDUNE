@@ -897,6 +897,97 @@ own dynamics do not depend on how long its concrete takes, and the fairness
 of a match against a person is what the default is for. The key is folded
 into the lobby digest like the others.
 
+## The computer's guard answers for its ground
+
+The autonomy layer in [unit.c](src/unit.c) -- a post, a sortie out to meet
+what comes inside the area round it, the way home afterwards
+(`Unit_Autonomy_*`, "Where a unit stands after a player's attack") -- is what
+Guard and Area Guard *mean* in this fork, and it was a person's alone:
+`Unit_Autonomy_IsCombatUnit()` asked `Match_IsHumanControlled()`. The AI's
+units on Guard had the original script, which shoots what is already in
+range and nothing else. "I can walk up and kill its guards one at a time and
+the rest never move" was the report, and it was right: a line six tiles
+apart was picked apart from five.
+
+`Unit_Autonomy_HouseDefends()` is the gate now -- a person's house, or the
+AI's in a skirmish under `skirmish_ai_guard` (default 1, `--ai-guard=0|1`
+from the command line). What the AI gets is the same layer under three
+rules, each of which is one line and one reason:
+
+* **Only a guard.** An AI unit is eligible when it is standing Guard, or
+  already out on a sortie from a post; a unit on a wave
+  (`Doctrine_IsOnWave()`) or hunting on its own the way the engine sends a
+  fresh AI unit out (`ACTION_HUNT`) is the doctrine's and is never
+  second-guessed. A guard the doctrine commits mid-sortie forgets the sortie
+  (`Unit_Autonomy_ReturnToPost()` clears the post) rather than driving home
+  from the middle of an attack.
+* **The tight area.** Guard as a person's unit has it before they click Area
+  Guard: the gun plus five tiles from the post
+  (`Unit_Autonomy_GetSearchRadius()`), and that was measured rather than
+  assumed. Given the fourteen-tile Area Guard instead, doctrine B's reserve --
+  which is meant to accumulate at the muster and strike as one -- was spent a
+  unit at a time on sorties ten tiles out: B's own guards alone took
+  `result.points %` 83 → 70 and `wave.matches %` 91 → 75, and both houses'
+  together took `result.points %` to 75 with `harv.exposure %` over its gate.
+  At the tight radius the suite passes. What was reported needs no more: a
+  guard shot at from range is answered by every neighbour whose post is
+  within its reach, and a squad set down round a yard is all within reach of
+  each other. A sortie takes enemy **units** only, and none on ground an enemy
+  turret covers -- a raider parked on the enemy's spice has the enemy base
+  inside its area, and letting sorties take buildings there was a siege nobody
+  ordered; `Unit_Skirmish_ClearTheWay()` keeps its own rules, the filter is
+  on the guard layer's sweep alone (`s_scanRadius == 0`).
+* **Not a unit with an errand.** A raider on the enemy's spice and a picket on
+  a flank field stand on Guard where the doctrine posted them and are not
+  guards (`Doctrine_HasErrand()`): a Trike given the layer went out after the
+  first tank inside its area, which is what a Trike is for least of all.
+* **The post follows the unit.** A person's post is set by the order that
+  put the unit there; the AI's are put places by team scripts and by the
+  doctrine, neither of which knows about posts. So `Unit_SetAction()`
+  anchors the post wherever an AI unit is stood on Guard -- unless it is
+  within two tiles of the post it already has, which is what stops the
+  arrival slack at the end of a sortie's drive home walking the post forward
+  a tile at a time. The doctrine's own orders are the AI's clicks:
+  `Doctrine_OrderMove/Hold/Attack()` close any open sortie and a Move or a
+  Hold names the post (`Doctrine_OrderBegin()`, under the key only, so with
+  it off the doctrine issues exactly the orders it always did).
+
+One more thing had to move with it. `Unit_AttackPosition_IsEligible()` was a
+person's too, and a unit with a turret has no other way to close on a target
+-- the script copies the target into `targetMove` only for turretless units
+-- so the AI's tank went out on its first sortie by standing still. The
+tactical layer places an AI sortie now; the mark it keys on is only ever set
+on an AI unit by `Unit_AttackPosition_SetAutomatic()`, i.e. by a sortie, and
+the doctrine's orders clear it.
+
+`--ai-guard-self-test` plays it with doctrine B on the AI's side (it touches
+nothing it has not committed) and a person in the other chair (nothing of
+theirs moves on its own): an AI Tank on Guard beside its base holds its post
+with nothing about; an MCV put down eight tiles off, beyond its gun and
+inside its area, brings it out; killed under it, the tank comes back to the
+post (the doctrine's four-tile muster hold may shift it a tile, which is an
+order); an MCV twenty-two tiles off does not move it; and with the key off
+the first MCV does not move it either. Verified to fail: the gate made inert
+fails it by name on the sortie.
+
+**Measured on `--war-metrics`**, and the two AI keys interact. With the AI's
+concrete instant (`--ai-paving=0`) the guard layer is a plain improvement:
+against that baseline, `econ.spice/match` 79621 → 86361, `result.wipeouts %`
+16 → 0, `harv.lost.early` 1 → 0, `wave.matches %` 91 → 83, `result.points %`
+83 → 75 (A defends better too, and it is B that is scored), PASS with no
+regressions. On the shipped default, both keys on, the suite reads FAIL with
+8 regressions -- `result.points %` 41, `result.wipeouts %` 58,
+`wave.matches %` 41 -- and it is the combination: with production slow,
+B's reserve never reaches a wave once sorties cost it a unit here and there,
+and A's guards kill B's harvesters early (`harv.lost.early` 17). Measured one
+house at a time, both halves contribute (B's guards alone: `result.points %`
+50; A's alone: 54). That is the AI-versus-AI bench describing the doctrine
+it was built to score; the person in the lobby plays doctrine A, and what
+they asked for is that its guards answer. **Compare against
+[metrics.md](metrics.md) with `--ai-guard=0 --ai-paving=0`**, which is
+bit-for-bit the older AI, and for the guard layer on its own with
+`--ai-paving=0`. The key is folded into the lobby digest like the others.
+
 ## Everything on the map is drawn
 
 Two loops in `GUI_Widget_Viewport_Draw()` ([gui/viewport.c](src/gui/viewport.c))
@@ -1025,6 +1116,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonne
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ownership-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --guard-post-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ai-paving-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ai-guard-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --viewport-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-list-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --deviator-self-test
@@ -1344,7 +1436,7 @@ without knowing that it does.
   difference always changes the hash. A rule that is *not* a table patch has to
   be named in `Lobby_ConfigHash()` one at a time — `pathfinder_astar`,
   `move_rolling_turn`, `build_slab_on_sand`, `skirmish_base_rock`,
-  `skirmish_ai_paving`, `starport_special_units` and `mp_start_units` (the starting squad, read by
+  `skirmish_ai_paving`, `skirmish_ai_guard`, `starport_special_units` and `mp_start_units` (the starting squad, read by
   `MpGame_Rules_Init()` in opendune.c; `--mp-units=` overrides it) — and that
   is exactly the list that gets forgotten.
   `--lobby-self-test` flips each of them and demands the digest move; removing

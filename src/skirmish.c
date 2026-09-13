@@ -169,6 +169,10 @@ static bool s_baseRock = false;
 
 /* Whether the AI's slabs take the time a person's take; `skirmish_ai_paving`. */
 static bool s_aiPaving = true;
+/* Whether the AI's guards answer for the ground round their post the way a
+ * person's do (unit.c, the autonomy layer).  Off is the older, passive guard
+ * that shoots only what walks into its range. */
+static bool s_aiGuard = true;
 static uint32 s_nextBloom;                                  /*!< Game tick the next spice bloom is due. */
 static uint16 s_carryallTarget[HOUSE_MAX];
 static uint32 s_tripStart[UNIT_INDEX_MAX];
@@ -2238,6 +2242,7 @@ void Skirmish_Rules_Init(void)
 {
 	s_baseRock  = (IniFile_GetInteger("skirmish_base_rock", 0) != 0);
 	s_aiPaving  = (IniFile_GetInteger("skirmish_ai_paving", 1) != 0);
+	s_aiGuard   = (IniFile_GetInteger("skirmish_ai_guard", 1) != 0);
 }
 
 /** Whether the AI pays for its concrete in time (structure.c, s_aiPaving).
@@ -2251,6 +2256,20 @@ bool Skirmish_Rules_AiPaving(void)
 void Skirmish_Rules_SetAiPaving(bool timed)
 {
 	s_aiPaving = timed;
+}
+
+/** Whether the AI's guards go out to meet what comes inside their area and
+ *  return to their post afterwards (unit.c, Unit_Autonomy_*).  On by default;
+ *  off is the guard that never moves, which the numbers in metrics.md were
+ *  taken against. */
+bool Skirmish_Rules_AiGuard(void)
+{
+	return s_aiGuard;
+}
+
+void Skirmish_Rules_SetAiGuard(bool active)
+{
+	s_aiGuard = active;
 }
 
 /** Whether a base is carved into rock.  Folded into the lobby digest: the map

@@ -74,6 +74,7 @@ extern bool Doctrine_UsesEngineTeams(uint8 houseID);
 extern void Doctrine_Tick(struct House *h);
 extern bool Doctrine_WaveReady(uint8 houseID);
 extern bool Doctrine_IsOnWave(const struct Unit *u);
+extern bool Doctrine_HasErrand(const struct Unit *u);
 extern uint16 Doctrine_PickUnit(const struct House *h, uint32 buildable);
 extern bool Doctrine_AllowUnit(const struct House *h, uint16 unitType);
 extern void Doctrine_ForgetUnit(uint16 unitIndex);

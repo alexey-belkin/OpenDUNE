@@ -357,7 +357,7 @@ if [ "$VERIFY" = 1 ]; then
 	if [ "$DATA" = 1 ]; then
 		for t in "--combat-balance-self-test" "--build-rules-self-test" "--move-rules-self-test" \
 		         "--pathfinder-self-test" "--build-queue-self-test" "--ownership-self-test" \
-		         "--guard-post-self-test" "--ai-paving-self-test" "--viewport-self-test" \
+		         "--guard-post-self-test" "--ai-paving-self-test" "--ai-guard-self-test" "--viewport-self-test" \
 		         "--lobby-self-test" "--selection-self-test" "--build-list-self-test" \
 		         "--deviator-self-test" "--harvester-self-test" "--packet-self-test" "--mp-replay=20000,500" \
 		         "--mp-modal=20000,4000"; do

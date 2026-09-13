@@ -521,6 +521,22 @@ static bool Doctrine_IsAttacker(uint8 role)
 	return (role == DOCTRINE_ROLE_ARTILLERY || role == DOCTRINE_ROLE_ASSAULT);
 }
 
+/**
+ * Whether the doctrine has this unit on an errand of its own that is not a
+ * wave: a raider on the enemy's spice, a picket on a flank field.  Such a unit
+ * stands on Guard where it was posted, and it is not a guard -- the guard
+ * layer (unit.c, skirmish_ai_guard) leaves it to its errand.  Measured, a
+ * raider given the layer went out after the first tank inside fourteen tiles
+ * of the field it was parked on, which is what a Trike is for least of all.
+ */
+bool Doctrine_HasErrand(const Unit *u)
+{
+	if (u == NULL || u->o.index >= UNIT_INDEX_MAX) return false;
+	if (Doctrine_GetForHouse(u->o.houseID) == DOCTRINE_LEGACY) return false;
+
+	return (s_unitRole[u->o.index] == DOCTRINE_ROLE_RAID || s_unitPicket[u->o.index] != 0);
+}
+
 bool Doctrine_IsOnWave(const Unit *u)
 {
 	if (u == NULL || u->o.index >= UNIT_INDEX_MAX) return false;
@@ -1379,22 +1395,46 @@ static bool Doctrine_JustTurnedBack(const Unit *u)
 	return (u->o.index < UNIT_INDEX_MAX && s_turnedBack[u->o.index] > g_timerGame);
 }
 
+/* An order of the doctrine's is the AI's equivalent of a click: it closes any
+ * sortie the guard layer had the unit on (Unit_AttackPosition_SetManual, the
+ * same call a person's order makes) and, for a Move or a Hold, says where the
+ * unit's post is from now on.  Under skirmish_ai_guard only, so that with the
+ * key off the doctrine issues exactly the orders it always did. */
+static void Doctrine_OrderBegin(Unit *u, uint16 postPacked)
+{
+	if (!Skirmish_Rules_AiGuard()) return;
+	Unit_AttackPosition_SetManual(u, false);
+	if (postPacked != 0) Unit_SetGuardPosition(u, postPacked);
+}
+
 static void Doctrine_OrderMove(Unit *u, uint16 packed)
 {
-	if (u->actionID != ACTION_MOVE) Unit_SetAction(u, ACTION_MOVE);
+	Doctrine_OrderBegin(u, packed);
+	if (u->actionID != ACTION_MOVE) {
+		if (Skirmish_Rules_AiGuard()) Unit_BeginManualOrder(u);
+		Unit_SetAction(u, ACTION_MOVE);
+	}
 	Unit_SetDestination(u, Tools_Index_Encode(packed, IT_TILE));
 }
 
 static void Doctrine_OrderHold(Unit *u)
 {
 	if (u->actionID == ACTION_ATTACK && Tools_Index_IsValid(u->targetAttack)) return;
-	if (u->actionID != ACTION_GUARD) Unit_SetAction(u, ACTION_GUARD);
+	Doctrine_OrderBegin(u, Tile_PackTile(u->o.position));
+	if (u->actionID != ACTION_GUARD) {
+		if (Skirmish_Rules_AiGuard()) Unit_BeginManualOrder(u);
+		Unit_SetAction(u, ACTION_GUARD);
+	}
 	Unit_SetDestination(u, Tools_Index_Encode(Tile_PackTile(u->o.position), IT_TILE));
 }
 
 static void Doctrine_OrderAttack(Unit *u, uint16 encoded, uint16 standoffPacked)
 {
-	if (u->actionID != ACTION_ATTACK) Unit_SetAction(u, ACTION_ATTACK);
+	Doctrine_OrderBegin(u, 0);
+	if (u->actionID != ACTION_ATTACK) {
+		if (Skirmish_Rules_AiGuard()) Unit_BeginManualOrder(u);
+		Unit_SetAction(u, ACTION_ATTACK);
+	}
 	Unit_SetTarget(u, encoded);
 	Unit_SetDestination(u, Tools_Index_Encode(standoffPacked, IT_TILE));
 }

@@ -142,6 +142,8 @@ static bool s_guardPostSelfTest = false;
 static int s_guardPostSelfTestResult = -1;
 static bool s_aiPavingSelfTest = false;
 static int s_aiPavingSelfTestResult = -1;
+static bool s_aiGuardSelfTest = false;
+static int s_aiGuardSelfTestResult = -1;
 static int s_ownershipSelfTestResult = -1;
 static bool s_deviatorSelfTest = false;
 static int s_deviatorSelfTestResult = -1;
@@ -154,6 +156,7 @@ static bool s_pathfinderSelfTest = false;
 static int s_pathfinderSelfTestResult = -1;
 static int s_pathfinderOverride = -1;
 static int s_aiPavingOverride = -1;
+static int s_aiGuardOverride = -1;
 static bool s_viewportSelfTest = false;
 static int s_viewportSelfTestResult = -1;
 static bool s_combatBalanceSelfTest = false;
@@ -3568,6 +3571,204 @@ static int GuardPost_SelfTest(void)
 	return 1;
 }
 
+static int AiGuard_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "ai-guard-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+/** An MCV of `houseID` put down `tiles` from `post`, away from `awayFrom`, and
+ *  told to stand still.  Nothing on either side drives an MCV, so the fight is
+ *  where it was put; the answer is its tile, or 0. */
+static Unit *AiGuard_Bait(uint8 houseID, uint16 post, uint16 awayFrom, uint16 tiles)
+{
+	int16 px = (int16)Tile_GetPackedX(post), py = (int16)Tile_GetPackedY(post);
+	int16 ax = (int16)Tile_GetPackedX(awayFrom), ay = (int16)Tile_GetPackedY(awayFrom);
+	int16 dx = (px > ax) ? 1 : ((px < ax) ? -1 : 0);
+	int16 dy = (py > ay) ? 1 : ((py < ay) ? -1 : 0);
+	int16 x, y;
+	Unit *bait;
+
+	/* Along one axis, so that `tiles` is the distance and not a diagonal's
+	 * worth more: the one the far base is further away on. */
+	if (abs(px - ax) >= abs(py - ay)) dy = 0; else dx = 0;
+	if (dx == 0 && dy == 0) dx = 1;
+	x = px + dx * (int16)tiles;
+	y = py + dy * (int16)tiles;
+	if (x < 2) x = 2;
+	if (y < 2) y = 2;
+	if (x > 61) x = 61;
+	if (y > 61) y = 61;
+
+	bait = GuardPost_Spawn(houseID, UNIT_MCV, Tile_PackXY((uint16)x, (uint16)y));
+	if (bait != NULL) Unit_SetAction(bait, ACTION_STOP);
+	return bait;
+}
+
+/**
+ * The computer's guard answers for its ground.
+ *
+ * "Its guards are very passive: I can walk up and kill them one at a time and
+ * the rest never move" -- a person's units have the autonomy layer, a post and
+ * a wide area they go out to defend, and the AI's had only the original Guard
+ * script, which shoots what is already in range.  The rule
+ * (skirmish_ai_guard, Unit_Autonomy_HouseDefends) gives an AI unit standing
+ * guard the same layer.
+ *
+ * Played: an AI Tank on Guard beside its own base, the other house a person's
+ * so that nothing of theirs moves on its own.  Left alone it must hold its
+ * post.  An MCV put down inside its area and beyond its range must bring it
+ * out; the MCV killed under it, it must come back to the same post.  An MCV
+ * outside its area must not move it.  And with the key off the first MCV
+ * must not move it either -- that is the old behaviour, and the key is the
+ * whole difference.
+ */
+static int AiGuard_SelfTest(void)
+{
+	Unit *tank;
+	Unit *bait;
+	uint8 aiHouse;
+	uint8 theirHouse;
+	uint16 home, far;
+	uint16 post;
+	uint16 baitTile;
+	uint16 range = g_table_unitInfo[UNIT_TANK].fireDistance;
+	bool ruleBefore = Skirmish_Rules_AiGuard();
+	uint32 i;
+	int result = 0;
+
+	Skirmish_Rules_SetAiGuard(true);
+	Skirmish_SetController(0, MATCH_CONTROLLER_AI);
+	Skirmish_SetController(1, MATCH_CONTROLLER_HUMAN_LOCAL);
+	/* Doctrine B for the AI: it touches nothing it has not committed, so the
+	 * tank is the guard layer's alone.  Under A an engine team may recruit it
+	 * and move it about, which is a different test. */
+	Doctrine_SetForIndex(0, DOCTRINE_ECHELON);
+	if (!MpHarness_StartMatch(1000)) goto done;
+
+	aiHouse    = Match_GetSlotHouse(0);
+	theirHouse = Match_GetSlotHouse(1);
+	if (aiHouse == HOUSE_INVALID || theirHouse == HOUSE_INVALID || aiHouse == theirHouse) {
+		AiGuard_Failed("the match does not have two houses", aiHouse);
+		goto done;
+	}
+	if (Match_IsHumanControlled(aiHouse)) { AiGuard_Failed("slot 0 is not the AI", aiHouse); goto done; }
+	if (!Match_IsHumanControlled(theirHouse)) { AiGuard_Failed("slot 1 is not a person's", theirHouse); goto done; }
+	g_playerHouseID = theirHouse;
+
+	home = Skirmish_GetBaseOrigin(0);
+	far  = Skirmish_GetBaseOrigin(1);
+	if (home == 0xFFFF || far == 0xFFFF) { AiGuard_Failed("a base has no origin", home); goto done; }
+
+	tank = GuardPost_Spawn(aiHouse, UNIT_TANK, home);
+	if (tank == NULL) { AiGuard_Failed("could not put a tank down beside the AI's base", home); goto done; }
+	/* As the starting squad is placed: on Guard, said explicitly. */
+	Unit_SetAction(tank, ACTION_GUARD);
+	post = Tile_PackTile(tank->o.position);
+	if (tank->guardPosition != post) { AiGuard_Failed("the AI's guard has no post where it stands", tank->guardPosition); goto done; }
+
+	/* Left alone it holds. */
+	for (i = 0; i < 600; i++) MpHarness_Step();
+	if (!tank->o.flags.s.used) { AiGuard_Failed("the tank died standing guard with nothing about", 0); goto done; }
+	{
+		char line[160];
+
+		snprintf(line, sizeof(line), "ai-guard-self-test: after 600 ticks action %u at %u,%u, post %u,%u, targetMove %u targetAttack %u",
+		         (unsigned)tank->actionID, (unsigned)Tile_GetPackedX(Tile_PackTile(tank->o.position)), (unsigned)Tile_GetPackedY(Tile_PackTile(tank->o.position)),
+		         (unsigned)Tile_GetPackedX(tank->guardPosition), (unsigned)Tile_GetPackedY(tank->guardPosition), (unsigned)tank->targetMove, (unsigned)tank->targetAttack);
+		PrintToConsole(line);
+	}
+	/* The doctrine may have mustered it a few tiles: that is an order, and the
+	 * post goes with it (Doctrine_OrderBegin).  Wherever it stands now is the
+	 * post the rest of this is measured from, and it has to be standing there. */
+	if (tank->actionID != ACTION_GUARD) { AiGuard_Failed("the guard is not on Guard with nothing about", tank->actionID); goto done; }
+	if (!Map_IsValidPosition(tank->guardPosition)) { AiGuard_Failed("the guard lost its post", tank->guardPosition); goto done; }
+	post = tank->guardPosition;
+	if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) > 2) {
+		AiGuard_Failed("the guard is not standing at its post with nothing about", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post));
+		goto done;
+	}
+
+	/* Inside the area, beyond the gun: it has to leave the post to engage. */
+	bait = AiGuard_Bait(theirHouse, post, far, (uint16)(range + 4));
+	if (bait == NULL) { AiGuard_Failed("could not put an MCV down inside the guard's area", post); goto done; }
+	baitTile = Tile_PackTile(bait->o.position);
+	if (Tile_GetDistancePacked(post, baitTile) <= range) { AiGuard_Failed("the bait is within range of the post, so the guard need not move", Tile_GetDistancePacked(post, baitTile)); goto done; }
+	if (Tile_GetDistancePacked(post, baitTile) > 14) { AiGuard_Failed("the bait landed outside the guard's area", Tile_GetDistancePacked(post, baitTile)); goto done; }
+
+	for (i = 0; i < 6000; i++) {
+		if (tank->actionID == ACTION_ATTACK && Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) >= 2) break;
+		if (!bait->o.flags.s.used || bait->o.hitpoints == 0) break;
+		MpHarness_Step();
+	}
+	if (tank->actionID != ACTION_ATTACK) { AiGuard_Failed("the AI's guard did not go out to meet what came inside its area", tank->actionID); goto done; }
+	if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) < 2) { AiGuard_Failed("the guard engaged without leaving its post", 0); goto done; }
+	if (tank->targetAttack != Tools_Index_Encode(bait->o.index, IT_UNIT)) { AiGuard_Failed("the guard went out after something else", tank->targetAttack); goto done; }
+	{
+		char line[160];
+
+		snprintf(line, sizeof(line), "ai-guard-self-test: post %u,%u, bait %u,%u at %u tiles, the guard went out after %u ticks",
+		         (unsigned)Tile_GetPackedX(post), (unsigned)Tile_GetPackedY(post),
+		         (unsigned)Tile_GetPackedX(baitTile), (unsigned)Tile_GetPackedY(baitTile),
+		         (unsigned)Tile_GetDistancePacked(post, baitTile), (unsigned)i);
+		PrintToConsole(line);
+	}
+
+	/* Somebody else got there first; the guard goes home. */
+	Unit_Damage(bait, (uint16)(bait->o.hitpoints + 1), 0);
+	for (i = 0; i < 4000; i++) MpHarness_Step();
+	if (!tank->o.flags.s.used) { AiGuard_Failed("the tank died on its sortie", 0); goto done; }
+	/* Within the doctrine's muster tolerance: a unit on its way home that
+	 * comes within four tiles of the muster is held where it is, and that hold
+	 * is an order, so the post may end a tile or two from where it was.  What
+	 * must not happen is the sortie itself moving it -- to the fight, or
+	 * anywhere else. */
+	if (Tile_GetDistancePacked(tank->guardPosition, post) > 2) { AiGuard_Failed("the sortie moved the guard's post", Tile_GetDistancePacked(tank->guardPosition, post)); goto done; }
+	post = tank->guardPosition;
+	if (Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) > 2) {
+		AiGuard_Failed("the guard did not come back to its post after the sortie", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post));
+		goto done;
+	}
+	if (tank->actionID != ACTION_GUARD && tank->actionID != ACTION_AREA_GUARD) { AiGuard_Failed("the guard is not standing guard again", tank->actionID); goto done; }
+
+	/* Outside the area: not its business. */
+	bait = AiGuard_Bait(theirHouse, post, far, 22);
+	if (bait == NULL) { AiGuard_Failed("could not put an MCV down outside the guard's area", post); goto done; }
+	baitTile = Tile_PackTile(bait->o.position);
+	if (Tile_GetDistancePacked(post, baitTile) <= 14) { AiGuard_Failed("the far bait landed inside the area", Tile_GetDistancePacked(post, baitTile)); goto done; }
+	for (i = 0; i < 3000; i++) MpHarness_Step();
+	if (!tank->o.flags.s.used) { AiGuard_Failed("the tank died with the far bait about", 0); goto done; }
+	if (tank->actionID == ACTION_ATTACK || Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) > 2) {
+		AiGuard_Failed("the guard left its post for something outside its area", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post));
+		goto done;
+	}
+	Unit_Damage(bait, (uint16)(bait->o.hitpoints + 1), 0);
+	for (i = 0; i < 200; i++) MpHarness_Step();
+
+	/* With the key off, the old guard: what walked up inside its area and
+	 * outside its gun is nobody's business, and the tank stays put. */
+	Skirmish_Rules_SetAiGuard(false);
+	bait = AiGuard_Bait(theirHouse, post, far, (uint16)(range + 4));
+	if (bait == NULL) { AiGuard_Failed("could not put a second MCV down inside the area", post); goto done; }
+	baitTile = Tile_PackTile(bait->o.position);
+	if (Tile_GetDistancePacked(post, baitTile) <= range) { AiGuard_Failed("the second bait is within range of the post", Tile_GetDistancePacked(post, baitTile)); goto done; }
+	for (i = 0; i < 3000; i++) MpHarness_Step();
+	if (!tank->o.flags.s.used) { AiGuard_Failed("the tank died with the key off", 0); goto done; }
+	if (tank->actionID == ACTION_ATTACK || Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post) > 2) {
+		AiGuard_Failed("with the key off the guard still went out, so the key is not the difference", Tile_GetDistancePacked(Tile_PackTile(tank->o.position), post));
+		goto done;
+	}
+
+	result = 1;
+
+done:
+	Skirmish_Rules_SetAiGuard(ruleBefore);
+	return result;
+}
+
 static int Viewport_Failed(const char *why, uint32 detail)
 {
 	char line[192];
@@ -5050,6 +5251,7 @@ static void GameLoop_Main(void)
 	MpGame_Rules_Init();
 	if (s_pathfinderOverride >= 0) Pathfinder_SetEnabled(s_pathfinderOverride != 0);
 	if (s_aiPavingOverride >= 0) Skirmish_Rules_SetAiPaving(s_aiPavingOverride != 0);
+	if (s_aiGuardOverride >= 0) Skirmish_Rules_SetAiGuard(s_aiGuardOverride != 0);
 	Starport_Init();
 
 	free(g_readBuffer); g_readBuffer = NULL;
@@ -5165,6 +5367,16 @@ static void GameLoop_Main(void)
 		return;
 	}
 
+	if (s_aiGuardSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_aiGuardSelfTestResult = AiGuard_SelfTest();
+		PrintToConsole((s_aiGuardSelfTestResult == 1) ? "ai-guard-self-test: PASS"
+		                                              : "ai-guard-self-test: FAIL");
+		return;
+	}
+
 	if (s_viewportSelfTest) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
@@ -5251,6 +5463,8 @@ static void GameLoop_Main(void)
 		snprintf(line, sizeof(line), "  skirmish_base_rock  %u", Skirmish_Rules_BaseRock() ? 1 : 0);
 		PrintToConsole(line);
 		snprintf(line, sizeof(line), "  skirmish_ai_paving  %u", Skirmish_Rules_AiPaving() ? 1 : 0);
+		PrintToConsole(line);
+		snprintf(line, sizeof(line), "  skirmish_ai_guard   %u", Skirmish_Rules_AiGuard() ? 1 : 0);
 		PrintToConsole(line);
 		snprintf(line, sizeof(line), "  starport_special    %u", Starport_SellsSpecialUnits() ? 1 : 0);
 		PrintToConsole(line);
@@ -6373,6 +6587,7 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--ownership-self-test") == 0) s_ownershipSelfTest = true;
 			if (strcmp(argv[i], "--guard-post-self-test") == 0) s_guardPostSelfTest = true;
 			if (strcmp(argv[i], "--ai-paving-self-test") == 0) s_aiPavingSelfTest = true;
+			if (strcmp(argv[i], "--ai-guard-self-test") == 0) s_aiGuardSelfTest = true;
 			if (strcmp(argv[i], "--deviator-self-test") == 0) s_deviatorSelfTest = true;
 			if (strcmp(argv[i], "--harvester-self-test") == 0) s_harvesterSelfTest = true;
 			if (strcmp(argv[i], "--build-list-self-test") == 0) s_buildListSelfTest = true;
@@ -6421,6 +6636,7 @@ int main(int argc, char **argv)
 			/* And for the AI's concrete: --war-metrics against the numbers in
 			 * metrics.md is a run with this off, whatever the ini says. */
 			if (strncmp(argv[i], "--ai-paving=", 12) == 0) s_aiPavingOverride = (atoi(argv[i] + 12) != 0) ? 1 : 0;
+			if (strncmp(argv[i], "--ai-guard=", 11) == 0) s_aiGuardOverride = (atoi(argv[i] + 11) != 0) ? 1 : 0;
 			if (strcmp(argv[i], "--viewport-self-test") == 0) s_viewportSelfTest = true;
 			/* "--doctrine=B" for both sides, "--doctrine=A,B" to play one against
 			 * the other on the same map: the only honest test of a battle
@@ -6713,6 +6929,7 @@ int main(int argc, char **argv)
 	if (s_ownershipSelfTest && s_ownershipSelfTestResult != 1) return 1;
 	if (s_guardPostSelfTest && s_guardPostSelfTestResult != 1) return 1;
 	if (s_aiPavingSelfTest && s_aiPavingSelfTestResult != 1) return 1;
+	if (s_aiGuardSelfTest && s_aiGuardSelfTestResult != 1) return 1;
 	if (s_viewportSelfTest && s_viewportSelfTestResult != 1) return 1;
 	if (s_deviatorSelfTest && s_deviatorSelfTestResult != 1) return 1;
 	if (s_harvesterSelfTest && s_harvesterSelfTestResult != 1) return 1;
