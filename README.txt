@@ -10,6 +10,27 @@ OpenDUNE is licensed under the GNU General Public License version 2.0. For
  download of the game.
 
 
+This fork
+---------
+This build is a fork of OpenDUNE. It keeps the original engine and adds modern
+ RTS controls (group selection, a build queue, autonomous defence), a rebuilt
+ tech tree, damage that depends on which class of unit is shooting at which, a
+ skirmish AI worth playing, and two-player matches over the internet. Everything
+ it adds is described further down this file, under the heading it belongs to.
+
+The documents that describe the fork itself live beside the source:
+
+  fork.md         What the fork is: everything it adds to upstream OpenDUNE,
+                   how it is verified, where it stands, and what is planned.
+                   Start here.
+  ai-strategy.md  Draft: making an AI strategy a set of numbers, and the
+                   instruments needed to judge one.
+  CLAUDE.md       The working notes: how to build, how to verify, and the
+                   reasoning behind every rule. fork.md links to the rest
+                   (multiplayer, the AI bench, the metrics suite, the unit
+                   tables and the rest of the deeper notes).
+
+
 Contact
 -------
 The latest version of OpenDUNE is always available at:
