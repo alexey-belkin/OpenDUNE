@@ -49,6 +49,9 @@
 #define SKIRMISH_CARRYALL_MAX 6
 /** Harvesters on the map before the first carryall is worth building. */
 #define SKIRMISH_CARRYALL_FIRST 3
+/** Power kept in hand over what the base draws: a Windtrap is bought when the
+ *  next building would leave less than this. */
+#define SKIRMISH_POWER_MARGIN 20
 /** Ticks between two spice blooms.  Five thousand is roughly a blooms-worth of
  *  mining by a grown economy, so the map holds level rather than growing. */
 #define SKIRMISH_BLOOM_TICKS 5000
@@ -214,21 +217,36 @@ void Skirmish_RecordBuilt(uint8 houseID, uint16 unitType)
 }
 
 /**
- * The base build order.  It is deliberately prerequisite-consistent top to
- * bottom, but Skirmish_Plan_PickNext() still verifies every entry: the engine's
- * own Structure_GetBuildable() skips the tech tree entirely for AI houses, so
- * the order below is a preference, not a guarantee.
+ * The base build order: what the house wants, in the order it wants it.
+ *
+ * Two kinds of building are deliberately *not* on it.  Whatever a building
+ * needs first -- the Outpost before a Hi-Tech, the House of IX before a Rocket
+ * Turret -- is read off the tech tree that is actually standing
+ * (g_table_structureInfo, as the tech_tree key patched it) when the plan is
+ * compiled, and put down immediately in front of the first entry that needs
+ * it (Skirmish_Plan_EnsurePrerequisites()).  The list used to name the
+ * Outpost third, which is where the stock tree wants it, since there it gates
+ * the Heavy Factory, the Barracks and every turret; under the fork's tree it
+ * gates only the Hi-Tech, the Starport and IX, and the AI still built it
+ * before its first factory -- 400 credits and 80 ticks of yard for a radar it
+ * cannot read.  And a Windtrap is built when the next building would run the
+ * house short of power, decided at the moment of the order
+ * (Skirmish_Plan_PickNext()), not at fixed places in a list: listed, a
+ * Windtrap is 300 credits the house can always afford, so the "take something
+ * cheaper while saving up" rule kept pulling one forward -- measured, three
+ * standing at a usage of 120.
+ *
+ * Skirmish_Plan_PickNext() still verifies every entry against the tree: the
+ * engine's own Structure_GetBuildable() skips the tech tree entirely for AI
+ * houses, and a demand-driven entry (Skirmish_Plan_Append) can only be as
+ * ordered as the plan it was added to.
  */
 static const uint8 s_blueprint[] = {
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_REFINERY,
-	STRUCTURE_OUTPOST,
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_LIGHT_VEHICLE,
 	STRUCTURE_HEAVY_VEHICLE,
 	STRUCTURE_BARRACKS,     /* Skipped for Houses which cannot build it. */
 	STRUCTURE_WOR_TROOPER,  /* Idem. */
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_TURRET,
 	STRUCTURE_TURRET,
 	STRUCTURE_SILO,
@@ -239,12 +257,15 @@ static const uint8 s_blueprint[] = {
 	 * before t125000 while the sixteenth harvester was still owed.  A factory is
 	 * economy spending, so this costs the army budget nothing. */
 	STRUCTURE_HEAVY_VEHICLE,
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_REPAIR,
 	STRUCTURE_STARPORT,
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_ROCKET_TURRET,
+	/* Listed after all, and not as a prerequisite: under stock nothing on the
+	 * tree needs the House of IX, and a base without one never fields what it
+	 * unlocks.  Under mp the Rocket Turret needs it and the compiler has put
+	 * it down before the first of those already; this entry is then a second
+	 * of a building a base wants one of, and is skipped. */
 	STRUCTURE_HOUSE_OF_IX,
 	STRUCTURE_PALACE,
 
@@ -264,7 +285,6 @@ static const uint8 s_blueprint[] = {
 	 * kills nothing, it only buys the turrets behind it another few seconds of
 	 * shooting.  Every entry here is military spending, so the whole line waits
 	 * behind the same budget switch the army does -- see Skirmish_War_Charge(). */
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_WALL,
@@ -273,7 +293,6 @@ static const uint8 s_blueprint[] = {
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_WALL,
 	STRUCTURE_WALL,
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_WALL,
@@ -282,7 +301,6 @@ static const uint8 s_blueprint[] = {
 	STRUCTURE_TURRET,
 	STRUCTURE_WALL,
 	STRUCTURE_WALL,
-	STRUCTURE_WINDTRAP,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_ROCKET_TURRET,
 	STRUCTURE_WALL,
@@ -292,6 +310,25 @@ static const uint8 s_blueprint[] = {
 	STRUCTURE_WALL,
 	STRUCTURE_WALL
 };
+
+/** A building a base wants one of: a second is a mistake in a plan rather
+ *  than a wish, and the compiler skips it -- which is what lets the tree put
+ *  one down early as a prerequisite while the list still names it later. */
+static bool Skirmish_IsSingletonStructure(uint8 type)
+{
+	switch (type) {
+		case STRUCTURE_OUTPOST:
+		case STRUCTURE_HOUSE_OF_IX:
+		case STRUCTURE_HIGH_TECH:
+		case STRUCTURE_STARPORT:
+		case STRUCTURE_REPAIR:
+		case STRUCTURE_PALACE:
+			return true;
+
+		default:
+			return false;
+	}
+}
 
 /** Whether a structure belongs on the forward line rather than in the base. */
 static bool Skirmish_IsDefenceStructure(uint8 type)
@@ -1004,6 +1041,65 @@ static void Skirmish_LaySlabs(House *h, uint16 position, uint8 structureType)
 	}
 }
 
+static void Skirmish_Plan_InsertAt(SkirmishBase *b, uint8 type, uint16 position, uint16 at);
+
+/** Whether the plan already holds a building of this type before index `at`,
+ *  built or still owed; the house's own count is not enough, since a plan
+ *  is compiled before anything stands. */
+static bool Skirmish_Plan_HasBefore(const SkirmishBase *b, uint8 type, uint16 at)
+{
+	uint16 i;
+
+	for (i = 0; i < at && i < b->entryCount; i++) {
+		if (b->entries[i].type == type) return true;
+	}
+
+	return false;
+}
+
+/**
+ * Put down, in front of index `at`, whatever the tree says `type` needs and
+ * the plan does not yet hold before that point -- recursively, so an Outpost
+ * owed to a Hi-Tech brings its own Windtrap if the plan has none yet.
+ *
+ * Read off g_table_structureInfo at the time of asking, which is the tree the
+ * tech_tree key left standing: the same plan puts the Outpost before the
+ * Heavy Factory under stock and before the Hi-Tech under mp, without either
+ * being written down here.  A prerequisite the house cannot build at all is
+ * left out, as the entry that wants it will be by Skirmish_Plan_PickNext().
+ *
+ * @return The index the entry itself should now go at -- `at`, moved along by
+ *   however many prerequisites went in front of it.
+ */
+static uint16 Skirmish_Plan_EnsurePrerequisites(SkirmishBase *b, uint8 type, uint16 at, uint8 depth)
+{
+	uint32 required = g_table_structureInfo[type].o.structuresRequired;
+	uint8 need;
+
+	if (depth > 8) return at;
+
+	for (need = 0; need < STRUCTURE_MAX; need++) {
+		uint16 position;
+
+		if ((required & (1u << need)) == 0) continue;
+		if (need == STRUCTURE_CONSTRUCTION_YARD || need == type) continue;
+		if ((g_table_structureInfo[need].o.availableHouse & (1 << b->houseID)) == 0) continue;
+		if (Skirmish_Plan_HasBefore(b, need, at)) continue;
+		if (b->entryCount >= SKIRMISH_PLAN_MAX) break;
+
+		at = Skirmish_Plan_EnsurePrerequisites(b, need, at, (uint8)(depth + 1));
+		if (b->entryCount >= SKIRMISH_PLAN_MAX) break;
+
+		position = Skirmish_Layout_Next(b, need);
+		if (position == 0xFFFF) break;
+
+		Skirmish_Plan_InsertAt(b, need, position, at);
+		at++;
+	}
+
+	return at;
+}
+
 static void Skirmish_Plan_Create(SkirmishBase *b)
 {
 	uint8 i;
@@ -1018,9 +1114,11 @@ static void Skirmish_Plan_Create(SkirmishBase *b)
 	 * it takes the first slot so the rest of the base grows around it. */
 	b->origin = Skirmish_Layout_Next(b, STRUCTURE_CONSTRUCTION_YARD);
 
-	/* Every mode runs exactly the plan it was handed.  No spare Windtraps behind
-	 * it: the plan compiles power in already, and a Windtrap nobody needs is
-	 * 300 credits the plan is not being charged for. */
+	/* Every mode runs exactly the plan it was handed, with what the tree says
+	 * each entry needs put down in front of it.  No spare Windtraps: power is
+	 * bought when the next building would run the house short
+	 * (Skirmish_Plan_PickNext), and a Windtrap nobody needs is 300 credits the
+	 * plan is not being charged for. */
 	for (i = 0; i < b->plan.buildCount; i++) {
 		const uint8 type = b->plan.build[i];
 		uint16 position;
@@ -1028,6 +1126,10 @@ static void Skirmish_Plan_Create(SkirmishBase *b)
 		if (b->entryCount == SKIRMISH_PLAN_MAX) break;
 		if (type >= STRUCTURE_MAX) continue;
 		if ((g_table_structureInfo[type].o.availableHouse & (1 << b->houseID)) == 0) continue;
+		if (Skirmish_IsSingletonStructure(type) && Skirmish_Plan_HasBefore(b, type, b->entryCount)) continue;
+
+		Skirmish_Plan_EnsurePrerequisites(b, type, b->entryCount, 0);
+		if (b->entryCount == SKIRMISH_PLAN_MAX) break;
 
 		if (Skirmish_IsDefenceStructure(type)) {
 			position = Skirmish_Layout_Defence(b, type);
@@ -1186,11 +1288,24 @@ static void Skirmish_Economy_SampleQueue(SkirmishBase *b, House *h)
 	Skirmish_Plan_Append(b, h, STRUCTURE_REFINERY);
 }
 
+/** Whether the plan still owes a building of this type. */
+static bool Skirmish_Plan_HasUntaken(const SkirmishBase *b, uint8 type)
+{
+	uint16 i;
+
+	for (i = 0; i < b->entryCount; i++) {
+		if (!b->entries[i].taken && b->entries[i].type == type) return true;
+	}
+
+	return false;
+}
+
 uint16 Skirmish_Plan_PickNext(House *h)
 {
 	SkirmishBase *b;
 	uint16 fallback = 0xFFFF;
 	uint16 i;
+	bool windtrapAsked = false;
 
 	if (h == NULL) return 0xFFFF;
 
@@ -1209,15 +1324,46 @@ uint16 Skirmish_Plan_PickNext(House *h)
 		if (e->taken) continue;
 		if ((h->structuresBuilt & si->o.structuresRequired) != si->o.structuresRequired) continue;
 
-		/* A windtrap is worth jumping the queue for: without power every
-		 * structure of the House caps at half its hitpoints. */
-		if (e->type == STRUCTURE_WINDTRAP && h->powerProduction < h->powerUsage + 20) return e->type;
+		/* A Windtrap is bought for a need and never for its place in the list.
+		 * Short of power right now -- a Windtrap shot up, a building that
+		 * turned out hungrier -- it jumps the queue: without power every
+		 * structure of the House caps at half its hitpoints.  Otherwise it
+		 * waits for the building that needs it, below, whatever is affordable
+		 * meanwhile: the "take something cheaper" rule pulled three of them
+		 * forward at a usage of 120 when they were on the list like anything
+		 * else. */
+		if (e->type == STRUCTURE_WINDTRAP) {
+			if (h->powerProduction < h->powerUsage + SKIRMISH_POWER_MARGIN) return e->type;
+			continue;
+		}
 
 		/* A Barracks the house cannot afford to keep supplied with soldiers is
 		 * worse than no Barracks: the same budget rule that gates units gates the
 		 * buildings that only exist to make them, so an economic strategy walks
 		 * straight past them to the next refinery. */
 		if (Skirmish_IsMilitaryStructure(e->type) && !Skirmish_War_MilitaryAllowed(b)) continue;
+
+		/* Power for this one, first: when it would run the house short, the
+		 * Windtrap is the order -- one the plan already holds anywhere, or a
+		 * new one put down in front of this entry.  Only once per asking, and
+		 * the entries behind that still want power are walked past rather
+		 * than each given a Windtrap of its own. */
+		if (si->powerUsage > 0 &&
+		    (int32)h->powerProduction - (int32)h->powerUsage < (int32)si->powerUsage + SKIRMISH_POWER_MARGIN) {
+			if (!windtrapAsked) {
+				windtrapAsked = true;
+				if (!Skirmish_Plan_HasUntaken(b, STRUCTURE_WINDTRAP) && b->entryCount < SKIRMISH_PLAN_MAX) {
+					uint16 position = Skirmish_Layout_Next(b, STRUCTURE_WINDTRAP);
+
+					if (position != 0xFFFF) Skirmish_Plan_InsertAt(b, STRUCTURE_WINDTRAP, position, i);
+				}
+				if (Skirmish_Plan_HasUntaken(b, STRUCTURE_WINDTRAP)) {
+					if (fallback == 0xFFFF) fallback = STRUCTURE_WINDTRAP;
+					if (g_table_structureInfo[STRUCTURE_WINDTRAP].o.buildCredits <= h->credits) return STRUCTURE_WINDTRAP;
+				}
+			}
+			continue;
+		}
 
 		if (fallback == 0xFFFF) fallback = e->type;
 		if (si->o.buildCredits > h->credits) continue;
@@ -1226,6 +1372,36 @@ uint16 Skirmish_Plan_PickNext(House *h)
 	}
 
 	return fallback;
+}
+
+/** The plan in order, built and owed alike: the order the AI will follow. */
+uint16 Skirmish_Plan_List(const House *h, uint8 *types, uint16 max)
+{
+	const SkirmishBase *b;
+	uint16 i, n = 0;
+
+	if (h == NULL) return 0;
+	b = Skirmish_GetBase((uint8)h->index);
+	if (b == NULL) return 0;
+
+	for (i = 0; i < b->entryCount && n < max; i++) types[n++] = b->entries[i].type;
+
+	return n;
+}
+
+/** What the AI has actually placed, in the order it placed it. */
+uint16 Skirmish_Plan_History(const House *h, uint8 *types, uint16 max)
+{
+	const SkirmishBase *b;
+	uint16 i, n = 0;
+
+	if (h == NULL) return 0;
+	b = Skirmish_GetBase((uint8)h->index);
+	if (b == NULL) return 0;
+
+	for (i = 0; i < b->historyCount && n < max; i++) types[n++] = b->history[i];
+
+	return n;
 }
 
 /**
@@ -1864,18 +2040,28 @@ static bool Skirmish_Economy_RefineryFree(const House *h)
  * In front of the line and behind the economy is the only place that is neither.
  * One refinery at a time overtakes the turrets, and the turrets carry on.
  */
-static void Skirmish_Plan_Insert(SkirmishBase *b, uint8 type, uint16 position)
+/** Where a demand-driven entry goes: in front of the defence line, behind
+ *  everything else the base still owes. */
+static uint16 Skirmish_Plan_DefenceIndex(const SkirmishBase *b)
 {
-	uint16 at = b->entryCount;
 	uint16 i;
 
 	for (i = 0; i < b->entryCount; i++) {
 		if (b->entries[i].taken) continue;
 		if (!Skirmish_IsDefenceStructure(b->entries[i].type)) continue;
 
-		at = i;
-		break;
+		return i;
 	}
+
+	return b->entryCount;
+}
+
+static void Skirmish_Plan_InsertAt(SkirmishBase *b, uint8 type, uint16 position, uint16 at)
+{
+	uint16 i;
+
+	if (b->entryCount >= SKIRMISH_PLAN_MAX) return;
+	if (at > b->entryCount) at = b->entryCount;
 
 	for (i = b->entryCount; i > at; i--) {
 		b->entries[i] = b->entries[i - 1];
@@ -1892,30 +2078,34 @@ static void Skirmish_Plan_Insert(SkirmishBase *b, uint8 type, uint16 position)
  *
  * Everything here is demand-driven -- a refinery the harvesters are queueing
  * for, a Hi-Tech to replace a lost carryall -- and goes in through
- * Skirmish_Plan_Insert(), which decides where.
+ * Skirmish_Plan_InsertAt() at Skirmish_Plan_DefenceIndex(): in front of the
+ * defence line, behind everything else the base still owes.
  */
 static bool Skirmish_Plan_Append(SkirmishBase *b, House *h, uint8 type)
 {
 	const StructureInfo *si = &g_table_structureInfo[type];
 	uint16 position;
 
+	uint16 at;
+
+	VARIABLE_NOT_USED(si);
+	VARIABLE_NOT_USED(h);
+
 	if (b->entryCount >= SKIRMISH_PLAN_MAX) return false;
 
-	/* Same rule the plan compiler follows: pay for the power first, or the whole
-	 * base drops to half hitpoints to feed the new building. */
-	if ((int16)h->powerProduction - (int16)h->powerUsage < si->powerUsage) {
-		position = Skirmish_Layout_Next(b, STRUCTURE_WINDTRAP);
-		if (position == 0xFFFF) return false;
-
-		Skirmish_Plan_Insert(b, STRUCTURE_WINDTRAP, position);
-
-		if (b->entryCount >= SKIRMISH_PLAN_MAX) return false;
-	}
+	/* Same rule the plan compiler follows: what the tree says this needs goes
+	 * in front of it.  Power is not bought here any more -- a Windtrap put
+	 * down for a building that then waits behind the rest of the plan stood
+	 * idle for most of a match; Skirmish_Plan_PickNext() buys it when the
+	 * building's own turn comes. */
+	at = Skirmish_Plan_DefenceIndex(b);
+	at = Skirmish_Plan_EnsurePrerequisites(b, type, at, 0);
+	if (b->entryCount >= SKIRMISH_PLAN_MAX) return false;
 
 	position = Skirmish_Layout_Next(b, type);
 	if (position == 0xFFFF) return false;
 
-	Skirmish_Plan_Insert(b, type, position);
+	Skirmish_Plan_InsertAt(b, type, position, at);
 
 	return true;
 }

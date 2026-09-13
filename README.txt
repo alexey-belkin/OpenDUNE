@@ -474,6 +474,12 @@ standing guard goes out to meet whatever comes inside the area a guard of
 yours answers for, and returns to its post afterwards. skirmish_ai_guard=0
 in opendune.ini brings the passive guard back.
 
+The computer builds what its tech tree makes it build. It used to put up a
+radar right after the refinery -- where the original game's tree wants it --
+whatever tree it was playing on; now whatever a building needs goes down just
+before the first building that needs it, and a windtrap is built when the next
+building would run the base short of power, not before.
+
 
 Ingame
 ------

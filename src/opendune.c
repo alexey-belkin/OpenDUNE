@@ -144,6 +144,8 @@ static bool s_aiPavingSelfTest = false;
 static int s_aiPavingSelfTestResult = -1;
 static bool s_aiGuardSelfTest = false;
 static int s_aiGuardSelfTestResult = -1;
+static bool s_aiPlanSelfTest = false;
+static int s_aiPlanSelfTestResult = -1;
 static int s_ownershipSelfTestResult = -1;
 static bool s_deviatorSelfTest = false;
 static int s_deviatorSelfTestResult = -1;
@@ -3769,6 +3771,191 @@ done:
 	return result;
 }
 
+static int AiPlan_Failed(const char *why, uint32 detail)
+{
+	char line[192];
+
+	snprintf(line, sizeof(line), "ai-plan-self-test: %s (%u)", why, (unsigned)detail);
+	PrintToConsole(line);
+	return 0;
+}
+
+static int AiPlan_IndexOf(const uint8 *list, uint16 n, uint8 type)
+{
+	uint16 i;
+
+	for (i = 0; i < n; i++) {
+		if (list[i] == type) return (int)i;
+	}
+
+	return -1;
+}
+
+static void AiPlan_Print(const char *what, const uint8 *list, uint16 n)
+{
+	char line[1024];
+	uint16 i, used = 0;
+
+	used = (uint16)snprintf(line, sizeof(line), "ai-plan-self-test: %s:", what);
+	for (i = 0; i < n && used < sizeof(line) - 24; i++) {
+		used += (uint16)snprintf(line + used, sizeof(line) - used, " %s", g_table_structureInfo[list[i]].o.name);
+	}
+	PrintToConsole(line);
+}
+
+/** Every entry's prerequisites, as the standing tree has them, come earlier in
+ *  the list -- or are the yard, or something this house cannot build at all. */
+static int AiPlan_CheckOrder(const uint8 *list, uint16 n, uint8 houseID)
+{
+	uint16 i;
+
+	for (i = 0; i < n; i++) {
+		uint32 required = g_table_structureInfo[list[i]].o.structuresRequired;
+		uint8 need;
+
+		for (need = 0; need < STRUCTURE_MAX; need++) {
+			if ((required & (1u << need)) == 0) continue;
+			if (need == STRUCTURE_CONSTRUCTION_YARD) continue;
+			if ((g_table_structureInfo[need].o.availableHouse & (1 << houseID)) == 0) continue;
+			if (AiPlan_IndexOf(list, i, need) >= 0) continue;
+
+			return AiPlan_Failed("an entry comes before something the tree says it needs", (uint32)list[i] * 100 + need);
+		}
+	}
+
+	return 1;
+}
+
+/** The entry after an inserted prerequisite is one that needs it: a tech
+ *  building goes down for a reason and not a moment sooner. */
+static int AiPlan_CheckJustInTime(const uint8 *list, uint16 n, uint8 type, const char *name)
+{
+	int at = AiPlan_IndexOf(list, n, type);
+	char why[96];
+
+	if (at < 0) {
+		snprintf(why, sizeof(why), "the plan has no %s", name);
+		return AiPlan_Failed(why, type);
+	}
+	if (at + 1 >= (int)n || (g_table_structureInfo[list[at + 1]].o.structuresRequired & (1u << type)) == 0) {
+		snprintf(why, sizeof(why), "the %s is not immediately before the first building that needs it", name);
+		return AiPlan_Failed(why, (uint32)at);
+	}
+
+	return 1;
+}
+
+/**
+ * The AI builds what the tree makes it build, when the tree makes it.
+ *
+ * "The computer puts up a radar early, when the next things are a barracks
+ * and a light factory; under the tree in the ini it does not need one" -- the
+ * build order named the Outpost third because the stock tree wants it there,
+ * and the plan did not read the tree at all.  It reads it now
+ * (Skirmish_Plan_EnsurePrerequisites), and buys a Windtrap when the next
+ * building would run the house short rather than at fixed places in a list.
+ *
+ * Checked under both trees: every entry after everything it needs; the
+ * Outpost and the House of IX immediately in front of the first building that
+ * needs them (under mp that is the Hi-Tech and the Rocket Turret; under stock
+ * the Outpost goes in front of the Heavy Factory); a single Windtrap in the
+ * compiled plan, the Refinery's.  Then sixty thousand ticks of a match under
+ * mp, sampled: the house is never more than one Windtrap and one building's
+ * worth of power ahead of its draw, and the Outpost, if it is up, went up
+ * after the Light Factory.
+ */
+static int AiPlan_SelfTest(void)
+{
+	uint8 list[SKIRMISH_PLAN_MAX];
+	uint8 history[SKIRMISH_PLAN_MAX];
+	char treeBefore[16];
+	uint16 n;
+	uint8 houseID;
+	House *h;
+	int result = 0;
+	uint32 i;
+	uint16 windtraps = 0;
+	int lightAt, outpostAt, heavyAt;
+
+	strncpy(treeBefore, Structure_TechTree_GetTree(), sizeof(treeBefore) - 1);
+	treeBefore[sizeof(treeBefore) - 1] = '\0';
+
+	Skirmish_SetController(0, MATCH_CONTROLLER_AI);
+	Skirmish_SetController(1, MATCH_CONTROLLER_AI);
+
+	/* --- the fork's tree --- */
+	Structure_TechTree_SetTree("mp");
+	Structure_TechTree_Init();
+	if (strcmp(Structure_TechTree_GetTree(), "mp") != 0) { AiPlan_Failed("the mp tree did not take", 0); goto done; }
+	if (!MpHarness_StartMatch(1000)) goto done;
+
+	houseID = Match_GetSlotHouse(0);
+	h = House_Get_ByIndex(houseID);
+	if (h == NULL) { AiPlan_Failed("no house in slot 0", houseID); goto done; }
+
+	n = Skirmish_Plan_List(h, list, lengthof(list));
+	if (n < 10) { AiPlan_Failed("the plan is too short to mean anything", n); goto done; }
+	AiPlan_Print("plan under mp", list, n);
+
+	if (!AiPlan_CheckOrder(list, n, houseID)) goto done;
+	if (!AiPlan_CheckJustInTime(list, n, STRUCTURE_OUTPOST, "Outpost")) goto done;
+	if (!AiPlan_CheckJustInTime(list, n, STRUCTURE_HOUSE_OF_IX, "House of IX")) goto done;
+
+	lightAt   = AiPlan_IndexOf(list, n, STRUCTURE_LIGHT_VEHICLE);
+	outpostAt = AiPlan_IndexOf(list, n, STRUCTURE_OUTPOST);
+	if (lightAt < 0 || outpostAt < lightAt) { AiPlan_Failed("under mp the Outpost is still planned before the Light Factory", (uint32)outpostAt); goto done; }
+
+	for (i = 0; i < n; i++) if (list[i] == STRUCTURE_WINDTRAP) windtraps++;
+	if (windtraps != 1) { AiPlan_Failed("the compiled plan holds Windtraps at fixed places", windtraps); goto done; }
+	if (list[0] != STRUCTURE_WINDTRAP || list[1] != STRUCTURE_REFINERY) { AiPlan_Failed("the plan does not open with the Refinery and its Windtrap", list[0]); goto done; }
+
+	/* Played: power bought as it is needed and not before. */
+	for (i = 0; i < 60000; i++) {
+		MpHarness_Step();
+		if ((i % 2000) == 0 && i != 0) {
+			int32 surplus = (int32)h->powerProduction - (int32)h->powerUsage;
+
+			/* One Windtrap just up for the building about to start, at most. */
+			if (surplus > 100 + 20 + 80) { AiPlan_Failed("a Windtrap stood idle: power surplus at that tick", (uint32)surplus * 100000 + i); goto done; }
+		}
+	}
+	n = Skirmish_Plan_History(h, history, lengthof(history));
+	AiPlan_Print("built by t60000 under mp", history, n);
+	windtraps = 0;
+	for (i = 0; i < n; i++) if (history[i] == STRUCTURE_WINDTRAP) windtraps++;
+	if (windtraps < 2) { AiPlan_Failed("too few Windtraps were built for the power to have been needed at all", windtraps); goto done; }
+	lightAt   = AiPlan_IndexOf(history, n, STRUCTURE_LIGHT_VEHICLE);
+	outpostAt = AiPlan_IndexOf(history, n, STRUCTURE_OUTPOST);
+	if (lightAt < 0) { AiPlan_Failed("no Light Factory in sixty thousand ticks", n); goto done; }
+	if (outpostAt >= 0 && outpostAt < lightAt) { AiPlan_Failed("the Outpost was built before the Light Factory under mp", (uint32)outpostAt); goto done; }
+
+	/* --- the stock tree: the same plan, and the Outpost moves by itself --- */
+	Structure_TechTree_SetTree("stock");
+	Structure_TechTree_Init();
+	if (strcmp(Structure_TechTree_GetTree(), "stock") != 0) { AiPlan_Failed("the stock tree did not take", 0); goto done; }
+	if (!MpHarness_StartMatch(1000)) goto done;
+
+	houseID = Match_GetSlotHouse(0);
+	h = House_Get_ByIndex(houseID);
+	if (h == NULL) { AiPlan_Failed("no house in slot 0 under stock", houseID); goto done; }
+	n = Skirmish_Plan_List(h, list, lengthof(list));
+	AiPlan_Print("plan under stock", list, n);
+	if (!AiPlan_CheckOrder(list, n, houseID)) goto done;
+	if (!AiPlan_CheckJustInTime(list, n, STRUCTURE_OUTPOST, "Outpost")) goto done;
+	outpostAt = AiPlan_IndexOf(list, n, STRUCTURE_OUTPOST);
+	heavyAt   = AiPlan_IndexOf(list, n, STRUCTURE_HEAVY_VEHICLE);
+	lightAt   = AiPlan_IndexOf(list, n, STRUCTURE_LIGHT_VEHICLE);
+	if (heavyAt < 0 || outpostAt < 0 || outpostAt > heavyAt) { AiPlan_Failed("under stock the Outpost does not precede the Heavy Factory", (uint32)outpostAt); goto done; }
+	if (outpostAt < lightAt) { AiPlan_Failed("under stock the Outpost went in before a Light Factory that does not need it", (uint32)outpostAt); goto done; }
+
+	result = 1;
+
+done:
+	Structure_TechTree_SetTree(treeBefore);
+	Structure_TechTree_Init();
+	return result;
+}
+
 static int Viewport_Failed(const char *why, uint32 detail)
 {
 	char line[192];
@@ -5377,6 +5564,16 @@ static void GameLoop_Main(void)
 		return;
 	}
 
+	if (s_aiPlanSelfTest) {
+		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
+		g_readBuffer = calloc(1, g_readBufferSize);
+
+		s_aiPlanSelfTestResult = AiPlan_SelfTest();
+		PrintToConsole((s_aiPlanSelfTestResult == 1) ? "ai-plan-self-test: PASS"
+		                                             : "ai-plan-self-test: FAIL");
+		return;
+	}
+
 	if (s_viewportSelfTest) {
 		g_readBufferSize = (g_enableVoices == 0) ? 12000 : 20000;
 		g_readBuffer = calloc(1, g_readBufferSize);
@@ -6588,6 +6785,7 @@ int main(int argc, char **argv)
 			if (strcmp(argv[i], "--guard-post-self-test") == 0) s_guardPostSelfTest = true;
 			if (strcmp(argv[i], "--ai-paving-self-test") == 0) s_aiPavingSelfTest = true;
 			if (strcmp(argv[i], "--ai-guard-self-test") == 0) s_aiGuardSelfTest = true;
+			if (strcmp(argv[i], "--ai-plan-self-test") == 0) s_aiPlanSelfTest = true;
 			if (strcmp(argv[i], "--deviator-self-test") == 0) s_deviatorSelfTest = true;
 			if (strcmp(argv[i], "--harvester-self-test") == 0) s_harvesterSelfTest = true;
 			if (strcmp(argv[i], "--build-list-self-test") == 0) s_buildListSelfTest = true;
@@ -6930,6 +7128,7 @@ int main(int argc, char **argv)
 	if (s_guardPostSelfTest && s_guardPostSelfTestResult != 1) return 1;
 	if (s_aiPavingSelfTest && s_aiPavingSelfTestResult != 1) return 1;
 	if (s_aiGuardSelfTest && s_aiGuardSelfTestResult != 1) return 1;
+	if (s_aiPlanSelfTest && s_aiPlanSelfTestResult != 1) return 1;
 	if (s_viewportSelfTest && s_viewportSelfTestResult != 1) return 1;
 	if (s_deviatorSelfTest && s_deviatorSelfTestResult != 1) return 1;
 	if (s_harvesterSelfTest && s_harvesterSelfTestResult != 1) return 1;

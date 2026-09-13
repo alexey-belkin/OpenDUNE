@@ -64,10 +64,18 @@ list first. `Skirmish_Plan_PickNext()` therefore enforces the order itself:
 
 1. `structuresRequired` must be satisfied — the plan is what a human would call
    a build order, and it has to hold up;
-2. a Windtrap jumps the queue while `powerProduction < powerUsage + 20`, because
-   a house in deficit caps every structure at half hitpoints;
+2. power is bought for a need: a Windtrap is ordered when the entry about to
+   start would leave less than 20 in hand (one the plan holds, or a new one put
+   down in front of that entry), and one the plan holds jumps the queue while
+   `powerProduction < powerUsage + 20`, because a house in deficit caps every
+   structure at half hitpoints; otherwise a listed Windtrap is skipped over,
+   whatever is affordable;
 3. an entry we cannot pay for is skipped in favour of a cheaper one, otherwise
    the whole queue stalls behind one expensive building.
+
+The plan itself is compiled from the blueprint with the standing tech tree
+read in: whatever an entry needs goes down immediately in front of the first
+entry that needs it (CLAUDE.md, "The AI builds what the tree makes it build").
 
 Rules 2 and 3 are the tuning surface. Rule 3 in particular is crude: it happily
 builds a Silo before the Light Factory that unlocks the Heavy Factory.
@@ -203,7 +211,7 @@ order per house, which is the thing to read when judging a change:
 ```
 t100000 Atreides 0c 300/140p h3 u18 s11@100% 10/20 Turret
 Harkonnen 2005c 500/445p h2 u26 s22@98% 21/21 -
-Windtrap, Refinery, Outpost, Windtrap, Barracks, WOR, Spice Silo, Turret, ...
+Windtrap, Refinery, Light Fctry, Windtrap, Heavy Fctry, Spice Silo, Outpost, ...
 teams: foot 8/4-8, wheel 4/2-4, track 1/3-6, track 1/3-6
 ```
 

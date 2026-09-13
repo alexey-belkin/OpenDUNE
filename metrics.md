@@ -34,27 +34,58 @@ happened to measure first.
 
 ## The sixteen
 
-Readings are for doctrine B against doctrine A, at the commit that introduced
-this file.
+Readings are for doctrine B against doctrine A, on the AI as it is shipped
+(see "Re-baselined" below), taken 13 Sep 2026 at the commit that made the
+AI read its tech tree.
 
 | metric | now | gate | goal | what it catches |
 |---|---:|---:|---:|---|
-| `turret.entries/match` | 16 | ≤24 | ≤8 | crossings into a turret's reach by anyone not in an assault |
-| `turret.dwell/match` | 8684 | ≤13000 | ≤400 | *time* spent inside one — a fence units walk through and sit behind scores the same entries and far more dwell |
+| `turret.entries/match` | 11 | ≤24 | ≤8 | crossings into a turret's reach by anyone not in an assault |
+| `turret.dwell/match` | 3308 | ≤13000 | ≤400 | *time* spent inside one — a fence units walk through and sit behind scores the same entries and far more dwell |
 | `turret.deaths.loose` | 0 | 0 | 0 | died to a turret outside a wave in the assault. The rule, exactly |
 | `turret.trade %` | — | ≥100 | ≥100 | turrets killed against units a turret killed during an assault. 999 means no assault deaths at all |
-| `harv.lost.early` | 3 | ≤6 | 0 | harvesters lost before t100000, over the whole battery |
-| `harv.lost/match` | 0 | ≤2 | 0 | harvesters lost, all match |
-| `harv.exposure %` | 8 | ≤12 | ≤5 | samples with a harvester within eight tiles of something that shoots — the cause, which moves before the loss does |
-| `harv.killed/match` | 12 | ≥6 | ≥10 | enemy harvesters killed: whether the raiders are actually hunting |
+| `harv.lost.early` | 18 | ≤24 | 0 | harvesters lost before t100000, over the whole battery |
+| `harv.lost/match` | 6 | ≤8 | 0 | harvesters lost, all match |
+| `harv.exposure %` | 16 | ≤20 | ≤5 | samples with a harvester within eight tiles of something that shoots — the cause, which moves before the loss does |
+| `harv.killed/match` | 9 | ≥6 | ≥10 | enemy harvesters killed: whether the raiders are actually hunting |
 | `wave.launched/match` | 3 | ≥2 | ≥3 | that assaults happen at all |
-| `wave.declined/match` | 39 | ≤60 | ≤20 | the force test refusing to go in. High means the wave is shuttling |
-| `wave.cohesion %` | 79 | ≥70 | ≥85 | attackers on the wave against attackers in existence, sampled during an assault. "They do not all go together" is this number |
-| `wave.first.tick` | 110016 | ≤130000 | ≤90000 | when the first assault begins |
-| `wave.matches %` | 91 | ≥60 | ≥90 | share of matches with any assault at all |
-| `econ.spice/match` | 66826 | ≥50000 | ≥65000 | the economy underneath, so a battle change that starves it is visible |
-| `result.points %` | 83 | ≥55 | ≥75 | 2 per win, 1 per draw, against the baseline doctrine |
-| `result.wipeouts %` | 8 | ≤25 | ≤10 | matches this side lost its last building |
+| `wave.declined/match` | 15 | ≤60 | ≤20 | the force test refusing to go in. High means the wave is shuttling |
+| `wave.cohesion %` | 75 | ≥70 | ≥85 | attackers on the wave against attackers in existence, sampled during an assault. "They do not all go together" is this number |
+| `wave.first.tick` | 90172 | ≤130000 | ≤90000 | when the first assault begins |
+| `wave.matches %` | 58 | ≥40 | ≥90 | share of matches with any assault at all |
+| `econ.spice/match` | 58398 | ≥45000 | ≥65000 | the economy underneath, so a battle change that starves it is visible |
+| `result.points %` | 41 | ≥30 | ≥75 | 2 per win, 1 per draw, against the baseline doctrine |
+| `result.wipeouts %` | 50 | ≤60 | ≤10 | matches this side lost its last building |
+
+## Re-baselined
+
+The suite was first calibrated on an AI that laid its concrete for free and
+whose guards stood still, and every reading recorded before 13 Sep 2026 was
+taken against that AI: `turret.entries` 16, `harv.lost.early` 3,
+`wave.matches` 91, `econ.spice` 66826, `result.points` 83,
+`result.wipeouts` 8 at the file's first commit, and 79621 / 83 / 16 on the
+last commit before the re-baseline. Two rules changed what the AI *is*:
+`skirmish_ai_paving` (the yard pours a building's slabs at a slab's
+buildTime a tile) and `skirmish_ai_guard` (a unit standing guard goes out to
+meet what comes inside its area and returns to its post). Both are on, for
+both houses, in what a person plays against, and the gates were re-taken on
+that AI so that a comparison is never against a faster, more passive
+opponent than anyone will meet -- `--ai-guard=0 --ai-paving=0` still gives
+the older AI back, bit for bit, for reading the historical numbers.
+
+The re-baseline is honest and it is not flattering: under the shipped AI,
+doctrine B loses to doctrine A more often than not (`result.points` 41,
+`result.wipeouts` 50) and its harvesters die early (`harv.lost.early` 18
+against 3). The two AI rules hurt B more than A because B's reserve is meant
+to accumulate at the muster and strike as one, and an opponent whose guards
+answer, on a clock where production is slow, spends that reserve a unit at
+a time; and B's harvesters have no escort while A's hunters now arrive with
+factories that no longer wait behind an Outpost. Both are B's problems to
+fix, and the goals column still says where the fixes have to take it. The
+one change measured on this baseline so far, the AI reading its tech tree
+for its build order, moved `econ.spice` 48703 → 58398, `wave.matches` 41 →
+58, `wave.launched` 1 → 3 and `result.wipeouts` 58 → 50, and left
+`result.points` at 41.
 
 The baseline column is blank-ish for the wave and turret rows: doctrine A has no
 waves and does not run the fence, so those counters are structurally zero for it.

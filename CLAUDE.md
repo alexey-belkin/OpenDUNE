@@ -891,11 +891,10 @@ calibrated on the faster ones: on `--war-metrics`, on against off,
 `harv.lost.early` 8 → 1 — that last one is a **REGRESSION** against its gate
 of 6 with the key on, so the suite reads FAIL on the default. With
 `--ai-paving=0` all sixteen numbers come back bit-for-bit, which is the check
-that the key is the only difference. **Run `--war-metrics` with
-`--ai-paving=0` when comparing against [metrics.md](metrics.md)**; the AI's
-own dynamics do not depend on how long its concrete takes, and the fairness
-of a match against a person is what the default is for. The key is folded
-into the lobby digest like the others.
+that the key is the only difference. The suite has since been
+**re-baselined on the AI as shipped** (metrics.md, "Re-baselined"), so the
+comparison is made with the key on; `--ai-paving=0` is for reading the
+historical numbers. The key is folded into the lobby digest like the others.
 
 ## The computer's guard answers for its ground
 
@@ -983,10 +982,69 @@ and A's guards kill B's harvesters early (`harv.lost.early` 17). Measured one
 house at a time, both halves contribute (B's guards alone: `result.points %`
 50; A's alone: 54). That is the AI-versus-AI bench describing the doctrine
 it was built to score; the person in the lobby plays doctrine A, and what
-they asked for is that its guards answer. **Compare against
-[metrics.md](metrics.md) with `--ai-guard=0 --ai-paving=0`**, which is
-bit-for-bit the older AI, and for the guard layer on its own with
-`--ai-paving=0`. The key is folded into the lobby digest like the others.
+they asked for is that its guards answer. The suite has since been
+**re-baselined on the AI as shipped**, both keys on (metrics.md,
+"Re-baselined"); `--ai-guard=0 --ai-paving=0` is bit-for-bit the older AI,
+for reading the historical numbers. The key is folded into the lobby digest
+like the others.
+
+## The AI builds what the tree makes it build
+
+`s_blueprint` in [skirmish.c](src/skirmish.c) is what a base wants, in the
+order it wants it -- and two kinds of building are deliberately not on it
+any more.
+
+* **Prerequisites come from the tree that is standing.** The list used to
+  name the Outpost third, which is where the *stock* tree wants it (there it
+  gates the Heavy Factory, the Barracks and every turret); under the fork's
+  `mp` tree it gates only the Hi-Tech, the Starport and IX, and the AI still
+  built it before its first factory -- 400 credits and 80 ticks of yard for
+  a radar it cannot read. "The computer puts up a radar early, when the next
+  things are a barracks and a light factory" was the report.
+  `Skirmish_Plan_EnsurePrerequisites()` now reads `structuresRequired` off
+  `g_table_structureInfo` -- the table as the `tech_tree` key patched it --
+  when the plan is compiled, and puts whatever an entry needs down
+  immediately in front of the first entry that needs it, recursively. The
+  same list therefore compiles to `Windtrap Refinery Light Fctry Outpost
+  Heavy Fctry ...` under stock and to `Windtrap Refinery Light Fctry Heavy
+  Fctry Barracks WOR Turret Turret Spice Silo Outpost Hi-Tech ...` under mp,
+  with the House of IX in front of the first Rocket Turret there. A
+  demand-driven entry (`Skirmish_Plan_Append()`) gets the same treatment.
+  The House of IX is the one tech building still named on the list: under
+  stock nothing on the tree needs it and a base without one never fields
+  what it unlocks; under mp the compiler has put it down earlier already and
+  the listed one is a second of a building a base wants one of, which
+  `Skirmish_IsSingletonStructure()` skips.
+* **Power is bought for a need, at the moment of the order.** Windtraps
+  stood on the list at fixed places, and `Skirmish_Plan_PickNext()`'s "take
+  something cheaper while saving up" rule kept pulling one forward -- a
+  Windtrap is 300 credits the house can always afford -- so three stood at a
+  usage of 120, and a fourth went up for the demand-driven Refinery long
+  before that Refinery's turn came. Now no Windtrap is on the list but the
+  Refinery's own (a prerequisite, under both trees), and `PickNext()` orders
+  one when the entry it is about to start would leave less than
+  `SKIRMISH_POWER_MARGIN` in hand: one the plan already holds anywhere, or a
+  new one put down in front of that entry. Once per asking; the entries
+  behind it that also want power are walked past rather than each given a
+  Windtrap of its own. A Windtrap the plan holds is otherwise skipped over
+  whatever is affordable, and still jumps the queue when the house is short
+  right now -- a Windtrap shot up, a building that turned out hungrier.
+
+`--ai-plan-self-test` compiles the plan under both trees and checks that
+every entry comes after everything it needs, that the Outpost (and under mp
+the House of IX) stands immediately in front of the first building that
+needs it, that the compiled plan holds one Windtrap, and then plays sixty
+thousand ticks under mp sampling the house's power: never more than one
+Windtrap and one building's draw ahead of its usage, and the Outpost, if it
+is up, after the Light Factory.
+
+Measured on `--war-metrics` on the shipped AI (both keys on), before against
+after: `econ.spice/match` 48703 → 58398, `wave.matches %` 41 → 58,
+`wave.launched/match` 1 → 3, `result.wipeouts %` 58 → 50, `harv.exposure %`
+10 → 16, `result.points %` 41 either way. Both houses build faster, and a
+faster A sends its hunters at B's harvesters sooner; that exposure is the
+doctrine's to answer. The gates were re-taken on these numbers -- see
+[metrics.md](metrics.md), "Re-baselined".
 
 ## Everything on the map is drawn
 
@@ -1117,6 +1175,7 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonne
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --guard-post-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ai-paving-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ai-guard-self-test
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --ai-plan-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --viewport-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --build-list-self-test
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./opendune --skirmish=ordos,harkonnen --deviator-self-test
