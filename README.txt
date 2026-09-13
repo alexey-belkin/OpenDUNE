@@ -33,16 +33,26 @@ The documents that describe the fork itself live beside the source:
 
 Contact
 -------
-The latest version of OpenDUNE is always available at:
-  http://www.opendune.org/
-The latest development version is at:
-  https://github.com/OpenDUNE/OpenDUNE
-Our IRC (chat) is at:
-  irc://irc.oftc.net/OpenDUNE
-You can report bugs at:
-  https://github.com/OpenDUNE/OpenDUNE/issues
-Our wiki is at:
-  https://github.com/OpenDUNE/OpenDUNE/wiki
+This fork is independent. It is not made by the OpenDUNE project, not endorsed
+ by it and not connected to it, and the OpenDUNE team cannot help with it.
+ Please do not take anything in this build to them: every difference described
+ in this file is the fork's doing, and a bug report about it would only waste
+ their time.
+
+The fork has no public site and no public issue tracker. Report a problem to
+ whoever gave you the build, and say which build you are running -- the
+ revision is printed on the main menu. If a networked match broke, send
+ mp-live.log from both machines with the report: it is in your personal data
+ directory (on macOS, ~/Library/Application Support/OpenDUNE/), it is stamped
+ with the wall clock, and it is the only record of what actually happened.
+
+The upstream project, for the original game and for anything that is not this
+ fork's doing:
+  Site                http://www.opendune.org/
+  Source              https://github.com/OpenDUNE/OpenDUNE
+  Bug reports         https://github.com/OpenDUNE/OpenDUNE/issues
+  Wiki                https://github.com/OpenDUNE/OpenDUNE/wiki
+  IRC (chat)          irc://irc.oftc.net/OpenDUNE
 
 
 Supported Platforms
@@ -539,7 +549,16 @@ See changelog.txt.
 
 Credits
 -------
-The OpenDUNE team (in alphabetical order):
+This fork is by Alexey Belkin (github.com/alexey-belkin). Everything under
+ "This fork" above is its doing, and so is any bug in it.
+
+It is built on top of OpenDUNE and keeps its engine: the fork is a layer of
+ changes over other people's work, not a rewrite, and it would not exist
+ without them. OpenDUNE in turn re-creates Westwood's Dune II, which is the
+ game underneath all of it -- including the unit, structure and team behaviour,
+ which this build still runs as Westwood's original bytecode.
+
+OpenDUNE, which this is built on -- the OpenDUNE team (in alphabetical order):
   Albert Hofkamp (Alberth)             - Refactoring Dude
   Loic Guilloux (glx)                  - Windows Guru
   Patric Stout (TrueBrain)             - Lead Developer
